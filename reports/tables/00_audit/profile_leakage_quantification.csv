@@ -1,0 +1,7 @@
+arm,model,n_features,auc,ap,part,auc_with(filled only),auc_without(filled only),real_signal_delta
+with_profile,logreg,78.0,0.762482605630282,0.4670818462341093,arms,,,
+with_profile,histgb,78.0,0.8063270595408759,0.5442751034011691,arms,,,
+without_profile,logreg,78.0,0.762483838746072,0.46708569749731504,arms,,,
+without_profile,histgb,78.0,0.8063270595408759,0.5442751034011691,arms,,,
+,logreg,,,,filled_slice,0.7803683927185102,0.7803721087056952,-3.7159871849601345e-06
+,histgb,,,,filled_slice,0.8069544871015095,0.8069544871015095,0.0

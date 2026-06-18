@@ -1,0 +1,47 @@
+{
+  "label": "XGB",
+  "split": "temporal (is_temporal_test)",
+  "best_threshold": 0.3531371057033539,
+  "test_metrics": {
+    "roc_auc": 0.8909109344577691,
+    "average_precision": 0.7398709850280455,
+    "brier": 0.10487618451947335,
+    "f1": 0.5053992507162272,
+    "lift@10%": 4.192279883314101,
+    "lift@25%": 2.9041800232096846,
+    "prec@rec=0.6": 0.6924708377518558
+  },
+  "test_metrics_random_diag": {
+    "roc_auc": 0.9251871389425803
+  },
+  "cv_summary": {
+    "TimeSeriesSplit_auc": 0.8986576833991036,
+    "StratifiedKFold_auc": 0.9242156783955947
+  },
+  "n_features": 23,
+  "features": [
+    "lead_time_days",
+    "los_nights",
+    "adults_n",
+    "log_gross_amount",
+    "gross_per_night",
+    "diff_gross_cancellation_fee",
+    "arrival_dow",
+    "arrival_month",
+    "is_weekend_arrival",
+    "is_international",
+    "has_promo",
+    "has_corporate_code",
+    "has_group",
+    "property_name",
+    "channelCode",
+    "ratePlan_category",
+    "unitGroup_name",
+    "travelPurpose",
+    "guaranteeType",
+    "primaryGuest_preferredLanguage",
+    "primaryGuest_address_countryCode",
+    "stay_bucket",
+    "cancellationFee_name"
+  ]
+}

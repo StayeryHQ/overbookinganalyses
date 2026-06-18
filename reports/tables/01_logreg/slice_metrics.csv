@@ -1,0 +1,23 @@
+slice,group,n,cancel_rate,auc
+property_name,Berlin Friedrichshain,3946,0.2347,0.7691
+property_name,Bielefeld Hauptbahnhof,7415,0.1671,0.7213
+property_name,Bochum Ehrenfeld,3247,0.1574,0.6929
+property_name,Bremen Am Wall,5447,0.1996,0.7048
+property_name,Cologne Ehrenfeld,2997,0.2019,0.7876
+property_name,Cologne Sülz,1777,0.2116,0.8065
+property_name,Frankfurt Sachsenhausen,4838,0.2702,0.811
+property_name,Fürth Hallstraße,464,0.2177,0.686
+property_name,Gütersloh Langer Weg,3127,0.1689,0.6856
+property_name,Osnabrück Johannisstraße,6320,0.1771,0.6867
+property_name,Wolfsburg Schachtweg,2827,0.2041,0.6808
+channelCode,Airbnb,989,0.1567,0.656
+channelCode,Booking.com,19012,0.2355,0.7664
+channelCode,Direct,3028,0.1139,0.7145
+channelCode,Expedia,3056,0.2039,0.708
+channelCode,HRS,3511,0.2336,0.6245
+channelCode,Ibe,12201,0.1516,0.6905
+channelCode,Synxis,466,0.1996,0.5695
+lead_bucket,0-7d,18585,0.122,0.6023
+lead_bucket,8-30d,12802,0.2049,0.7537
+lead_bucket,31-90d,8547,0.2899,0.7477
+lead_bucket,90d+,2471,0.4075,0.7152

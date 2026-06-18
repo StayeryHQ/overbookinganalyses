@@ -1,0 +1,110 @@
+# =============================================================================
+# Stayery Locations Reference Table
+# =============================================================================
+# will be added via the in app yaml snippen generator (has to be pasted)
+# Schema per location:
+#   hotel_code:        6-letter apaleo property code (matches Excel sheet)
+#   city:              City name (DE)
+#   neighborhood:      Optional district / quarter - automatically generated 
+#   bundesland:        ISO-3166-2 region code, used for school holiday lookup
+#                      BE=Berlin, BW=Baden-Württemberg, BY=Bayern, HB=Bremen,
+#                      HE=Hessen, HH=Hamburg, MV=Mecklenburg-Vorpommern,
+#                      NI=Niedersachsen, NW=Nordrhein-Westfalen, RP=Rheinland-Pfalz,
+#                      SH=Schleswig-Holstein, SL=Saarland, SN=Sachsen,
+#                      ST=Sachsen-Anhalt, TH=Thüringen, BB=Brandenburg
+#   opening_date:      First day of operation (YYYY-MM-DD). null = TBD.
+#   units_total:       Number of bookable units (apartments)
+#   capacity_changes:  Optional list of {date, units_total} for renovations / extensions
+#   notes:             Free text
+# =============================================================================
+
+locations:
+  - hotel_code: BCH_EF
+    city: Bochum
+    neighborhood: null
+    bundesland: NW
+    opening_date: 2025-10-13 
+    units_total: 90
+    notes: ""
+
+  - hotel_code: BER_FR
+    city: Berlin
+    neighborhood: Friedrichshain
+    bundesland: BE
+    opening_date: 2019-01-01  
+    units_total: 85
+    units_by_category: {BIG: 61, BIGGER: 11, UPPER AIR: 8, BIGGER COURTYARD: 5}
+    notes: ""
+
+  - hotel_code: BIE_HB
+    city: Bielefeld
+    neighborhood: null
+    bundesland: NW
+    opening_date: 2019-12-01   # TBD
+    units_total: 126
+    notes: ""
+
+  - hotel_code: CGN_EF
+    city: Köln
+    neighborhood: Ehrenfeld
+    bundesland: NW
+    opening_date: 2022-04-16   # TBD
+    units_total: 30
+    notes: ""
+
+  - hotel_code: CGN_WS
+    city: Köln
+    neighborhood: Sülz
+    bundesland: NW
+    opening_date: 2024-08-26   # TBD
+    units_total: 22
+    notes: ""
+
+  - hotel_code: FRA_SH
+    city: Frankfurt
+    neighborhood: Sachsenhausen
+    bundesland: HE
+    opening_date: 2022-02-27   # TBD
+    units_total: 139
+    notes: ""
+
+  - hotel_code: FTH_HA
+    city: Fürth
+    neighborhood: Innenstadt
+    bundesland: BY
+    opening_date: 2026-04-07
+    units_total: 60
+    notes: ""
+
+  - hotel_code: GTL_LW
+    city: Gütersloh
+    neighborhood: null
+    bundesland: NW
+    opening_date: 2024-04-25   # TBD
+    units_total: 37
+    notes: ""
+
+  - hotel_code: HBR_AW
+    city: Bremen
+    neighborhood: null
+    bundesland: HB
+    opening_date: 2022-08-01
+    units_total: 86
+    notes: ""
+
+  - hotel_code: OSN_JO
+    city: Osnabrück
+    neighborhood: null
+    bundesland: NI
+    opening_date: 2025-10-01   # TBD
+    units_total: 100
+    notes: ""
+
+  - hotel_code: WOB_SW
+    city: Wolfsburg
+    neighborhood: null
+    bundesland: NI
+    opening_date: 2022-09-26   # TBD
+    units_total: 48
+    notes: ""
+

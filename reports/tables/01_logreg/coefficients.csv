@@ -1,0 +1,113 @@
+feature,coef,abs_coef
+cat__guaranteeType_Prepayment,-1.517590513097785,1.517590513097785
+cat__cancellationFee_name_Non-refundable Shortstay ,-1.0590948161426499,1.0590948161426499
+cat__ratePlan_category_flexible longstay,0.9765066220195479,0.9765066220195479
+cat__ratePlan_category_stay again -25%,-0.9385262632667992,0.9385262632667992
+cat__channelCode_TravelPerk,-0.905438012453622,0.905438012453622
+cat__channelCode_Direct,-0.8121933061990599,0.8121933061990599
+cat__ratePlan_category_comp,0.782843934481889,0.782843934481889
+cat__stay_bucket_mid,-0.7584427003369895,0.7584427003369895
+cat__ratePlan_category_stay again -10%,-0.7442703198098208,0.7442703198098208
+cat__stay_bucket_short,-0.6920124980016366,0.6920124980016366
+cat__cancellationFee_name_Airbnb Longstay,-0.6489717332886814,0.6489717332886814
+cat__cancellationFee_name_Flexible Longstay,-0.622195901778986,0.622195901778986
+cat__channelCode_Booking.com,0.6214674377791981,0.6214674377791981
+cat__channelCode_HomeLike,0.5957693784330209,0.5957693784330209
+cat__cancellationFee_name_Corporate Midstay,-0.592978840143514,0.592978840143514
+cat__cancellationFee_name_OTA Shortstay,-0.5764587247611423,0.5764587247611423
+cat__ratePlan_category_hrs volkswagen,-0.5728200582037799,0.5728200582037799
+cat__cancellationFee_name_Flexible,0.5253565670350222,0.5253565670350222
+cat__channelCode_Rydoo,-0.4907459978155961,0.4907459978155961
+cat__ratePlan_category_crc flexible shortstay,0.48830859909655827,0.48830859909655827
+cat__channelCode_feratel,0.44635103037368806,0.44635103037368806
+cat__cancellationFee_name_Flexible Mediumstay,-0.4457806682636516,0.4457806682636516
+cat__ratePlan_category_hrs oetker,0.43734589408229363,0.43734589408229363
+cat__cancellationFee_name_Airbnb,-0.4257504518457983,0.4257504518457983
+cat__channelCode_Expedia,0.3831138949245596,0.3831138949245596
+cat__property_name_Gütersloh Langer Weg,-0.3750694937139122,0.3750694937139122
+cat__unitGroup_name_BIG WITH BALCONY,-0.3655880772089189,0.3655880772089189
+cat__channelCode_Other,-0.36328824227264017,0.36328824227264017
+cat__stay_bucket_long,-0.3506754106164177,0.3506754106164177
+cat__property_name_Bremen Am Wall,-0.34953567761734383,0.34953567761734383
+cat__channelCode_Airbnb,-0.3452005549721393,0.3452005549721393
+num__lead_time_days,0.340031404155842,0.340031404155842
+cat__property_name_Wolfsburg Schachtweg,-0.33747262413465756,0.33747262413465756
+cat__ratePlan_category_exclusive corporate rate hrs,-0.32274503786428654,0.32274503786428654
+cat__unitGroup_name_BIGGER COURTYARD,-0.3217387753763763,0.3217387753763763
+cat__property_name_Bielefeld Hauptbahnhof,-0.3132295422718685,0.3132295422718685
+hist__company_prior_cancel_rate,0.3120951218599323,0.3120951218599323
+cat__ratePlan_category_flexible shortstay with breakfast box,-0.30907147519350564,0.30907147519350564
+cat__cancellationFee_name_Corporate Longstay,-0.30257034257788074,0.30257034257788074
+cat__cancellationFee_name_Flexible Corporate Shortstay,0.2857979510187768,0.2857979510187768
+cat__ratePlan_category_crc flexible shortstay with breakfast,-0.2694185894499013,0.2694185894499013
+cat__guaranteeType_Company,-0.2691104265474033,0.2691104265474033
+cat__ratePlan_category_exclusive corporate rate hrs telekom,0.2500754855896788,0.2500754855896788
+cat__ratePlan_category_hrs bertelsmann,0.24570565611079812,0.24570565611079812
+cat__ratePlan_category_family & friends shortstay,-0.23862727769936912,0.23862727769936912
+cat__unitGroup_name_UPPER,-0.23843408096564792,0.23843408096564792
+cat__property_name_Cologne Sülz,0.23809163211618506,0.23809163211618506
+cat__unitGroup_name_UPPER AIR,-0.22939010240208185,0.22939010240208185
+cat__channelCode_Tomas,-0.22051344399328315,0.22051344399328315
+num__has_company,-0.2123405156682434,0.2123405156682434
+cat__ratePlan_category_hrs consortia,-0.21200181337494292,0.21200181337494292
+cat__property_name_Berlin Friedrichshain,-0.2072347183976654,0.2072347183976654
+cat__ratePlan_category_exclusive corporate rate hrs tuv,-0.2049518780301504,0.2049518780301504
+cat__channelCode_Ibe,-0.20337663467118886,0.20337663467118886
+num__los_nights,-0.2022551108190998,0.2022551108190998
+cat__ratePlan_category_exclusive corporate rate hrs consortia,-0.19971199016799696,0.19971199016799696
+cat__cancellationFee_name_Flexible Shortstay,0.19482817219814583,0.19482817219814583
+num__diff_gross_cancellation_fee,0.18130717256126022,0.18130717256126022
+cat__unitGroup_name_BIGGER,-0.1651043031486037,0.1651043031486037
+cat__unitGroup_name_BIGGER AIRCON Not in use,0.1611776954806231,0.1611776954806231
+cat__cancellationFee_name_OTA Midstay,0.14806478322340988,0.14806478322340988
+cat__ratePlan_category_exclusive corporate rate with breakfast,0.14680343574710064,0.14680343574710064
+num__is_repeat_company,-0.14022054514064908,0.14022054514064908
+cat__ratePlan_category_exclusive corporate rate mindsquare,0.13545973855738738,0.13545973855738738
+cat__ratePlan_category_airbnb long stay,-0.1289629144841382,0.1289629144841382
+cat__channelCode_HRS,0.12587440806438524,0.12587440806438524
+cat__cancellationFee_name_HRS,0.12481312152551108,0.12481312152551108
+cat__ratePlan_category_hrs,-0.12253984444078796,0.12253984444078796
+cat__ratePlan_category_flexible midstay,-0.12100697365721078,0.12100697365721078
+cat__cancellationFee_name_Flexible Midstay,-0.11117019634447742,0.11117019634447742
+cat__cancellationFee_name_OTA Mediumstay,0.10362922552052703,0.10362922552052703
+cat__unitGroup_name_BOX,0.10021232981257948,0.10021232981257948
+num__has_group,-0.0994295393350844,0.0994295393350844
+num__has_corporate_code,0.09710256201266199,0.09710256201266199
+num__gross_per_night,0.08079095856012061,0.08079095856012061
+cat__channelCode_Apartmentservice,-0.07989459951131118,0.07989459951131118
+cat__ratePlan_category_exclusive corporate rate hrs volkswagen,0.07632793801233964,0.07632793801233964
+cat__channelCode_CRC Corporate Rates Club,-0.07316443938627865,0.07316443938627865
+cat__ratePlan_category_exklusive firmenrate,-0.07244345234731427,0.07244345234731427
+cat__unitGroup_name_BIG,-0.07237753004236844,0.07237753004236844
+num__arrival_dow,0.06529997252281566,0.06529997252281566
+cat__ratePlan_category_exclusive corporate rate,0.06370864758556254,0.06370864758556254
+cat__guaranteeType_CreditCard,-0.05870794622262395,0.05870794622262395
+cat__ratePlan_category_flexible shortstay with breakfast,-0.05741776173588744,0.05741776173588744
+cat__channelCode_GDS,-0.05511797434718748,0.05511797434718748
+num__is_weekend_arrival,-0.04964265240075976,0.04964265240075976
+num__log_gross_amount,0.049198818697439715,0.049198818697439715
+cat__ratePlan_category_flexible shortstay,-0.04768734665761449,0.04768734665761449
+num__company_prior_bookings,-0.04446126142417862,0.04446126142417862
+cat__cancellationFee_name_Corporate Shortstay,0.04000814451917052,0.04000814451917052
+cat__ratePlan_category_team member shortstay,-0.03859872857414318,0.03859872857414318
+cat__ratePlan_category_nonref,-0.03739779531255142,0.03739779531255142
+num__adults_n,-0.02785729053893716,0.02785729053893716
+cat__ratePlan_category_airbnb midstay,0.027660752982306913,0.027660752982306913
+cat__ratePlan_category_other,-0.024114322343972885,0.024114322343972885
+cat__cancellationFee_name_Flexible Corporate Midstay,0.023961388601443638,0.023961388601443638
+num__has_children,0.02362832140263327,0.02362832140263327
+num__arrival_month,0.023447508924456007,0.023447508924456007
+cat__ratePlan_category_exclusive corporate rate hrs schüco,0.02248644764594424,0.02248644764594424
+cat__property_name_Cologne Ehrenfeld,0.012844887598905601,0.012844887598905601
+cat__property_name_Frankfurt Sachsenhausen,0.009877769491756564,0.009877769491756564
+cat__cancellationFee_name_Flexible Rate with Museum Pass,0.0077833828346872995,0.0077833828346872995
+cat__ratePlan_category_airbnb longstay,-0.00670067796770218,0.00670067796770218
+cat__ratePlan_category_airbnb shortstay,0.00630719447947624,0.00630719447947624
+cat__ratePlan_category_exclusive corporate rate goldbeck,0.0029340227540802953,0.0029340227540802953
+num__has_promo,-0.0011676859568039966,0.0011676859568039966
+cat__channelCode_HousingAnywhere,0.0,0.0
+cat__unitGroup_name_BIG AIRCON,0.0,0.0
+cat__cancellationFee_name_Non-refundable Rate with Museum Pass,0.0,0.0
+cat__channelCode_ehotel AG,0.0,0.0
+cat__cancellationFee_name_Flexible Corporate Mediumstay,0.0,0.0
+cat__cancellationFee_name_Corporate Mediumstay,0.0,0.0

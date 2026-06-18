@@ -1,0 +1,17 @@
+# =============================================================================
+# Path configuration
+# Resolved by src/revenueblindspots/paths.py against the repo root.
+# =============================================================================
+
+# Where the immutable raw apaleo exports live.
+# (Kept at "Data/" for backward compatibility with the existing folder.)
+raw_data_dir: Data
+
+# Outputs.
+figures_dir: reports/figures
+tables_dir:  reports/tables
+decks_dir:   reports/decks
+
+# Filename pattern for raw apaleo reservation reports.
+# {hotel_code} is substituted with the 6-letter property code from locations.yaml.
+raw_filename_pattern: "{hotel_code}_apaleo_reservation_report.xlsx"

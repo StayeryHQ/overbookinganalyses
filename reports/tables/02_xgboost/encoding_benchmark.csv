@@ -1,0 +1,4 @@
+encoding,auc,ap,ap_std
+onehot,0.7781,0.5216,0.0436
+ordinal,0.7775,0.5216,0.0426
+native,0.777,0.5187,0.0399

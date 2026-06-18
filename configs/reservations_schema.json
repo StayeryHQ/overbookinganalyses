@@ -1,0 +1,302 @@
+[
+  {
+    "name": "additionalGuests_firstName"
+  },
+  {
+    "name": "additionalGuests_lastName"
+  },
+  {
+    "name": "additionalGuests_title"
+  },
+  {
+    "name": "adults"
+  },
+  {
+    "name": "allFoliosHaveInvoice"
+  },
+  {
+    "name": "arrival"
+  },
+  {
+    "name": "balance_amount"
+  },
+  {
+    "name": "balance_currency"
+  },
+  {
+    "name": "blockId"
+  },
+  {
+    "name": "booker_comment"
+  },
+  {
+    "name": "booker_company_name"
+  },
+  {
+    "name": "booker_email"
+  },
+  {
+    "name": "booker_firstName"
+  },
+  {
+    "name": "booker_lastName"
+  },
+  {
+    "name": "booker_phone"
+  },
+  {
+    "name": "bookingId"
+  },
+  {
+    "name": "cancellationFee_code"
+  },
+  {
+    "name": "cancellationFee_description"
+  },
+  {
+    "name": "cancellationFee_dueDateTime"
+  },
+  {
+    "name": "cancellationFee_fee_amount"
+  },
+  {
+    "name": "cancellationFee_fee_currency"
+  },
+  {
+    "name": "cancellationFee_id"
+  },
+  {
+    "name": "cancellationFee_name"
+  },
+  {
+    "name": "cancellationTime"
+  },
+  {
+    "name": "channelCode"
+  },
+  {
+    "name": "children"
+  },
+  {
+    "name": "childrenAges"
+  },
+  {
+    "name": "commission_amount"
+  },
+  {
+    "name": "commission_before_amount"
+  },
+  {
+    "name": "commission_before_currency"
+  },
+  {
+    "name": "commission_currency"
+  },
+  {
+    "name": "company_canCheckOutOnAr"
+  },
+  {
+    "name": "company_code"
+  },
+  {
+    "name": "company_id"
+  },
+  {
+    "name": "company_name"
+  },
+  {
+    "name": "corporateCode"
+  },
+  {
+    "name": "created"
+  },
+  {
+    "name": "departure"
+  },
+  {
+    "name": "externalCode"
+  },
+  {
+    "name": "groupName"
+  },
+  {
+    "name": "guaranteeType"
+  },
+  {
+    "name": "guestComment"
+  },
+  {
+    "name": "guest_id"
+  },
+  {
+    "name": "hasCityTax"
+  },
+  {
+    "name": "id"
+  },
+  {
+    "name": "is_first_res"
+  },
+  {
+    "name": "is_last_res"
+  },
+  {
+    "name": "modified"
+  },
+  {
+    "name": "noShowFee_code"
+  },
+  {
+    "name": "noShowFee_description"
+  },
+  {
+    "name": "noShowFee_fee_amount"
+  },
+  {
+    "name": "noShowFee_fee_currency"
+  },
+  {
+    "name": "noShowFee_id"
+  },
+  {
+    "name": "noShowFee_name"
+  },
+  {
+    "name": "paymentAccount_accountHolder"
+  },
+  {
+    "name": "paymentAccount_accountNumber"
+  },
+  {
+    "name": "paymentAccount_expiryMonth"
+  },
+  {
+    "name": "paymentAccount_expiryYear"
+  },
+  {
+    "name": "paymentAccount_isActive"
+  },
+  {
+    "name": "paymentAccount_isVirtual"
+  },
+  {
+    "name": "paymentAccount_payerEmail"
+  },
+  {
+    "name": "paymentAccount_paymentMethod"
+  },
+  {
+    "name": "primaryGuest_address_addressLine1"
+  },
+  {
+    "name": "primaryGuest_address_city"
+  },
+  {
+    "name": "primaryGuest_address_countryCode"
+  },
+  {
+    "name": "primaryGuest_address_postalCode"
+  },
+  {
+    "name": "primaryGuest_birthDate"
+  },
+  {
+    "name": "primaryGuest_company_name"
+  },
+  {
+    "name": "primaryGuest_company_taxId"
+  },
+  {
+    "name": "primaryGuest_email"
+  },
+  {
+    "name": "primaryGuest_firstName"
+  },
+  {
+    "name": "primaryGuest_gender"
+  },
+  {
+    "name": "primaryGuest_lastName"
+  },
+  {
+    "name": "primaryGuest_middleInitial"
+  },
+  {
+    "name": "primaryGuest_phone"
+  },
+  {
+    "name": "primaryGuest_preferredLanguage"
+  },
+  {
+    "name": "primaryGuest_title"
+  },
+  {
+    "name": "promoCode"
+  },
+  {
+    "name": "property_code"
+  },
+  {
+    "name": "property_id"
+  },
+  {
+    "name": "property_name"
+  },
+  {
+    "name": "ratePlan_code"
+  },
+  {
+    "name": "ratePlan_description"
+  },
+  {
+    "name": "ratePlan_id"
+  },
+  {
+    "name": "ratePlan_isSubjectToCityTax"
+  },
+  {
+    "name": "ratePlan_name"
+  },
+  {
+    "name": "source"
+  },
+  {
+    "name": "status"
+  },
+  {
+    "name": "totalGrossAmount_amount"
+  },
+  {
+    "name": "totalGrossAmount_currency"
+  },
+  {
+    "name": "travelPurpose"
+  },
+  {
+    "name": "unitGroup_code"
+  },
+  {
+    "name": "unitGroup_description"
+  },
+  {
+    "name": "unitGroup_id"
+  },
+  {
+    "name": "unitGroup_name"
+  },
+  {
+    "name": "unitGroup_type"
+  },
+  {
+    "name": "unit_description"
+  },
+  {
+    "name": "unit_id"
+  },
+  {
+    "name": "unit_name"
+  },
+  {
+    "name": "unit_unitGroupId"
+  }
+]

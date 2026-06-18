@@ -1,0 +1,4 @@
+name,threshold,precision,recall,f1
+f1_optimal,0.2505,0.4182,0.6051,0.4946
+precision_first,0.3257,0.4801,0.479,0.4795
+recall_first,0.2843,0.4514,0.5421,0.4926

@@ -1,0 +1,49 @@
+# Stayery Overbooking Analytics — Streamlit Theme + Performance Settings.
+# Brand-Farben aus configs/stayery_brand.yaml übernommen.
+# Yellow #FFE650 als Akzent, Schwarz für Text, Weiß als Grundfläche.
+# (Gespiegelt vom Design der RevenueBlindSpots-App, damit beide Apps konsistent aussehen.)
+
+# ============================== Theme =====================================
+[theme]
+base = "light"
+primaryColor = "#FFE650"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#FAFAF5"
+textColor = "#000000"
+font = "sans serif"
+
+
+# ============================== Server / Performance =====================
+[server]
+maxUploadSize = 50
+# Brand-Fonts aus streamlit_app/static/ servieren (Neue Haas Grotesk, Topol).
+# CSS in components/brand.py referenziert ./app/static/fonts/...otf.
+enableStaticServing = true
+# Source-Files nicht beobachten — spart CPU/RAM bei langlaufenden Sessions.
+# Beim aktiven Entwickeln überschreiben via:
+# STREAMLIT_SERVER_FILE_WATCHER_TYPE=auto
+fileWatcherType = "none"
+enableWebsocketCompression = false
+runOnSave = false
+
+
+# ============================== Runner ===================================
+[runner]
+magicEnabled = false
+postScriptGC = true
+
+
+# ============================== Client UI ================================
+[client]
+toolbarMode = "minimal"
+showErrorDetails = true
+
+
+# ============================== Browser ==================================
+[browser]
+gatherUsageStats = false
+
+
+# ============================== Logger ===================================
+[logger]
+level = "warning"
