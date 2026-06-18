@@ -1,12 +1,10 @@
 # =============================================================================
 # Stayery Locations Reference Table
 # =============================================================================
-# will be added via the in app yaml snippen generator (has to be pasted)
-# Schema per location:
 #   hotel_code:        6-letter apaleo property code (matches Excel sheet)
 #   city:              City name (DE)
-#   neighborhood:      Optional district / quarter - automatically generated 
-#   bundesland:        ISO-3166-2 region code, used for school holiday lookup
+#   neighborhood:      Optional district
+#   bundesland:        ISO-3166-2 region code
 #                      BE=Berlin, BW=Baden-Württemberg, BY=Bayern, HB=Bremen,
 #                      HE=Hessen, HH=Hamburg, MV=Mecklenburg-Vorpommern,
 #                      NI=Niedersachsen, NW=Nordrhein-Westfalen, RP=Rheinland-Pfalz,
@@ -16,6 +14,7 @@
 #   units_total:       Number of bookable units (apartments)
 #   capacity_changes:  Optional list of {date, units_total} for renovations / extensions
 #   notes:             Free text
+# will likely be replaced with the propertyperformance table
 # =============================================================================
 
 locations:
@@ -40,7 +39,7 @@ locations:
     city: Bielefeld
     neighborhood: null
     bundesland: NW
-    opening_date: 2019-12-01   # TBD
+    opening_date: 2019-12-01  
     units_total: 126
     notes: ""
 
@@ -48,7 +47,7 @@ locations:
     city: Köln
     neighborhood: Ehrenfeld
     bundesland: NW
-    opening_date: 2022-04-16   # TBD
+    opening_date: 2022-04-16  
     units_total: 30
     notes: ""
 
@@ -56,7 +55,7 @@ locations:
     city: Köln
     neighborhood: Sülz
     bundesland: NW
-    opening_date: 2024-08-26   # TBD
+    opening_date: 2024-08-26  
     units_total: 22
     notes: ""
 
@@ -64,7 +63,7 @@ locations:
     city: Frankfurt
     neighborhood: Sachsenhausen
     bundesland: HE
-    opening_date: 2022-02-27   # TBD
+    opening_date: 2022-02-27  
     units_total: 139
     notes: ""
 
@@ -80,7 +79,7 @@ locations:
     city: Gütersloh
     neighborhood: null
     bundesland: NW
-    opening_date: 2024-04-25   # TBD
+    opening_date: 2024-04-25  
     units_total: 37
     notes: ""
 
@@ -96,7 +95,7 @@ locations:
     city: Osnabrück
     neighborhood: null
     bundesland: NI
-    opening_date: 2025-10-01   # TBD
+    opening_date: 2025-10-01  
     units_total: 100
     notes: ""
 
@@ -104,7 +103,7 @@ locations:
     city: Wolfsburg
     neighborhood: null
     bundesland: NI
-    opening_date: 2022-09-26   # TBD
+    opening_date: 2022-09-26  
     units_total: 48
     notes: ""
 

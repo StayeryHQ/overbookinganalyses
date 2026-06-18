@@ -16,10 +16,6 @@ colors: # this is a nested dictionary defining the color palette for the Stayery
     purple: "#6E32C8"
 
 # Order in which colors are assigned to chart series.
-# Yellow leads as brand-defining accent; supporting colors follow in
-# perceptually distinct order to maximize readability across categories.
-# Limited to ~6 to honor the "1-2 supporting colours per layout" principle -
-# if a chart needs more, the palette recycles  - needs to be tested and potentially adjusted in the chart
 categorical_order:
   - yellow
   - blue
@@ -28,19 +24,16 @@ categorical_order:
   - pink
   - purple
 
-# Sequential palette anchor - single-hue gradient toward this color.
-# Used for heatmaps, choropleth-like encodings, occupancy matrices.
+# Sequential palette anchor
 sequential_anchor: yellow
 
-# Diverging palette - for YoY % change, anomaly residuals, target deviation.
+# Diverging palette 
 diverging:
   negative: red
   neutral:  white
   positive: green
 
 typography:
-  # Primary brand font for all text. Must be installed system-wide for
-  # full fidelity. Fallback chain ensures readable output everywhere.
   primary: "Neue Haas Grotesk Display Pro"
   primary_fallback:
     - "Neue Haas Grotesk"
