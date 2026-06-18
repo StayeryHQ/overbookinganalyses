@@ -1,0 +1,39 @@
+column,dtype,role,description,n_unique,n_missing,top_3_values
+adults_n,Int64,engineered,Engineered. Numeric coercion of adults.,2,0,1 | 2
+arrival_dow,Int64,engineered,"Engineered. Day of week of arrival (0=Mon, 6=Sun).",7,0,0 | 1 | 4
+arrival_month,Int64,engineered,Engineered. Month of arrival (1-12).,12,0,5 | 11 | 3
+company_name_clean,str,engineered,Engineered. Fuzzy-clustered canonical company name (see §3.0.c).,11804,117426,mindsquare AG | Deutsche Telekom AG Segment GHS | Volkswagen AG
+company_prior_bookings,Int64,engineered,Engineered. Count of the company's earlier bookings (created < this; leakage-safe).,5816,0,0 | 1 | 2
+company_prior_cancel_rate,Float64,engineered,Engineered. Company cancel rate over its prior bookings (NaN if none). See §5.2.,11601,129230,0.0 | 1.0 | 0.5
+diff_gross_cancellation_fee,float64,engineered,Engineered. gross_amount - cancellationFee_fee_amount. Forfeit-if-cancelled.,15859,0,0.0 | 12.0 | 14.0
+gross_amount,float64,engineered,Engineered. Numeric coercion of totalGrossAmount_amount; Canceled+<=0 set to NaN in §4.3.,28238,0,99.0 | 89.0 | 79.0
+gross_per_night,Float64,engineered,Engineered. gross_amount / los_nights (zero LOS -> NaN).,26081,0,99.0 | 89.0 | 79.0
+guest_country_region,object,engineered,Engineered. Structural region from countryCode (DE/AT/CH/GB/EU_other/RoW/Unknown). Replaces per-model country collapsers; src/features.py.,7,0,DE | EU_other | RoW
+has_children,Int64,engineered,Engineered. 1 if children>0 or childrenAges non-empty (family booking). Recovers signal before children/childrenAges are dropped in §3.4.,2,0,0 | 1
+has_company,Int64,engineered,Engineered. 1 if a (clustered) company is attached.,2,0,0 | 1
+has_corporate_code,Int64,engineered,Engineered. Any non-empty corporateCode.,2,0,0 | 1
+has_group,Int64,engineered,Engineered. blockId OR groupName is non-empty.,2,0,0 | 1
+has_promo,Int64,engineered,Engineered. Any non-empty promoCode.,2,0,0 | 1
+is_repeat_company,Int64,engineered,Engineered. 1 if the company has >=1 prior booking (by created).,2,0,0 | 1
+is_weekend_arrival,Int64,engineered,Engineered. 1 if arrival is Sat/Sun.,2,0,0 | 1
+lead_time_days,float64,engineered,Engineered. (arrival - created) in days. Negative values clipped to 0 in §4.2.,154564,0,0.0 | 0.22417824074074075 | 0.009293981481481481
+log_gross_amount,float64,engineered,"Engineered. log1p(clip(gross_amount, 0)). Tame the right tail.",28238,0,4.605170185988092 | 4.499809670330265 | 4.382026634673881
+los_nights,Int64,engineered,Engineered. (departure.date - arrival.date) in days. Sat-17 -> Sun-08 = 1 night.,179,0,1 | 2 | 3
+ratePlan_category,string,engineered,"Engineered. Mid-granularity; nonref pooled, rare buckets -> 'other'.",42,0,flexible shortstay | nonref | flexible midstay
+ratePlan_type,string,engineered,Engineered. Coarse bucket: nonref/flexible/corporate/promo/comp/other/unknown.,6,0,flexible | nonref | corporate
+stay_bucket,string,engineered,Engineered. short (<=2) / mid (3-6) / long (>6) nights.,3,0,short | mid | long
+cancellationFee_name,str,kept_raw,Human-readable cancellation policy name.,21,0,OTA Shortstay | Flexible Shortstay | Non-refundable Shortstay 
+channelCode,string,kept_raw,Booking channel; OTA names substituted in §3.0.a; no rare-channel folding (2026-06-11).,18,0,Booking.com | Ibe | Direct
+guaranteeType,str,kept_raw,Guarantee type on file (CreditCard / Prepayment / Company / ...).,3,0,CreditCard | Prepayment | Company
+primaryGuest_address_countryCode,str,kept_raw,Guest country code (ISO-2). DIAGNOSTIC ONLY - check-in leakage (see 2026-06-12 finding).,178,11799,DE | NL | GB
+primaryGuest_preferredLanguage,str,kept_raw,"Guest preferred-language code. DIAGNOSTIC ONLY since 2026-06-12 - check-in leakage, not a model feature.",6,11799,de | en | es
+property_name,str,kept_raw,Property name (kept after dropping property_id/property_code in §3.3).,11,0,Bielefeld Hauptbahnhof | Bremen Am Wall | Berlin Friedrichshain
+travelPurpose,str,kept_raw,"Apaleo travel-purpose marker. DIAGNOSTIC ONLY since 2026-06-12 - check-in leakage, not a model feature.",2,3381,Leisure | Business
+unitGroup_name,str,kept_raw,Unit-group name (room category).,10,0,BIG | BIGGER | BOX
+arrival,"datetime64[us, UTC]",meta,"Arrival timestamp, UTC.",26425,0,2026-06-08 13:00:00+00:00 | 2026-04-20 13:00:00+00:00 | 2026-05-18 13:00:00+00:00
+created,"datetime64[us, UTC]",meta,"Booking creation timestamp, UTC. After §4.2, negative lead-times are clipped to arrival.",167753,0,2025-11-21 14:07:46+00:00 | 2024-11-29 18:20:47+00:00 | 2022-11-01 15:42:25+00:00
+departure,"datetime64[us, UTC]",meta,"Departure timestamp, UTC.",1611,0,2026-05-10 09:00:00+00:00 | 2026-05-31 09:00:00+00:00 | 2025-11-30 10:00:00+00:00
+is_temporal_test,int8,meta,1 for the test block (newest 25% by arrival).,2,0,0 | 1
+is_temporal_val,int8,meta,1 for the validation block (15% before test); threshold/HP tuning.,2,0,0 | 1
+temporal_split,string,meta,train (oldest 60%) / val (15%) / test (newest 25%) by arrival.,4,0,train | test | val
+status,int8,target,"Binary cancellation target (1 = Canceled, 0 = CheckedOut/InHouse). Encoded in §4.5.",2,0,0 | 1

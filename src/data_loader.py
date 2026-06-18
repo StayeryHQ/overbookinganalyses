@@ -1,13 +1,11 @@
 # ---------------------------------------------------------------------------
 # Data loader for the Stayery overbooking project.
 #
-# What this module does:
 #   1. Querying BigQuery (`stayery-analytics.reporting.reservations`),
-#      excluding PII columns AT THE SQL LEVEL (`SELECT * EXCEPT(...)`) so PII is
-#      never pulled into the client at all.
-#   2. `strip_pii` as a defense-in-depth safety net (no-op if SQL already excluded).
-#   3. Coercing dtypes (BQ returns many numerics/bools as STRING).
-#   4. Persisting a PII-free parquet cache so notebooks are fast and free.
+#      excluding PII columns at SQL level (`SELECT * EXCEPT(...)`)
+#   2. `strip_pii` as a safety net 
+#   3. Coercing dtypes
+#   4. Persisting a PII-free parquet cache so notebooks are fast
 #   5. Schema-drift warnings.
 #
 # Usage:
@@ -31,23 +29,19 @@ from .paths import data_dir, schema_config_path
 
 logger = logging.getLogger(__name__)
 
+
 # ---- BigQuery target ------------------------------------------------------
 
 BQ_PROJECT: Final[str] = "stayery-analytics"
 BQ_DATASET: Final[str] = "reporting"
 BQ_TABLE:   Final[str] = "reservations"
 
-# NOTE: The historical 2022 cut-off has been removed a
-MIN_ARRIVAL_DATE: Final[str] = "2000-01-01"
-
 # Two cache files: raw (after PII strip + dtype clean) and post-cleaning
-# (produced by 00_data_audit.ipynb). Versioned so we can bust if the PII
-# list or dtype rules change.
+# (produced by 00_data_audit.ipynb).
 RAW_CACHE_FILE:   Final[str] = "reservations_raw_no_pii.parquet"
 CLEAN_CACHE_FILE: Final[str] = "reservations_clean.parquet"
 
 # ---- Dtype hints ----------------------------------------------------------
-# BQ frequently returns these as STRING; we fix them in one place.
 INT_COLUMNS: Final[tuple[str, ...]] = (
     "adults", "guest_id", "is_first_res", "is_last_res",
 )
@@ -62,33 +56,21 @@ BOOL_COLUMNS: Final[tuple[str, ...]] = (
 
 # ---- PII columns ---------------------------------------------------------
 # These columns identify individual guests or carry sensitive payment data.
-# They are EXCLUDED AT THE SQL LEVEL by `_query_bigquery` (SELECT * EXCEPT(...)),
-# so they never reach the client; `strip_pii` re-drops them as a safety net.
-# Update this list when new PII fields are added upstream.
+# They are excluded at SQL level
 PII_COLUMNS: Final[tuple[str, ...]] = (
-    # Guest names & demographics
     "primaryGuest_title", "primaryGuest_firstName", "primaryGuest_middleInitial",
     "primaryGuest_lastName", "primaryGuest_gender", "primaryGuest_birthDate",
-    # Contact details
     "primaryGuest_email", "primaryGuest_phone",
-    # Postal address (city is borderline; we drop it — country code is enough
-    # geographic signal for cancellation modelling).
     "primaryGuest_address_addressLine1", "primaryGuest_address_postalCode",
     "primaryGuest_address_city",
-    # Additional guests
     "additionalGuests_title", "additionalGuests_firstName", "additionalGuests_lastName",
-    # Payment account
     "paymentAccount_accountNumber", "paymentAccount_accountHolder",
     "paymentAccount_expiryMonth",   "paymentAccount_expiryYear",
     "paymentAccount_payerEmail",
-    # Booker (person who placed the booking)
     "booker_firstName", "booker_lastName", "booker_email", "booker_phone",
     "booker_comment",
-    # Free-text fields that routinely contain PII
     "guestComment",
-    # Corporate tax IDs
     "primaryGuest_company_taxId",
-    # External system identifiers that link back to PII in OTA portals
     "externalCode",
 )
 
@@ -114,7 +96,7 @@ def load_reservations(
         in pandas for cache reads. Useful for fast iteration during development.
     upcoming_only : bool
         If True, only return rows whose `arrival` is in the future. Used by
-        the daily scoring notebook. Hits the cache same as the default call —
+        the daily scoring notebook. Hits the cache same as the default call -
         it just filters after loading.
     quiet : bool
         Suppress info-level logging.
@@ -136,9 +118,9 @@ def load_reservations(
             df = df.head(limit).copy()
     else:
         if not cache_path.exists():
-            logger.info("no parquet cache — querying BigQuery (one-time, slow)")
+            logger.info("no parquet cache - querying BigQuery")
         else:
-            logger.info("force_refresh=True — re-querying BigQuery")
+            logger.info("force_refresh=True re-querying BigQuery")
         df = _query_bigquery(limit=limit)
         df = strip_pii(df)
         df = clean_dtypes(df)
@@ -150,6 +132,7 @@ def load_reservations(
         df = df[pd.to_datetime(df["arrival"], utc=True) >= now].copy()
 
     _validate_schema(df)
+
     return df
 
 
@@ -168,27 +151,27 @@ def load_clean_reservations() -> pd.DataFrame:
 
 
 # =============================================================================
-# Helpers (also exported — useful in notebooks for ad-hoc transforms)
+# Helpers (also exported - useful in notebooks for ad-hoc transforms)
 # =============================================================================
 
 def strip_pii(df: pd.DataFrame) -> pd.DataFrame:
     """Return a copy of `df` with every PII column dropped.
 
-    `errors='ignore'` means we don't crash if a column is already missing —
+    `errors='ignore'` means we don't crash if a column is already missing
     silent schema drift in BigQuery shouldn't take the whole pipeline down.
     """
     n_before = df.shape[1]
     out = df.drop(columns=list(PII_COLUMNS), errors="ignore")
     n_dropped = n_before - out.shape[1]
     if n_dropped:
-        logger.info(f"PII strip: removed {n_dropped} columns")
+        logger.info(f"PII strip: removed {n_dropped} columns using function - review SQL query")
     return out
 
 
 def clean_dtypes(df: pd.DataFrame) -> pd.DataFrame:
     """Coerce columns to sensible dtypes.
 
-    Strategy: be tolerant. Missing columns are skipped; failed conversions
+    Strategy: Missing columns are skipped and failed conversions
     log a warning and keep the column as-is.
     """
     out = df.copy()
@@ -197,7 +180,7 @@ def clean_dtypes(df: pd.DataFrame) -> pd.DataFrame:
         if col in out.columns:
             try:
                 out[col] = pd.to_datetime(out[col], utc=True, errors="coerce")
-            except Exception as e:  # noqa: BLE001 — defensive
+            except Exception as e: 
                 logger.warning(f"could not parse {col} as datetime: {e}")
 
     for col in INT_COLUMNS:
@@ -242,16 +225,11 @@ def _query_bigquery(limit: int | None = None) -> pd.DataFrame:
     table_ref = f"{BQ_PROJECT}.{BQ_DATASET}.{BQ_TABLE}"
 
     # --- exclude PII AT THE SQL LEVEL (data minimisation) ------------------
-    # Never pull PII into the client at all (instead of fetching everything and
-    # dropping in pandas). `SELECT * EXCEPT(...)` errors on a column not in the
-    # table, so we intersect PII_COLUMNS with the LIVE schema first (robust to
-    # upstream schema drift). `strip_pii` downstream stays as a safety net.
+
     table_cols = {f.name for f in client.get_table(table_ref).schema}
     pii_present = [c for c in PII_COLUMNS if c in table_cols]
     except_clause = f" EXCEPT({', '.join(pii_present)})" if pii_present else ""
 
-    # No date filter - the user wants the full history. Any time-based
-    # cuts happen explicitly in 00_data_audit.ipynb.
     sql = f"SELECT *{except_clause} FROM `{table_ref}`"
     if limit is not None:
         sql += f"\nLIMIT {int(limit)}"

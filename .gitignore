@@ -17,12 +17,7 @@ __pycache__/
 # OS
 .DS_Store
 
-# ---------------------------------------------------------------------------
-# Data caches, trained models & predictions
-# ---------------------------------------------------------------------------
-# Regenerable from BigQuery (src.load_reservations) + the notebooks, and too
-# large / sensitive (customer booking data, even PII-stripped) to belong in git.
-# The feature roster (Data/feature_roster.json) is the small, meaningful
-# train/serve contract and stays tracked (it is NOT matched below).
+
 Data/*.parquet
 Data/*.joblib
+Data/

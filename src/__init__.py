@@ -1,15 +1,6 @@
 # ---------------------------------------------------------------------------
 # Public API for the overbooking-analyse project.
 #
-# Notebooks should import from here, not from the submodules directly. That
-# way we can rearrange the internals without breaking every notebook.
-#
-#     from src import (
-#         load_reservations, load_clean_reservations,
-#         apply_stayery_style, color, load_locations,
-#         score_upcoming, bucketize,
-#         repo_root, data_dir, figures_dir, tables_dir,
-#     )
 #
 # Conventions:
 #   * Loading + caching + PII strip       → data_loader
@@ -17,7 +8,7 @@
 #   * Path resolution                     → paths
 #   * Daily scoring + risk bucketing      → scoring
 #   * Cleaning, feature engineering,
-#     model training, evaluation, XAI    → live in notebooks (by design).
+#     model training, evaluation, XAI    → live in notebooks and will transfer later
 # ---------------------------------------------------------------------------
 
 from __future__ import annotations

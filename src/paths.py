@@ -8,8 +8,7 @@
 #   - Cached parquet data lives in OverbookingAnalyse/Data/
 #   - Plots & tables land in OverbookingAnalyse/reports/
 # Anchoring everything to a single "repo root" (the directory that contains
-# `pyproject.toml`) means notebooks and scripts work no matter where they're
-# launched from. Same logic as cookiecutter-data-science / kedro.
+# `pyproject.toml`) means notebooks and scripts work no matter where they are
 # ---------------------------------------------------------------------------
 
 from __future__ import annotations

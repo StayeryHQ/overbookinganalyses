@@ -1,0 +1,4 @@
+feature_a,feature_b,abs_spearman,note
+gross_amount,log_gross_amount,1.0,identical (engineered duplicate)
+gross_amount,cancellationFee_fee_amount,0.9197497046307416,real collinearity - VIF check downstream
+gross_amount,los_nights,0.8993141208501079,real collinearity - VIF check downstream
