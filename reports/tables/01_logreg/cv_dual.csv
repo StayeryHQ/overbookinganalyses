@@ -1,3 +1,0 @@
-cv,auc_mean,auc_std,ap_mean
-TimeSeriesSplit (primary),0.7833,0.0174,0.4975
-StratifiedKFold (diagnostic),0.7827,0.004,0.4962
