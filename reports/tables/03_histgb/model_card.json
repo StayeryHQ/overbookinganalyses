@@ -1,0 +1,76 @@
+{
+  "model": "histgb_onehot_isotonic",
+  "notebook": "03_histgb.ipynb",
+  "trained_at": "2026-06-22T18:23:13.322184+00:00",
+  "sklearn_version": "1.8.0",
+  "fast_dev": false,
+  "n_train": 105816,
+  "n_val": 27038,
+  "n_test": 35290,
+  "features_numeric": [
+    "adults_n",
+    "arrival_dow",
+    "arrival_month",
+    "diff_gross_cancellation_fee_log",
+    "gross_per_night_log",
+    "has_children",
+    "has_corporate_code",
+    "has_group",
+    "has_promo",
+    "is_weekend_arrival",
+    "lead_time_days_log",
+    "log_gross_amount",
+    "los_nights_log"
+  ],
+  "features_categorical": [
+    "cancellationFee_name",
+    "channelCode",
+    "guaranteeType",
+    "property_name",
+    "ratePlan_category",
+    "stay_bucket",
+    "unitGroup_name"
+  ],
+  "encoding": "onehot (cat) + passthrough (num, NaN native)",
+  "hyperparams": {
+    "random_state": 42,
+    "early_stopping": true,
+    "validation_fraction": 0.1,
+    "n_iter_no_change": 20,
+    "l2_regularization": 0.22965432344634354,
+    "learning_rate": 0.015019490572374374,
+    "max_iter": 761,
+    "max_leaf_nodes": 17,
+    "min_samples_leaf": 10,
+    "calibration": "isotonic_cv5"
+  },
+  "tuning": {
+    "selected": "tuned",
+    "search_n_iter": 50,
+    "best_cv_ap": 0.5343095091195985
+  },
+  "val_metrics": {
+    "auc": 0.7905,
+    "ap": 0.4585,
+    "brier": 0.1139,
+    "lift@5%": 3.7944,
+    "lift@10%": 3.134,
+    "base_rate": 0.1656
+  },
+  "test_metrics": {
+    "auc": 0.7868,
+    "ap": 0.4489,
+    "brier": 0.1201,
+    "lift@5%": 3.3792,
+    "lift@10%": 2.9353,
+    "base_rate": 0.1746
+  },
+  "operating_points": [
+    {
+      "name": "f1_optimal",
+      "threshold": 0.2443,
+      "precision": 0.3938,
+      "recall": 0.5348
+    }
+  ]
+}

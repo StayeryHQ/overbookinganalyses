@@ -1,0 +1,73 @@
+{
+  "model": "logistic_regression_elasticnet_isotonic",
+  "notebook": "01_logreg.ipynb",
+  "trained_at": "2026-06-22T18:31:44.275328+00:00",
+  "sklearn_version": "1.8.0",
+  "fast_dev": false,
+  "n_train": 105816,
+  "n_val": 27038,
+  "n_test": 35290,
+  "features_numeric": [
+    "adults_n",
+    "arrival_dow",
+    "arrival_month",
+    "diff_gross_cancellation_fee_log",
+    "gross_per_night_log",
+    "has_children",
+    "has_corporate_code",
+    "has_group",
+    "has_promo",
+    "is_weekend_arrival",
+    "lead_time_days_log",
+    "log_gross_amount",
+    "los_nights_log"
+  ],
+  "features_categorical": [
+    "cancellationFee_name",
+    "channelCode",
+    "guaranteeType",
+    "property_name",
+    "ratePlan_category",
+    "stay_bucket",
+    "unitGroup_name"
+  ],
+  "hyperparams": {
+    "penalty": "elasticnet",
+    "solver": "saga",
+    "max_iter": 5000,
+    "random_state": 42,
+    "C": 0.45617324056306324,
+    "l1_ratio": 0.42754101835854963,
+    "calibration": "isotonic_cv5"
+  },
+  "tuning": {
+    "selected": "tuned",
+    "search_n_iter": 60,
+    "best_cv_ap": 0.49804660709499204,
+    "space": "C ~ loguniform(1e-4, 1e3), l1_ratio ~ uniform(0, 1)"
+  },
+  "val_metrics": {
+    "auc": 0.7683,
+    "ap": 0.4207,
+    "brier": 0.1178,
+    "lift@5%": 3.5754,
+    "lift@10%": 2.9263,
+    "base_rate": 0.1656
+  },
+  "test_metrics": {
+    "auc": 0.7656,
+    "ap": 0.4147,
+    "brier": 0.124,
+    "lift@5%": 3.2299,
+    "lift@10%": 2.6627,
+    "base_rate": 0.1746
+  },
+  "operating_points": [
+    {
+      "name": "f1_optimal",
+      "threshold": 0.2406,
+      "precision": 0.3629,
+      "recall": 0.5572
+    }
+  ]
+}
