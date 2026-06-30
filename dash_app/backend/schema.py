@@ -1,7 +1,7 @@
 # dash_app/backend/schema.py
 # ---------------------------------------------------------------------------
 # Canonical schema for scored bookings. PORTED VERBATIM (with comments) from
-# streamlit_app/backend/schema.py so both the dummy and real backends emit
+# streamlit_app/backend/schema.py so the backend emits
 # EXACTLY these columns. Pages depend only on these constants — never on raw
 # src/BigQuery column names — which is what lets us swap backends invisibly.
 # We copy it (rather than import the Streamlit one) so dash_app stays a fully
@@ -13,26 +13,17 @@ from __future__ import annotations
 # `Final` marks these as constants (type-checkers flag reassignment).
 from typing import Final
 
-# Risk-bucket thresholds. These are only UI fallbacks/initial slider values:
-# the authoritative cut points are now derived per-model from the training
-# artifacts via src.scoring.serving_thresholds() (low = validation base rate,
-# high = F1-optimal threshold) and are baked into the scored parquet's
-# `risk_bucket` column. Keep these in sync if you need a static default.
+# Risk-bucket thresholds. FALLBACKS ONLY: the authoritative cut points are
+# derived per-model from the validation predictions via
+# src.scoring.serving_thresholds() (low = validation base rate, high =
+# COST-optimal threshold) and surfaced through the app's threshold slider.
 LOW_THR: Final[float] = 0.50     # below this => "low"
 HIGH_THR: Final[float] = 0.50    # at/above this => "high"
 
-# The three risk buckets and their English display labels.
+# The three risk buckets and their display labels.
 RISK_BUCKETS: Final[tuple[str, ...]] = ("low", "uncertain", "high")
 RISK_LABELS: Final[dict[str, str]] = {"low": "low", "uncertain": "uncertain", "high": "high"}
-RISK_LABELS_DE = RISK_LABELS  # backwards-compatible alias (labels are now English)
-
-# Synthetic-data vocabularies (used by dummy.py).
-RATE_CATEGORIES: Final[tuple[str, ...]] = ("Flex", "Semi-Flex", "Non-Ref")
-ROOM_CATEGORIES: Final[tuple[str, ...]] = ("BIG", "BIGGER", "UPPER", "UPPER AIR")
-# Share of each room category within a property (sums to 1.0).
-ROOM_CATEGORY_SPLIT: Final[dict[str, float]] = {
-    "BIG": 0.42, "BIGGER": 0.33, "UPPER": 0.18, "UPPER AIR": 0.07,
-}
+RISK_LABELS_DE = RISK_LABELS  # alias used by pages/derive
 
 # Booking status values.
 STATUS_CONFIRMED: Final[str] = "Confirmed"
@@ -133,7 +124,6 @@ LABELS: Final[dict[str, str]] = {
     CANCEL_PROBA: "Cancellation probability",
     RISK_BUCKET: "Risk",
 }
-LABELS_DE = LABELS  # backwards-compatible alias (labels are now English)
 
 
 def bucketize(proba: float) -> str:
@@ -144,17 +134,3 @@ def bucketize(proba: float) -> str:
     if proba >= LOW_THR:
         return "uncertain"
     return "low"
-
-
-def category_capacity(units_total: int) -> dict[str, int]:
-    """Split a property's total units across the four room categories.
-
-    Multiplies the total by each category's share, then dumps the rounding
-    remainder into BIG so the parts sum back to `units_total`.
-    """
-    # Round each category's share to an integer unit count.
-    caps = {c: int(round(units_total * w)) for c, w in ROOM_CATEGORY_SPLIT.items()}
-    # Rounding may lose/gain a unit or two; reconcile by adjusting BIG.
-    diff = units_total - sum(caps.values())
-    caps["BIG"] = max(0, caps["BIG"] + diff)
-    return caps

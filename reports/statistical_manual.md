@@ -142,25 +142,29 @@ static models (01/02/03) have no days-until-arrival feature, they emit one fixed
 regardless of horizon, so they are a per-booking **baseline**, not the decision engine. The hazard model
 is horizon-aware and is therefore the primary serving model.
 
-**Secondary, `created`-anchored walk-forward (`src/walkforward.py`).** The rigorous primitive is
-`outcome_known_date`. With it:
+**The walk-forward is ARRIVAL-ANCHORED (`src/walkforward.py`)** — it reproduces the production decision
+exactly. The primitive is `outcome_known_date`. At each scoring date **S**:
 
 ```
-train as-of O : outcome_known_date <= O                  # everything resolved by the cutoff
-test  block k : O_k < created <= O_{k+1}  AND  resolved   # the next batch of NEWLY-CREATED bookings
-embargo       : created <= O  AND  outcome_known_date > O # in-flight at the cutoff (unavoidable purge)
+train  : outcome_known_date <= S                      # ALL bookings resolved by S
+test   : created <= S  AND  arrival > S  AND  arrival <= S + horizon  AND  outcome_known_date > S
+         (active at S, arriving within the next `horizon` days = 14 — the decision population)
+deferred: active at S but arriving beyond the horizon (information only)
 ```
 
-Rolling `O` over 6 bi-monthly steps gives a distribution of metrics, and `assert_point_in_time` enforces
-no leakage (all 6 folds pass on the real data). But be precise about what it answers: **"can the model
-rank cancellation for newly-*created* bookings?"** — a useful generalisation check, **not** the decision
-metric. Do not read its `created` cutoff as a decision time.
+So `train` is everything we'd know at S, and `test` is exactly the bookings the desk would decide on at
+S (visible, not yet resolved, arriving within 14 days), graded on cancel-before-arrival. Rolling S
+(~monthly over the last year, expanding) yields a distribution of one-step-ahead AUC/AP/Brier/cost.
+`assert_point_in_time` enforces, per fold: train known by S, test created ≤ S, test arrival > S, test
+unresolved at S, train ∩ test = ∅ (verified on the real data; train grows 143k→175k rows; `test_pos`
+≈ 7–15%, the correct lower rate of close-in active bookings). This is the decision-aligned metric; for
+the **hazard** model each test booking is scored by its survival product over its *remaining* days to
+arrival, so the estimand is the matched `P(cancel before arrival | alive at S)` (§17.1).
 
-**Deployment** fits on **all data resolved by now** (`outcome_known_date ≤ asof`, ≈92% of rows), which is
-correct regardless of anchor — nothing is permanently held out, and honesty is preserved because we never
-attach a held-out number to weights that trained on that data; we report the procedure's forward metrics
-(hazard per-horizon as headline) and confirm with live monitoring. The legacy two-boundary `temporal_split`
-is retained only for comparison.
+**Deployment** fits on **all data resolved by now** (`outcome_known_date ≤ asof`). Honesty is preserved
+because we never attach a held-out number to the exact deployed weights; we report the procedure's
+forward distribution and confirm with live monitoring. The legacy two-boundary `temporal_split` is kept
+only for comparison; the old `created`-anchored "new-booking generalisation" cut is retired.
 
 `00` also persists a **run-to-run data summary** (`run_summary.json`) and prints a last-run-vs-this-run
 diff, so a data refresh surfaces moved counts/base-rates/date-ranges immediately.
@@ -593,21 +597,31 @@ that resamples bookings by night/property).
 
 ## 17. Serving and the app
 
-- **`src.scoring.score_upcoming(model_name, threshold=None)`** - loads a trained pipeline, pulls
-  upcoming bookings, rebuilds the roster features with `build_features` (which must mirror `00`), scores,
-  and emits `cancel_proba`, `pred_cancel` (at the cost-optimal or overridden threshold), `risk_bucket`,
-  and `model_used`.
-- **`best_model()`** - picks the serving model: highest test **AP** among models whose test **Brier** is
-  within `0.005` of the best (a calibration gate, so we never ship a sharp-but-miscalibrated ranker).
+**Production scoring covers ALL unresolved upcoming bookings.**
+`src.scoring.score_upcoming(model_name, threshold=None)` calls
+`load_reservations(upcoming_only=True)` — every booking with `arrival ≥ now`, regardless of status or
+train/test membership (those only governed *historical* evaluation). It rebuilds the roster features
+with `build_features` (mirrors `00`), and `apply_scoring_bounds` drops only rows whose features can't be
+computed — **never on status**. So every live Confirmed/unresolved booking is evaluated, by design.
+
+- **Hazard is the serving engine.** When a trained hazard model is on disk, `real.get_scored_bookings`
+  overrides `cancel_proba` with the hazard **survival-product** score on that same full upcoming set
+  (horizon-aware P(cancel before arrival) over each booking's remaining days); the static model is the
+  fallback. Emits `cancel_proba`, `pred_cancel` (at the cost-optimal/overridden threshold),
+  `risk_bucket`, `model_used`.
+- **`best_model()`** — the served *static* baseline: highest test **AP** among models whose test
+  **Brier** is within `0.005` of the best (calibration gate; never ship a sharp-but-miscalibrated ranker).
 - **`serving_thresholds(name)`** → `(low, high)`: `high` = cost-optimal validation threshold,
-  `low` = validation base rate (below-average-risk display band).
-- **App** (`dash_app`): a backend **facade** (`dash_app/backend/__init__.py`) gives every page one
-  interface and one canonical schema (`schema.COLUMNS`), so the model is swappable from a dropdown and
-  the threshold from a slider with no page changes. The threshold is a **post-scoring** derivation
-  (probabilities don't change), so moving the slider re-derives counts and the conservative
-  recommendation without re-running the model. New hotels are picked up automatically (units from the
-  performance table; unseen categories handled by `handle_unknown="ignore"`), which is the scalability
-  requirement.
+  `low` = validation base rate.
+- **Model & Performance page** reads the persisted **test predictions**
+  (`Data/<NN>_predictions.parquet`) and the model card to compute **real** ROC / PR / calibration /
+  confusion (`dash_app/backend/model_perf.py`) — no synthetic data, no "approximate" proxies.
+- **App** (`dash_app`): a backend **facade** gives every page one canonical schema (`schema.COLUMNS`);
+  the model is swappable from a dropdown and the threshold from a slider with no page changes. The
+  threshold is a **post-scoring** derivation, so the slider re-derives counts/recommendation instantly.
+  The backend is **real-only** (dummy removed); new hotels appear automatically (units from the
+  performance table; unseen categories via `handle_unknown="ignore"`). Retraining is exposed on the
+  Datenaktualisierung page (`B.retrain_models("refit"|"retune")`).
 
 ### 17.1 Retraining (`src.training`, app-callable)
 
@@ -659,17 +673,21 @@ whether AP/Brier/cost improve, and drop it if not.
 - **F1 operating point** - replaced by the cost-based threshold (§14), which is now the **primary**
   operating point persisted in 01/02/03 (`cost_optimal`), with `f1_optimal` kept only as a visible
   reference line. `src.scoring` derives the threshold from the validation predictions.
-- **"`created` = decision time" framing** - corrected (§3.1). `created` is information time; the
-  overbooking decision is d≈1–14 days before arrival. The **hazard model (08) is now the primary,
-  horizon-aware serving engine**, persisted + retrainable via `src.hazard`; the static models are a
-  per-booking baseline. The `created`-anchored walk-forward is a secondary new-booking generalisation
-  check, and the single frozen `temporal_split` is kept for comparison only.
-- **Fit logic inside notebooks** - moved to `src.training` (§17.1); notebooks 00→01/02/03→05 are now thin
-  drivers, so the dash app can retrain through the same code.
-- **Dummy backend** - synthetic data path; being removed so the app runs on real models/data only with a
-  graceful empty-state (still pending).
-- The old 1600-line `pipeline_reference.md` is archived at
-  `reports/_archive/pipeline_reference_pre_v11.md` (kept for history; safe to delete).
+- **`created`-anchored split** - replaced by the **arrival-anchored walk-forward** (§3.1): we decide on
+  bookings arriving in the next ~14 days, training on all bookings resolved by the scoring date.
+  `created` is information time, never the decision time. The single frozen `temporal_split` is kept for
+  comparison only.
+- **Static model as the decision engine** - the **hazard model (08) is now the primary, horizon-aware
+  serving engine** (persisted + retrainable via `src.hazard`; it overrides `cancel_proba` at serving).
+  The static models are a per-booking baseline / cross-check.
+- **F1 operating point** - replaced by the cost-based threshold (§14), the primary `cost_optimal` point
+  in 01/02/03 (`f1_optimal` kept only as a reference line). `src.scoring` derives it from validation.
+- **Fit logic inside notebooks** - moved to `src.training` / `src.hazard`; notebooks are thin drivers,
+  so the dash app retrains through the same code (`B.retrain_models`).
+- **Dummy backend** - **fully removed**. The app is real-only: `locations.py` (from
+  `configs/locations.yaml`), a graceful empty-state when no model/data is on disk, and the Model &
+  Performance page computes **real** curves from the persisted test predictions.
+- **RandomForest, MLPClassifier, AFT/RSF** - out of the lineup; not registered, not served.
 
 **Added in v11:** `outcome_known_date` + `src/walkforward.py` (point-in-time folds, run-to-run diff);
 `src/training.py` (`retrain` refit/retune, `walk_forward_eval`, `select_models`, roster/leakage guards).

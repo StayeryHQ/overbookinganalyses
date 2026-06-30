@@ -7,7 +7,7 @@
 #
 # This module is the dash_app adapter:
 #   * REAL  -> src.load_property_performance() (cached parquet / BigQuery).
-#   * DUMMY -> a synthetic, seeded performance frame so the page renders with no
+#   * FALLBACK -> a synthetic, seeded occupancy frame so the page renders with no
 #              BigQuery access.
 # Revenue columns are never pulled (the src loader selects an allow-list).
 #
@@ -32,36 +32,31 @@ PERF_COLS = ["propertyId", "businessDay", "houseCount", "soldCount", "outOfOrder
              "departuresCount", "noShowsCount", "cancellationsCount", "occupancyPercentage"]
 
 
-def _mode() -> str:
-    """Backend mode ('dummy'|'real') — imported lazily to avoid a circular import."""
-    from . import mode
-    return mode()
-
-
 def get_perf(force_refresh: bool = False) -> pd.DataFrame:
-    """Return the property-performance frame (real or dummy) with PERF_COLS."""
-    if _mode() == "real":
-        try:
-            # Lazy src import (same pattern as backend.real) so dummy mode never
-            # needs google-cloud-bigquery installed.
-            from .real import _import_src
-            src = _import_src()
-            df = src.load_property_performance(force_refresh=force_refresh)
-            # Keep only the columns we use, in canonical order (robust to drift).
-            return df[[c for c in PERF_COLS if c in df.columns]].copy()
-        except Exception as e:  # noqa: BLE001 — no creds/table/offline -> synth fallback
-            print(f"occupancy: real performance table unavailable ({e}); using synthetic.")
-    return _dummy_perf(force_refresh=force_refresh)
+    """Property-performance (occupancy) frame with PERF_COLS.
+
+    Real apaleo/BigQuery table when available; otherwise a synthetic occupancy
+    fallback so the dashboard's occupancy gating still renders (this is an
+    OCCUPANCY proxy only — never the cancellation model, which is always real).
+    """
+    try:
+        from .real import _import_src
+        src = _import_src()
+        df = src.load_property_performance(force_refresh=force_refresh)
+        # Keep only the columns we use, in canonical order (robust to drift).
+        return df[[c for c in PERF_COLS if c in df.columns]].copy()
+    except Exception as e:  # noqa: BLE001 — no creds/table/offline -> synth fallback
+        print(f"occupancy: real performance table unavailable ({e}); using fallback.")
+    return _fallback_perf(force_refresh=force_refresh)
 
 
 @lru_cache(maxsize=4)
-def _dummy_perf(force_refresh: bool = False) -> pd.DataFrame:
-    """Synthetic performance frame for the dummy locations over a +/- window.
-
-    Mirrors the real schema so the page/derive code is identical in both modes.
+def _fallback_perf(force_refresh: bool = False) -> pd.DataFrame:
+    """Synthetic OCCUPANCY frame (locations × business days) matching the real
+    schema, so occupancy gating renders when the apaleo table is unavailable.
     `force_refresh` is part of the cache key so a refresh yields a fresh frame.
+    NB: occupancy proxy only — the cancellation model/probabilities are real.
     """
-    # Location list from configs/locations.yaml (dummy loader removed v11).
     from .locations import _load_locations
     today = pd.Timestamp.today().normalize()
     # Business days from 3 days back to 20 ahead (so 'past actuals' + some forward).
@@ -89,10 +84,8 @@ def units_from_universe() -> dict[str, int]:
     """{propertyId: units} from the REAL performance table, else {} (caller falls back).
 
     This is what replaces configs/locations.yaml: new propertyIds appear here
-    automatically. Empty in dummy mode / when the table is unavailable.
+    automatically. Empty when the table is unavailable (no creds / offline).
     """
-    if _mode() != "real":
-        return {}
     try:
         from .real import _import_src
         uni = _import_src().property_universe()

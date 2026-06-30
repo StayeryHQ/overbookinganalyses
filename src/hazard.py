@@ -31,6 +31,7 @@ from .paths import data_dir, repo_root
 
 SEED: Final[int] = 42
 AXIS: Final[str] = "days_until_arrival"
+ARRIVAL: Final[str] = "arrival"           # booking arrival-date column
 SNAP_FINE: Final[list[int]] = list(range(1, 15))          # daily, served horizon
 SNAP_COARSE: Final[list[int]] = [21, 30, 45, 60, 90]      # coarse train-only tail
 SNAP: Final[list[int]] = sorted(SNAP_FINE + SNAP_COARSE)
@@ -156,11 +157,27 @@ def survival_cancel_proba(bookings: pd.DataFrame, haz_fn, num: list[str], cat: l
 # =============================================================================
 # Fit + calibrate (xgboost — kernel-validated)
 # =============================================================================
-def fit_hazard(clean_resolved: pd.DataFrame, *, val_frac: float = 0.15, seed: int = SEED) -> dict:
-    """Fit the hazard model on RESOLVED bookings; HP-search + isotonic-calibrate
-    on a temporally held-out (most-recent-by-created) validation slice.
+def _sample_hp(rng) -> dict:
+    """Sample one hyperparameter config (depth, lr, min_child_weight, reg_lambda,
+    subsample, colsample) — the RandomizedSearch space for the hazard model."""
+    return dict(
+        max_depth=int(rng.choice([4, 5, 6, 7, 8])),
+        learning_rate=float(np.exp(rng.uniform(np.log(0.02), np.log(0.15)))),
+        min_child_weight=int(rng.choice([5, 10, 20, 30, 50])),
+        reg_lambda=float(np.exp(rng.uniform(np.log(1.0), np.log(15.0)))),
+        subsample=float(rng.uniform(0.7, 0.95)),
+        colsample_bytree=float(rng.uniform(0.7, 0.95)),
+    )
 
-    Returns a dict artifact: {model, iso, num, cat, cat_dtypes, snap, axis, hp, val_ap}.
+
+def fit_hazard(clean_resolved: pd.DataFrame, *, val_frac: float = 0.15,
+               n_iter: int = 15, seed: int = SEED) -> dict:
+    """Fit the hazard model on RESOLVED bookings via a RandomizedSearch (with
+    EARLY STOPPING — no fixed tree count) + isotonic calibration, both on a
+    temporally held-out (most-recent-by-created) validation slice.
+
+    Returns a dict artifact: {model, iso, num, cat, cat_dtypes, snap, axis, hp,
+    val_ap, best_iteration, n_train_pp}.
     """
     from xgboost import XGBClassifier
     from sklearn.isotonic import IsotonicRegression
@@ -178,10 +195,13 @@ def fit_hazard(clean_resolved: pd.DataFrame, *, val_frac: float = 0.15, seed: in
     Xtr, ytr = pp_tr[FEATS], pp_tr["y"].to_numpy()
     Xva, yva = pp_va[FEATS], pp_va["y"].to_numpy()
 
+    rng = np.random.RandomState(seed)
+    # baseline config first, then n_iter random samples (RandomizedSearch).
+    candidates = [HP_GRID[0]] + [_sample_hp(rng) for _ in range(n_iter)]
     best = None
-    for hp in HP_GRID:
-        m = XGBClassifier(n_estimators=1200, tree_method="hist", enable_categorical=True,
-                          eval_metric="aucpr", early_stopping_rounds=40,
+    for hp in candidates:
+        m = XGBClassifier(n_estimators=2000, tree_method="hist", enable_categorical=True,
+                          eval_metric="aucpr", early_stopping_rounds=50,
                           objective="binary:logistic", n_jobs=-1, random_state=seed, **hp)
         m.fit(Xtr, ytr, eval_set=[(Xva, yva)], verbose=False)
         ap = average_precision_score(yva, m.predict_proba(Xva)[:, 1])
@@ -191,6 +211,7 @@ def fit_hazard(clean_resolved: pd.DataFrame, *, val_frac: float = 0.15, seed: in
     iso = IsotonicRegression(out_of_bounds="clip").fit(model.predict_proba(Xva)[:, 1], yva)
     return {"model": model, "iso": iso, "num": num, "cat": cat, "cat_dtypes": cat_dtypes,
             "snap": SNAP, "axis": AXIS, "hp": hp, "val_ap": float(val_ap),
+            "best_iteration": int(getattr(model, "best_iteration", 0) or 0),
             "n_train_pp": int(len(pp_tr))}
 
 
@@ -252,3 +273,127 @@ def retrain_hazard(*, asof=None, persist: bool = True, seed: int = SEED) -> dict
         cp.write_text(json.dumps(card, indent=2))
         result["persisted"] = {"joblib": jp, "card": str(cp)}
     return result
+
+
+# =============================================================================
+# Per-arrival-night aggregation + calibration (statistically correct)
+# =============================================================================
+def per_night_table(bookings: pd.DataFrame, cancel_proba, *, arrival_col: str = ARRIVAL,
+                    hotel_col: str | None = None, label=None) -> pd.DataFrame:
+    """Aggregate per-booking cancel probabilities to per-(arrival-night) EXPECTED
+    freed rooms, with the Poisson-binomial variance Sum p(1-p). If `label` (0/1
+    actual cancel-before-arrival) is given, also returns the actual freed count.
+
+    Columns: arrival_date [, hotel], n, exp (=Sum p), var (=Sum p(1-p)) [, act].
+    """
+    df = pd.DataFrame({"arrival_date": pd.to_datetime(bookings[arrival_col], utc=True).dt.date,
+                       "p": np.asarray(cancel_proba, dtype=float)})
+    if hotel_col is not None and hotel_col in bookings:
+        df["hotel"] = bookings[hotel_col].to_numpy()
+    if label is not None:
+        df["act"] = np.asarray(label, dtype=int)
+    df["var"] = df["p"] * (1.0 - df["p"])
+    keys = ["arrival_date"] + (["hotel"] if "hotel" in df.columns else [])
+    agg = {"n": ("p", "size"), "exp": ("p", "sum"), "var": ("var", "sum")}
+    if "act" in df.columns:
+        agg["act"] = ("act", "sum")
+    return df.groupby(keys).agg(**agg).reset_index()
+
+
+def recalibration_factor(per_night_val: pd.DataFrame) -> float:
+    """Aggregate-bias fix: single multiplicative r = Sum(actual)/Sum(expected) fit
+    on VALIDATION nights; apply to test expected-freed."""
+    e = float(per_night_val["exp"].sum())
+    return float(per_night_val["act"].sum() / e) if e > 0 else 1.0
+
+
+def coverage_report(per_night: pd.DataFrame, *, levels=(0.5, 0.8, 0.9, 0.95),
+                    min_n: int = 5) -> dict:
+    """Per-night interval coverage under the independence (Poisson-binomial) model
+    plus the overdispersion factor phi = mean[(act-exp)^2 / Sum p(1-p)]. phi>1 =>
+    positively-correlated cancellations; inflate sd by sqrt(phi). Returns coverage
+    at each nominal level (raw + sqrt(phi)-adjusted) and the aggregate bias %."""
+    # two-sided z for common nominal levels (avoids a scipy dependency).
+    _Z = {0.5: 0.6745, 0.8: 1.2816, 0.9: 1.6449, 0.95: 1.9600, 0.99: 2.5758}
+    nb = per_night[per_night["n"] >= min_n].copy()
+    if not len(nb) or "act" not in nb.columns:
+        return {}
+    resid2 = (nb["act"] - nb["exp"]) ** 2
+    phi = float((resid2 / nb["var"].replace(0, np.nan)).mean())
+    out = {"phi": phi, "nights": int(len(nb)),
+           "bias_pct": float(100 * (nb["exp"].sum() - nb["act"].sum()) / max(nb["act"].sum(), 1))}
+    sd = np.sqrt(nb["var"]); sd_adj = np.sqrt(nb["var"] * max(phi, 1e-9))
+    for lvl in levels:
+        z = _Z.get(round(float(lvl), 2), 1.9600)
+        out[f"cov{int(lvl*100)}"] = float(((nb["act"] >= nb["exp"] - z*sd) & (nb["act"] <= nb["exp"] + z*sd)).mean())
+        out[f"cov{int(lvl*100)}_adj"] = float(((nb["act"] >= nb["exp"] - z*sd_adj) & (nb["act"] <= nb["exp"] + z*sd_adj)).mean())
+    return out
+
+
+# =============================================================================
+# Matched, arrival-anchored walk-forward: hazard vs static on the SAME estimand
+# =============================================================================
+def walk_forward_eval_hazard(*, n_folds: int = 6, horizon_days: int = 14, step_days: int = 30,
+                             compare_static: bool = True, seed: int = SEED) -> dict:
+    """Arrival-anchored walk-forward for the hazard model, matched to the decision.
+
+    At each scoring date S: fit the hazard model on bookings resolved by S, then
+    score the bookings ACTIVE at S and arriving within `horizon_days` via the
+    SURVIVAL PRODUCT over their remaining days-to-arrival, and grade on
+    cancel-before-arrival. If `compare_static`, the best static model is scored on
+    the SAME rows + SAME label so the comparison targets the same estimand
+    (P(cancel before arrival | alive at S)) — the apples-to-apples fix. The
+    promotion signal uses mean(delta_AUC) > its own std (signal beats noise), not a
+    magic 0.01 gate.
+    """
+    from sklearn.metrics import roc_auc_score, average_precision_score, brier_score_loss
+    from . import scoring as sc, walkforward as wf
+
+    clean = wf.add_outcome_known_date(_load_clean())
+    folds = wf.make_folds(clean, n_folds=n_folds, horizon_days=horizon_days, step_days=step_days)
+    static_pipe = None
+    if compare_static:
+        try:
+            static_pipe = sc.load_model(sc.best_model())
+            snum, scat = sc.model_feature_lists()
+        except Exception:  # noqa: BLE001
+            static_pipe = None
+
+    rows = []
+    for f in folds:
+        tr, te = clean.iloc[f.train_idx], clean.iloc[f.test_idx]
+        if len(tr) < 500 or len(te) < 50:
+            continue
+        hz = fit_hazard(tr, seed=seed)
+        S = pd.Timestamp(f.origin)
+        teb = te.copy()
+        arr = pd.to_datetime(teb[ARRIVAL], utc=True); cre = pd.to_datetime(teb["created"], utc=True)
+        teb["lead"] = (arr - cre) / pd.Timedelta(days=1)
+        teb[AXIS] = ((arr - S) / pd.Timedelta(days=1)).clip(lower=1)        # remaining days to arrival
+        p_haz = survival_cancel_proba(teb, hazard_fn(hz), hz["num"], hz["cat"],
+                                      hz["cat_dtypes"], max_h=horizon_days)
+        y = (pd.to_numeric(teb["status"], errors="coerce").fillna(0).astype(int).to_numpy() == 1)
+        row = {"fold": f.k, "S": str(S.date()), "n_test": int(len(te)),
+               "auc_haz": roc_auc_score(y, p_haz) if len(set(y)) > 1 else float("nan"),
+               "ap_haz": average_precision_score(y, p_haz),
+               "brier_haz": brier_score_loss(y, p_haz)}
+        if static_pipe is not None:
+            try:
+                p_st = static_pipe.predict_proba(teb[snum + scat])[:, 1]
+                row["auc_static"] = roc_auc_score(y, p_st) if len(set(y)) > 1 else float("nan")
+                row["ap_static"] = average_precision_score(y, p_st)
+                row["delta_auc"] = row["auc_haz"] - row["auc_static"]
+            except Exception as e:  # noqa: BLE001
+                row["static_err"] = str(e)[:60]
+        rows.append(row)
+
+    pf = pd.DataFrame(rows)
+    agg = {m: {"mean": float(pf[m].mean()), "std": float(pf[m].std())}
+           for m in ["auc_haz", "ap_haz", "brier_haz", "auc_static", "ap_static", "delta_auc"]
+           if m in pf.columns}
+    gate = None
+    if "delta_auc" in pf.columns and len(pf) > 1:
+        d = pf["delta_auc"]
+        gate = {"mean_delta_auc": float(d.mean()), "std": float(d.std()),
+                "hazard_better": bool(d.mean() > d.std() and d.mean() > 0)}
+    return {"per_fold": rows, "aggregate": agg, "gate": gate}

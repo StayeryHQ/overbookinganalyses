@@ -1,47 +1,38 @@
 # dash_app/backend/__init__.py
 # ---------------------------------------------------------------------------
-# Backend facade: ONE interface for every page, ONE switch. PORTED from
-# streamlit_app/backend/__init__.py.
+# Backend facade: ONE interface for every page (REAL-only as of v11; the
+# synthetic "dummy" backend was removed).
 #
-# Pages call ONLY functions from this module. Which implementation runs behind
-# them — synthetic `dummy` or real `real` (src.scoring) — is decided by mode():
-#   * Default: 'dummy' (no model / no BigQuery needed; the app always renders).
-#   * Switch: env var OVERBOOKING_BACKEND=real, OR set_mode('real') at runtime
-#     (the toggle on the "Datenaktualisierung" page).
-#
-# Both backends return EXACTLY the canonical schema (schema.COLUMNS), so the
-# swap is invisible to pages. Model selection is funneled through set_model() /
-# get_model() and passed to the real backend's scorer — swapping the model is
-# a backend-only change, never a page change.
+# Pages call ONLY functions from this module; the real implementation
+# (`backend.real` -> `src.scoring` / `src.hazard`) returns EXACTLY the canonical
+# schema (schema.COLUMNS), so pages never touch raw src/BigQuery columns. Model
+# selection is funnelled through set_model()/get_model(); swapping the model is a
+# backend-only change, never a page change.
 # ---------------------------------------------------------------------------
 
 from __future__ import annotations
 
 import json
-import time
 from datetime import datetime
 from functools import lru_cache
-from pathlib import Path
 
 import pandas as pd
 
 # Re-export derive + schema so pages can do `from dash_app.backend import schema`.
 from . import derive, schema  # noqa: F401
 from . import schema as S
-# Central config (paths, default mode, default model, horizon).
+# Central config (paths, default model, horizon).
 from .. import config as CFG
 
-# Where the dummy snapshot status JSON lives (seed + refresh timestamp).
+# Where the refresh-status JSON lives (just the last-refresh timestamp).
 _DATA_DIR = CFG.DATA_DIR
-_SNAPSHOT_JSON = _DATA_DIR / "dummy_snapshot.json"
+_SNAPSHOT_JSON = _DATA_DIR / "refresh_status.json"
 
-# Snapshot horizon (days) and a fixed default seed for reproducibility.
+# How far ahead (days) the upcoming-arrivals window spans.
 GENERATION_HORIZON_DAYS = CFG.GENERATION_HORIZON_DAYS
-_DEFAULT_SEED = 42
 
-# Runtime overrides. None => derive from env/config. These are module globals so
-# a flip on the Datenaktualisierung page persists across callbacks in one process.
-_MODE_OVERRIDE: str | None = None
+# Runtime model selection (module global so a dropdown choice persists across
+# callbacks in one process). None => auto-pick the served model.
 _MODEL_OVERRIDE: str | None = CFG.DEFAULT_MODEL
 
 
@@ -53,16 +44,8 @@ def mode() -> str:
     return "real"
 
 
-def set_mode(new_mode: str) -> None:
-    """Set the backend mode at runtime ('dummy' | 'real')."""
-    global _MODE_OVERRIDE
-    if new_mode not in ("dummy", "real"):
-        raise ValueError("mode muss 'dummy' oder 'real' sein")
-    _MODE_OVERRIDE = new_mode
-
-
 def get_model() -> str | None:
-    """Return the currently selected model name (None = auto-pick by AUC)."""
+    """Return the currently selected model name (None = auto-pick best model)."""
     return _MODEL_OVERRIDE
 
 
@@ -85,6 +68,35 @@ def available_models() -> list[str]:
         return list(src.list_available_models())
     except Exception:  # noqa: BLE001 — any failure => no models available
         return []
+
+
+def retrain_models(mode_: str = "refit") -> dict:
+    """Retrain the SERVED models via src and clear caches (the app's retrain hook).
+
+    Retrains the optimal pair from src.training.select_models(): the best static
+    model (mode_ = 'refit' frozen HP, or 'retune' re-search) AND the hazard model
+    (the primary per-night engine). Returns a per-model summary with the honest
+    walk-forward metrics. Heavy (minutes) — the page runs it on an explicit click.
+    """
+    from .real import _import_src
+    _import_src()                                   # ensure repo root on sys.path
+    from src import training as T, hazard as HZ     # noqa: E402
+    out: dict = {}
+    sel = T.select_models()
+    if sel.get("static"):
+        out["static"] = T.retrain(sel["static"], mode=mode_)
+    out["hazard"] = HZ.retrain_hazard()
+    # Invalidate cached scored bookings + model-perf artifacts so pages re-read.
+    try:
+        from . import real, model_perf
+        if hasattr(real.get_scored_bookings, "cache_clear"):
+            real.get_scored_bookings.cache_clear()
+        for fn in (model_perf._load_card, model_perf._load_test_predictions,
+                   model_perf._load_importance):
+            fn.cache_clear()
+    except Exception:  # noqa: BLE001
+        pass
+    return out
 
 
 def serving_bounds(model_name: str | None = None) -> tuple[float, float]:
@@ -120,7 +132,7 @@ def default_threshold(model_name: str | None = None) -> float:
 
 
 # =============================================================================
-# Location helpers (read from configs/locations.yaml via the dummy loader)
+# Location helpers (read from configs/locations.yaml via locations.py)
 # =============================================================================
 @lru_cache(maxsize=1)
 def units_by_hotel() -> dict[str, int]:
@@ -128,8 +140,8 @@ def units_by_hotel() -> dict[str, int]:
 
     REAL: from property_performance_daily via property_universe() — this REPLACES
     configs/locations.yaml and picks up NEW propertyIds automatically (units =
-    latest houseCount). Falls back to the YAML/dummy locations when the table is
-    unavailable (dummy mode / no creds).
+    latest houseCount). Falls back to configs/locations.yaml when the table is
+    unavailable (no creds / offline).
     """
     from . import occupancy
     uni = occupancy.units_from_universe()                   # real table or {}
@@ -158,10 +170,10 @@ def hotel_labels() -> dict[str, str]:
 
 
 # =============================================================================
-# Snapshot status (dummy only: persists seed + refresh time)
+# Refresh status (persists the last-refresh timestamp only)
 # =============================================================================
 def _read_snapshot() -> dict:
-    """Read the snapshot status JSON, or {} if missing/corrupt."""
+    """Read the refresh-status JSON, or {} if missing/corrupt."""
     if _SNAPSHOT_JSON.exists():
         try:
             return json.loads(_SNAPSHOT_JSON.read_text(encoding="utf-8"))
@@ -171,22 +183,9 @@ def _read_snapshot() -> dict:
 
 
 def _write_snapshot(snap: dict) -> None:
-    """Persist the snapshot status JSON (creates Data/ if needed)."""
+    """Persist the refresh-status JSON (creates Data/ if needed)."""
     _DATA_DIR.mkdir(parents=True, exist_ok=True)
     _SNAPSHOT_JSON.write_text(json.dumps(snap, indent=2), encoding="utf-8")
-
-
-def _ensure_snapshot() -> dict:
-    """Return the snapshot status, creating a default one on first run."""
-    snap = _read_snapshot()
-    if not snap.get("seed"):
-        snap = {
-            "seed": _DEFAULT_SEED,
-            "refreshed_at": datetime.now().astimezone().isoformat(),
-            "horizon_days": GENERATION_HORIZON_DAYS,
-        }
-        _write_snapshot(snap)
-    return snap
 
 
 # =============================================================================
@@ -223,7 +222,7 @@ def get_metadata() -> dict:
     snap = _read_snapshot()
     return {
         "mode": mode(),
-        "model": get_model() or "auto (best AUC)",
+        "model": get_model() or "auto (best AP + Brier gate)",
         "refreshed_at": snap.get("refreshed_at", datetime.now().astimezone().isoformat()),
         "reservations": {"rows": int(len(df))},
         "confirmed": {"rows": int(len(conf))},
@@ -240,17 +239,13 @@ def get_metadata() -> dict:
 
 
 def refresh(**kwargs) -> dict:
-    """Refresh the data, then return updated metadata.
-
-    * dummy: new seed -> a fresh, different synthetic snapshot (cache cleared).
-    * real:  re-pull future-only from BigQuery + re-score.
-    """
+    """Re-pull upcoming arrivals from BigQuery + re-score, then return metadata."""
     # Clear location/occupancy caches so a refresh re-reads the source of truth.
     units_by_hotel.cache_clear(); city_by_hotel.cache_clear(); hotel_labels.cache_clear()
     from . import occupancy
-    for _fn in ("_fallback_perf", "_dummy_perf"):           # whichever exists
-        _c = getattr(getattr(occupancy, _fn, None), "cache_clear", None)
-        if _c: _c()
+    _c = getattr(occupancy._fallback_perf, "cache_clear", None)
+    if _c:
+        _c()
     from . import real
     # Force a fresh BigQuery pull + scoring with the current model.
     try:
@@ -264,8 +259,3 @@ def refresh(**kwargs) -> dict:
         "horizon_days": GENERATION_HORIZON_DAYS,
     })
     return get_metadata()
-
-
-def has_snapshot() -> bool:
-    """True if a dummy snapshot exists or we're in real mode."""
-    return _SNAPSHOT_JSON.exists() or mode() == "real"

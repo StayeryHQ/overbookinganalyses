@@ -3,12 +3,12 @@
 # Real backend: a thin adapter over the project's `src.scoring`. PORTED from
 # streamlit_app/backend/real.py. It calls src.score_upcoming() (BigQuery ->
 # features -> model) and maps the result onto the canonical schema, so the
-# pages see no difference vs. the dummy.
+# pages see a single canonical schema.
 #
 # IMPORTANT: `src` is imported LAZILY (inside the function) so importing the UI
 # never depends on a trained model / joblib / xgboost being present. With no
 # model on disk this raises a clear RuntimeError; the facade then falls back to
-# the dummy. NEVER call BigQuery directly — only through src.score_upcoming.
+# import. NEVER call BigQuery directly — only through src.score_upcoming.
 #
 # Model selection: `model_name` flows straight into src.score_upcoming(), so the
 # model dropdown in the UI selects the model with zero page changes.
@@ -47,9 +47,8 @@ def _import_src():
 
 
 def _city_lookup() -> dict[str, str]:
-    """Map hotel_code -> city, reusing the dummy locations loader."""
-    # The locations table is shared; reuse the dummy reader rather than duplicate.
-    from .dummy import _load_locations
+    """Map hotel_code -> city from configs/locations.yaml."""
+    from .locations import _load_locations
     return {hc: city for hc, city, _ in _load_locations()}
 
 
@@ -61,10 +60,9 @@ def get_scored_bookings(model_name: str | None = None, horizon_days: int = 35,
     ----------
     model_name : str | None
         Registry name passed straight to src.score_upcoming (None = auto-pick
-        the best model by AUC). This is the swap-the-model lever.
+        via best_model(): best AP among well-calibrated models). Swap-model lever.
     horizon_days : int
-        Accepted for signature parity with the dummy backend (src decides its
-        own horizon from the BigQuery query).
+        Accepted for signature parity (src decides its own horizon).
     force_refresh : bool
         Re-pull from BigQuery instead of using the parquet cache.
     """
@@ -76,6 +74,23 @@ def get_scored_bookings(model_name: str | None = None, horizon_days: int = 35,
     # No rows -> return an empty frame with the right columns so pages don't crash.
     if feat is None or len(feat) == 0:
         return pd.DataFrame(columns=list(S.COLUMNS))
+
+    # HAZARD = primary engine: if a trained hazard model is on disk, override
+    # cancel_proba with the horizon-aware survival-product P(cancel before arrival)
+    # (the decision is made d=1..14 days out). The static model from
+    # score_upcoming is the fallback when no hazard model exists or it errors.
+    try:
+        from src import hazard as _HZ
+        if _HZ.hazard_available():
+            _hz = _HZ.load_hazard()
+            _b = feat.copy()
+            if "lead" not in _b.columns and "lead_time_days" in _b.columns:
+                _b["lead"] = _b["lead_time_days"]
+            feat = feat.copy()
+            feat["cancel_proba"] = _HZ.score_upcoming_hazard(_hz, _b)
+            feat["model_used"] = "hazard"
+    except Exception as e:  # noqa: BLE001 — fall back to the static score
+        print(f"real: hazard serving skipped, using static score ({type(e).__name__}: {e})")
 
     # Work on a copy and coerce the raw src columns into the canonical shape.
     df = feat.copy()
