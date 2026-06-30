@@ -32,8 +32,12 @@ from .paths import data_dir, repo_root
 SEED: Final[int] = 42
 AXIS: Final[str] = "days_until_arrival"
 ARRIVAL: Final[str] = "arrival"           # booking arrival-date column
-SNAP_FINE: Final[list[int]] = list(range(1, 15))          # daily, served horizon
-SNAP_COARSE: Final[list[int]] = [21, 30, 45, 60, 90]      # coarse train-only tail
+SNAP_FINE: Final[list[int]] = list(range(1, 15))                  # daily, decision-relevant horizon
+# Coarse train-only tail — extended to ~270d so LONG-LEAD cancellations are not
+# mislabelled as survivors. At max_snap=90 we missed ~4.5% of cancels (event_d>90:
+# (90,120]=868, (120,180]=515, (180,270]=219). Data supports it (lead>=270 ~0.2%
+# of bookings; >270 cancels ~0.1% — negligible residual).
+SNAP_COARSE: Final[list[int]] = [21, 30, 45, 60, 90, 120, 180, 270]
 SNAP: Final[list[int]] = sorted(SNAP_FINE + SNAP_COARSE)
 
 HAZARD_PATH: Final[str] = "08_hazard_model.joblib"
@@ -120,25 +124,34 @@ def build_person_period(clean: pd.DataFrame, num: list[str], cat: list[str],
 # =============================================================================
 def survival_cancel_proba(bookings: pd.DataFrame, haz_fn, num: list[str], cat: list[str],
                           cat_dtypes: dict, *, horizon_col: str = AXIS,
-                          max_h: int = 14) -> np.ndarray:
-    """Per-booking P(cancel before arrival) = 1 - Π_{u=1..D}(1-h_u).
+                          snaps: list[int] | None = None) -> np.ndarray:
+    """Per-booking P(cancel before arrival) = 1 - Π_{s∈snaps, s≤D} (1 - h_s).
 
-    For each booking, build a FRESH forward grid u=1..min(D, max_h, lead) where D
-    is the booking's `horizon_col` (days_until_arrival), score the hazard on it,
-    and take the cumulative. `haz_fn(X)->h` lets tests pass a stub.
+    The grid is the model's TRAINED snapshot grid (daily 1..14 + the coarse tail),
+    NOT a daily grid capped at 14 — so LONG-LEAD bookings (arrival far out) accumulate
+    cancel risk across the full horizon the model knows (the #5 fix). D = the
+    booking's `horizon_col` (days_until_arrival), capped at its `lead`. Pass
+    `snaps=hz["snap"]` so scoring matches exactly what the model was trained on.
+    `haz_fn(X)->h` lets tests pass a stub. Short-lead is unchanged (snaps≤14 = daily).
     """
+    snaps_arr = np.array(sorted(snaps if snaps is not None else SNAP), dtype=int)
     b = bookings.reset_index(drop=True).copy()
-    b["_row"] = np.arange(len(b))
-    D = np.minimum(np.floor(pd.to_numeric(b[horizon_col], errors="coerce").fillna(0)).astype(int), max_h)
+    n = len(b)
+    D = np.floor(pd.to_numeric(b[horizon_col], errors="coerce").fillna(0)).astype(int).to_numpy()
     if "lead" in b.columns:
-        D = np.minimum(D, np.floor(pd.to_numeric(b["lead"], errors="coerce").fillna(0)).astype(int))
-    reps = D.clip(lower=0).to_numpy()
-    if reps.sum() == 0:
-        return np.zeros(len(b), dtype=float)
-    # reset_index(drop=True): b.index.repeat duplicates index labels, which would make
-    # the later .loc alignment return duplicates — use a clean RangeIndex instead.
-    g = b.loc[b.index.repeat(reps)].reset_index(drop=True).copy()
-    g[AXIS] = np.concatenate([np.arange(1, n + 1) for n in reps if n > 0]).astype("float64")
+        D = np.minimum(D, np.floor(pd.to_numeric(b["lead"], errors="coerce").fillna(0)).astype(int).to_numpy())
+    if n == 0 or snaps_arr.size == 0:
+        return np.zeros(n, dtype=float)
+    # Cross bookings × snapshots, keep the snapshots each booking actually traverses
+    # (snap ≤ its days-to-arrival). Vectorised — no per-booking Python loop.
+    row_idx = np.repeat(np.arange(n), snaps_arr.size)
+    snap_col = np.tile(snaps_arr, n)
+    keep = snap_col <= D[row_idx]
+    if not keep.any():
+        return np.zeros(n, dtype=float)
+    g = b.iloc[row_idx[keep]].reset_index(drop=True).copy()
+    g["_row"] = row_idx[keep]
+    g[AXIS] = snap_col[keep].astype("float64")
     for c in cat:
         g[c] = g[c].astype(cat_dtypes[c])                          # pin to train dtype
     for c in num + [AXIS]:
@@ -147,9 +160,8 @@ def survival_cancel_proba(bookings: pd.DataFrame, haz_fn, num: list[str], cat: l
     g["_h"] = np.clip(haz_fn(g[FEATS]), 0, 0.999999)
     g = g.sort_values(["_row", AXIS])
     g["_pcum"] = 1 - g.groupby("_row")["_h"].transform(lambda s: (1 - s).cumprod())
-    # cumulative at the largest u per booking (sorted ascending -> last row of each group)
-    last = g.groupby("_row")["_pcum"].last()                       # Series indexed by _row (0..n-1)
-    out = np.zeros(len(b), dtype=float)
+    last = g.groupby("_row")["_pcum"].last()                       # cumulative at the largest snap ≤ D
+    out = np.zeros(n, dtype=float)
     out[last.index.to_numpy()] = last.to_numpy()
     return out
 
@@ -222,8 +234,10 @@ def hazard_fn(hz: dict):
 
 
 def score_upcoming_hazard(hz: dict, bookings: pd.DataFrame) -> np.ndarray:
-    """Per-booking P(cancel before arrival) for upcoming bookings (survival product)."""
-    return survival_cancel_proba(bookings, hazard_fn(hz), hz["num"], hz["cat"], hz["cat_dtypes"])
+    """Per-booking P(cancel before arrival) for upcoming bookings (survival product
+    over the model's full trained snapshot grid — long-lead bookings included)."""
+    return survival_cancel_proba(bookings, hazard_fn(hz), hz["num"], hz["cat"],
+                                 hz["cat_dtypes"], snaps=hz.get("snap"))
 
 
 # =============================================================================
@@ -371,7 +385,7 @@ def walk_forward_eval_hazard(*, n_folds: int = 6, horizon_days: int = 14, step_d
         teb["lead"] = (arr - cre) / pd.Timedelta(days=1)
         teb[AXIS] = ((arr - S) / pd.Timedelta(days=1)).clip(lower=1)        # remaining days to arrival
         p_haz = survival_cancel_proba(teb, hazard_fn(hz), hz["num"], hz["cat"],
-                                      hz["cat_dtypes"], max_h=horizon_days)
+                                      hz["cat_dtypes"], snaps=hz.get("snap"))
         y = (pd.to_numeric(teb["status"], errors="coerce").fillna(0).astype(int).to_numpy() == 1)
         row = {"fold": f.k, "S": str(S.date()), "n_test": int(len(te)),
                "auc_haz": roc_auc_score(y, p_haz) if len(set(y)) > 1 else float("nan"),

@@ -368,10 +368,19 @@ The static models answer "will it cancel?"; the hazard model answers "**when**, 
 the cancel probability evolve as arrival approaches?" - which is what a daily overbooking desk needs.
 
 **Person-period expansion.** Each booking is expanded into one row per day-before-arrival snapshot on a
-grid: daily `d = 1..14` (served at daily resolution, equal width) plus a coarse train-only tail
-`{21,30,45,60,90}`. A booking contributes rows for every snapshot it is "at risk" at (it still exists
-and has not yet cancelled). The binary outcome `y` for a row is "did it cancel within this window."
-Result: ~1.39M person-period rows from ~168k bookings.
+grid: daily `d = 1..14` (the decision-relevant horizon, equal width) plus a coarse tail
+`{21,30,45,60,90,120,180,270}`. A booking contributes rows for every snapshot it is "at risk" at (it
+still exists and has not yet cancelled). The binary outcome `y` for a row is "did it cancel within this
+window." The tail extends to 270 days because at a 90-day cap ~4.5% of cancellations (`event_d > 90`)
+were mislabelled as survivors — a real long-lead leak in the *target*, not just a scoring truncation.
+
+**Scoring (the survival product) uses the model's FULL snapshot grid**, not a daily grid capped at 14:
+`P(cancel before arrival) = 1 − ∏_{s ∈ snaps, s ≤ D}(1 − h_s)` where `D` is the booking's
+days-until-arrival. So a booking arriving 200 days out accumulates cancel risk across all snapshots ≤ 200
+(not just the next 14 days). Short-lead bookings (`D ≤ 14`) are unchanged (snapshots ≤ 14 = daily).
+*Residual:* a cancel whose `event_d` falls in a coarse gap above a booking's largest reachable snapshot
+(e.g. lead 100, cancel at day 95) is missed — a minor (~1–2%) discretisation artifact that does NOT
+touch the daily-resolution 14-day decision window.
 
 **Discrete-time hazard.** On the person-period data we model
 
