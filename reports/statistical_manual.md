@@ -221,8 +221,17 @@ about *ranking* (monotone), but it is kept for parity with the linear model and 
 ### 4.3 Dynamic (scoring-time) features
 
 `days_until_arrival`, `days_since_booking`, `pct_lead_time_elapsed`, `is_within_7d_of_arrival`.
-These change every day and only the **hazard model (08)** consumes them, via the time axis. The static
-models (01/02/03) do **not** use them.
+These are **per-(booking, scoring-date)** quantities — they change every day as arrival approaches.
+They are a **manifest only** (roster `dynamic_numeric`), **not** clean-parquet columns: `build_features`
+computes them **point-in-time relative to the scoring date** (`today` = live wall-clock; replay/eval must
+pass the simulated date S — see §17). Only the **hazard model (08)** consumes the horizon, via its
+`days_until_arrival` time axis; the static models (01/02/03) do **not** use them.
+
+> **Guard (#7).** A single-row static model has no scoring date S, so a dynamic feature is ill-defined
+> there; and in the hazard model the horizon is already the axis (see the collinearity note below). So
+> the dynamic features are **blocklisted from the static roster** and a fail-loud assert in `00` (§11)
+> raises if any of them ever leaks into `numeric`/`categorical`. To make a model horizon-aware, use the
+> hazard model (person-period), not a dynamic column on the static one.
 
 > **Exact-collinearity flag (acted on in 08).** By definition
 > `lead_time = days_until_arrival + days_since_booking`, and `pct_lead_time_elapsed` and

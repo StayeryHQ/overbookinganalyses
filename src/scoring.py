@@ -282,9 +282,13 @@ def build_features(df: pd.DataFrame, today: pd.Timestamp | None = None) -> pd.Da
     df : DataFrame
         Raw reservations (post PII strip).
     today : pd.Timestamp | None
-        Reference "now" for the dynamic features. Defaults to
-        `pd.Timestamp.utcnow().normalize()`. Pass an explicit timestamp when
-        you want to replay historical scoring days (e.g. notebook 08).
+        Point-in-time "as-of" date for the DYNAMIC features (days_until_arrival,
+        days_since_booking, pct_lead_time_elapsed, is_within_7d_of_arrival).
+        * LIVE scoring: leave None -> wall-clock now (we score today's open bookings).
+        * REPLAY / EVAL / TRAINING: you MUST pass the simulated scoring date S
+          (e.g. a walk-forward origin). Leaving it at wall-clock there computes the
+          dynamic features relative to "today" instead of S = leakage / nonsense.
+        The STATIC features do not depend on `today`.
 
     Returns a NEW dataframe with all static + dynamic feature columns added;
     does not mutate. Drops nothing — the caller decides whether to drop NaNs.
@@ -293,7 +297,9 @@ def build_features(df: pd.DataFrame, today: pd.Timestamp | None = None) -> pd.Da
     arrival   = pd.to_datetime(out["arrival"],   utc=True)
     departure = pd.to_datetime(out["departure"], utc=True)
     created   = pd.to_datetime(out["created"],   utc=True)
-    today     = today or pd.Timestamp.utcnow().normalize()
+    # None => LIVE scoring (wall-clock). Replay/eval/training MUST pass S (see docstring).
+    if today is None:
+        today = pd.Timestamp.now("UTC").normalize()
 
     # ---- Static features (mirror notebook 00 §3.0) -------------------------
     out["lead_time_days"]     = ((arrival.dt.normalize() - created.dt.normalize())
@@ -345,7 +351,10 @@ def build_features(df: pd.DataFrame, today: pd.Timestamp | None = None) -> pd.Da
     # NOTE: property_name / channelCode / guaranteeType / unitGroup_name /
     # cancellationFee_name are raw pass-through columns and need no engineering.
 
-    # ---- Dynamic features (surfaced for dashboard + hazard model) ----------
+    # ---- Dynamic features — POINT-IN-TIME relative to `today` --------------
+    # Live = wall-clock now; replay/eval/training MUST pass the simulated date S
+    # (else these leak). Consumed by the hazard model's day-axis at serving; NOT in
+    # the static roster by default (see roster `dynamic_numeric`).
     days_to_arr = ((arrival.dt.normalize() - today) / pd.Timedelta(days=1))
     days_since  = ((today - created.dt.normalize()) / pd.Timedelta(days=1)).clip(lower=0)
     out["days_until_arrival"]      = days_to_arr.astype("float64")
