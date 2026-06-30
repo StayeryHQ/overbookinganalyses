@@ -1,7 +1,6 @@
 # ---------------------------------------------------------------------------
 # Public API for the overbooking-analyse project.
 #
-#
 # Conventions:
 #   * Loading + caching + PII strip       → data_loader
 #   * Brand styling + colours + locations → utils

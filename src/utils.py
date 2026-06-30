@@ -1,7 +1,6 @@
 # ---------------------------------------------------------------------------
 # Generic helpers: brand theming for matplotlib, location reference table,
-# small plotting utilities. Path resolution is delegated to src/paths.py so
-# notebooks work no matter where you launch them from.
+# small plotting utilities.
 # ---------------------------------------------------------------------------
 
 """Theming, palette helpers and the locations reference table."""
@@ -82,9 +81,6 @@ def apply_stayery_style() -> None:
     lookup = _color_lookup()
 
     primary_chain = [cfg["typography"]["primary"]] + cfg["typography"]["primary_fallback"]
-    # Belt-and-braces: ensure DejaVu Sans is at the end. It ships with
-    # matplotlib and is guaranteed to resolve, so the very first plot
-    # render doesn't trigger a full system font scan.
     if "DejaVu Sans" not in primary_chain:
         primary_chain.append("DejaVu Sans")
     palette = categorical_palette()

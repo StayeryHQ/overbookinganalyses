@@ -24,9 +24,9 @@ loaded raw parquet,214941,73,[],0,0
 4.3 after Canceled + gross_amount<=0 (post-refund zeroing -> drop),176636,36,[],-381,0
 4.3 after non-Canceled + gross_amount<=0,175271,36,[],-1365,0
 4.3 after los_nights > 200,175252,36,[],-19,0
-4.3 after gross_per_night > median + 7*MAD (cap=312.2),174554,36,[],-698,0
-4.3.d removed diagnostic scratch cols,174554,32,[],0,-4
-4.4 dropped tiny properties,174554,32,[],0,0
-4.5 QC passed,174554,32,[],0,0
-5.2 company history features,174554,36,[],0,4
-"7 production temporal split (arrival-anchored, long-lead kept)",174554,40,[],0,4
+4.3 after gross_per_night > median + 7*MAD (cap=306.6),174482,36,[],-770,0
+4.3.d removed diagnostic scratch cols,174482,32,[],0,-4
+4.4 dropped tiny properties,174482,32,[],0,0
+4.5 QC passed,174482,32,[],0,0
+5.2 company history features,174482,36,[],0,4
+"7 production temporal split (arrival-anchored, long-lead kept)",174482,40,[],0,4

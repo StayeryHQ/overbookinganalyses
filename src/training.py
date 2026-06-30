@@ -5,7 +5,7 @@
 # Why this module exists
 # ----------------------
 # Fit logic used to live inside the model notebooks, so the dash app could not
-# retrain. This centralises it so BOTH the notebooks (as thin drivers) and the
+# retrain. This centralises it so both the notebooks (as thin drivers) and the
 # app's "Datenaktualisierung" page call the same functions:
 #
 #   walk_forward_eval(model)            -> honest one-step-ahead metrics (no leakage)

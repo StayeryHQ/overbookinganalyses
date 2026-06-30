@@ -262,3 +262,111 @@ def _validate_schema(df: pd.DataFrame) -> None:
             f"[schema info] {len(extra)} extra columns present: "
             f"{sorted(extra)[:5]}{'…' if len(extra) > 5 else ''}"
         )
+
+# =============================================================================
+# Property performance (occupancy / daily operations) — second BigQuery table
+# =============================================================================
+# `reporting.property_performance_daily` holds one row per property per business
+# day. We pull only the operational columns (occupancy + counts) and ignore every
+# revenue column completely. 
+PROPERTY_PERF_TABLE: Final[str] = "property_performance_daily"
+PROPERTY_PERF_CACHE: Final[str] = "property_performance_daily.parquet"
+
+# Allow-list of the only columns we select (revenue columns are never pulled).
+PROP_PERF_COLUMNS: Final[tuple[str, ...]] = (
+    "businessDay", "houseCount", "soldCount", "outOfOrderCount",
+    "arrivalsCount", "departuresCount", "noShowsCount", "cancellationsCount",
+    "occupancyPercentage", "propertyId",
+)
+# Integer-count columns (nullable Int64 so a missing value never becomes 0/NaN-float).
+_PERF_INT_COLS: Final[tuple[str, ...]] = (
+    "houseCount", "soldCount", "outOfOrderCount", "arrivalsCount",
+    "departuresCount", "noShowsCount", "cancellationsCount",
+)
+
+
+def load_property_performance(force_refresh: bool = False, quiet: bool = False) -> pd.DataFrame:
+    """Load `reporting.property_performance_daily` (occupancy + ops), dtype-cleaned.
+
+    Only the operational columns are selected (revenue ignored). Cached to parquet
+    like `load_reservations`; `force_refresh=True` re-queries BigQuery. dtypes:
+    businessDay -> datetime64[UTC], counts -> Int64, occupancyPercentage -> float64,
+    propertyId -> string. Robust to schema drift (missing columns are skipped).
+    """
+    if not quiet:
+        logging.basicConfig(level=logging.INFO, format="%(message)s")
+    cache_path = data_dir() / PROPERTY_PERF_CACHE
+
+    if cache_path.exists() and not force_refresh:
+        logger.info(f"loading cached parquet: {cache_path.name}")
+        df = pd.read_parquet(cache_path)
+    else:
+        logger.info("querying BigQuery: property_performance_daily (ops columns only)…")
+        df = _query_property_performance()
+        df = _clean_perf_dtypes(df)
+        df.to_parquet(cache_path, index=False)
+        logger.info(f"cached property performance → {cache_path.name}")
+    return df
+
+
+def _clean_perf_dtypes(df: pd.DataFrame) -> pd.DataFrame:
+    """Coerce the property-performance columns to robust dtypes (skip missing)."""
+    out = df.copy()
+    if "businessDay" in out.columns:                       # business day -> UTC datetime
+        out["businessDay"] = pd.to_datetime(out["businessDay"], utc=True, errors="coerce")
+    for c in _PERF_INT_COLS:                               # counts -> nullable Int64
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce").astype("Int64")
+    if "occupancyPercentage" in out.columns:               # occupancy -> float
+        out["occupancyPercentage"] = pd.to_numeric(out["occupancyPercentage"], errors="coerce")
+    if "propertyId" in out.columns:                        # property code -> string
+        out["propertyId"] = out["propertyId"].astype("string")
+    return out
+
+
+def _query_property_performance(limit: int | None = None) -> pd.DataFrame:
+    """Query BigQuery for the property-performance allow-list columns only."""
+    try:
+        from google.cloud import bigquery  # type: ignore[import-untyped]
+    except ImportError as e:
+        raise RuntimeError(
+            "google-cloud-bigquery is not installed. Run `uv add google-cloud-bigquery`."
+        ) from e
+    client = bigquery.Client()
+    table_ref = f"{BQ_PROJECT}.{BQ_DATASET}.{PROPERTY_PERF_TABLE}"
+    # Only-needed columns; intersect with the live schema so a renamed/missing
+    # column never breaks the query (robust to upstream drift). Revenue columns
+    # are simply never listed -> never pulled.
+    table_cols = {f.name for f in client.get_table(table_ref).schema}
+    cols = [c for c in PROP_PERF_COLUMNS if c in table_cols]
+    if not cols:
+        raise RuntimeError(f"none of {PROP_PERF_COLUMNS} found in {table_ref}")
+    sql = f"SELECT {', '.join(cols)} FROM `{table_ref}`"
+    if limit is not None:
+        sql += f"\nLIMIT {int(limit)}"
+    logger.info(f"  selecting {len(cols)} ops columns from {PROPERTY_PERF_TABLE}…")
+    return client.query(sql).to_dataframe()
+
+
+def property_universe(force_refresh: bool = False) -> pd.DataFrame:
+    """Location universe from the performance table — REPLACES configs/locations.yaml.
+
+    Returns one row per propertyId with `units` = the most recent houseCount
+    (the property's bookable unit count). New properties appear automatically.
+    Returns an EMPTY frame (columns propertyId/units) if the table/cache is
+    unavailable, so callers can fall back to the YAML/dummy.
+    """
+    try:
+        perf = load_property_performance(force_refresh=force_refresh, quiet=True)
+    except Exception as e:  # noqa: BLE001 — no creds / no table / offline
+        logger.warning(f"property_universe: performance table unavailable ({e}); empty universe")
+        return pd.DataFrame(columns=["propertyId", "units"])
+    if perf.empty or "propertyId" not in perf.columns:
+        return pd.DataFrame(columns=["propertyId", "units"])
+    # Latest businessDay row per property gives the current houseCount = units.
+    perf = perf.sort_values("businessDay")
+    latest = perf.groupby("propertyId", as_index=False).last()
+    out = latest[["propertyId"]].copy()
+    out["units"] = (pd.to_numeric(latest.get("houseCount"), errors="coerce")
+                    .fillna(0).astype(int).values)
+    return out.reset_index(drop=True)
