@@ -26,9 +26,9 @@ That's it. `uv sync` reads `pyproject.toml`, creates `.venv/`, and installs ever
 
 ## Running things
 
-**Never** call `python somefile.py` directly with your shell's bare Python — that's not the project's venv and won't have the dependencies. Always go through `uv run`, or activate the venv first.
+**Never** call `python somefile.py` directly with your shell's bare Python - that's not the project's venv and won't have the dependencies. Always go through `uv run`, or activate the venv first.
 
-### Option A — `uv run` (recommended, no activation needed)
+### Option A - `uv run` (recommended, no activation needed)
 
 ```bash
 uv run python main.py status
@@ -38,7 +38,7 @@ uv run jupyter lab          # opens the notebooks in a browser
 
 `uv run` automatically uses `.venv/bin/python` and makes sure the venv is in sync with `pyproject.toml` first.
 
-### Option B — activate the venv (more traditional)
+### Option B - activate the venv (more traditional)
 
 ```bash
 source .venv/bin/activate
@@ -66,18 +66,16 @@ uv run python -c "import src; print(src.__all__)"   # smoke-test the package
 
 ## Pipeline order
 
-Model lineup decided 2026-06-11 (RF + MLP are out — see reports/open_decisions.md):
+Model lineup decided 2026-06-11:
 3 static classifiers + 3 survival models, then a fair comparison.
 
-1. `notebooks/00_data_audit.ipynb`   — load + audit + clean + temporal_split (60/15/25) → `Data/reservations_clean.parquet`
-2. `notebooks/01_logreg.ipynb`       — logistic regression (gold-standard template, fully commented)
-3. `notebooks/02_xgboost.ipynb`      — XGBoost (clone of 01, swap §5)        [to rebuild]
-4. `notebooks/03_histgb.ipynb`       — HistGradientBoosting (clone of 01)    [to rebuild]
-5. `notebooks/08_hazard.ipynb`       — discrete-time hazard (daily rescoring) [to finish]
-6. `notebooks/09_xgb_aft.ipynb`      — XGBoost AFT survival                   [to build]
-7. `notebooks/10_rsf.ipynb`          — Random Survival Forest                 [to build]
-8. `notebooks/05_model_comparison.ipynb` — fair bake-off + tuning of finalists [to rebuild]
-9. `uv run python main.py score`     — daily scoring with the chosen model
+1. `notebooks/00_data_audit.ipynb`   - load + audit + clean + temporal_split (60/15/25) → `Data/reservations_clean.parquet`
+2. `notebooks/01_logreg.ipynb`       - logistic regression (gold-standard template, fully commented)
+3. `notebooks/02_xgboost.ipynb`      - XGBoost (clone of 01, swap §5)        [to rebuild]
+4. `notebooks/03_histgb.ipynb`       - HistGradientBoosting (clone of 01)    [to rebuild]
+5. `notebooks/08_hazard.ipynb`       - discrete-time hazard (daily rescoring) [to finish]
+6. `notebooks/05_model_comparison.ipynb` - fair bake-off + tuning of finalists [to rebuild]
+7. `uv run python main.py score`     - daily scoring with the chosen model
 
 Each notebook is self-contained: cleaning + features + modeling live inline; loading + styling + paths + scoring are imported from `src/`.
 
@@ -88,7 +86,7 @@ Each notebook is self-contained: cleaning + features + modeling live inline; loa
 Two things, neither of them about your install:
 
 1. **Wrong interpreter.** You ran `/Users/.../uv/python/cpython-3.12.../bin/python`, which is the base Python uv keeps in its cache, *not* the project's `.venv/bin/python`. Pandas (and everything else) is only installed inside `.venv/`, so that bare interpreter sees nothing.
-2. **`src/data_loader.py` is not runnable as a script.** It starts with `from .paths import data_dir`, a *relative* import — Python only allows that when the file is loaded as part of a package (i.e. imported via `from src import load_reservations`). Even with the right Python you'd see `ImportError: attempted relative import with no known parent package`.
+2. **`src/data_loader.py` is not runnable as a script.** It starts with `from .paths import data_dir`, a *relative* import - Python only allows that when the file is loaded as part of a package (i.e. imported via `from src import load_reservations`). Even with the right Python you'd see `ImportError: attempted relative import with no known parent package`.
 
 Right way to call into the module from the shell:
 
