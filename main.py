@@ -1,9 +1,9 @@
-"""CLI entry point for the overbooking-analyse project.
+"""CLI entry point for the overbooking analysis project.
 
 Designed to be run from the repo root:
 
     uv run python main.py --help
-    uv run python main.py refresh           # re-pull BigQuery → parquet
+    uv run python main.py refresh           # re-pull BigQuery and save parquet
     uv run python main.py score             # score upcoming arrivals (auto pick model)
     uv run python main.py score --model xgboost # score with a specific model
     uv run python main.py status            # show which models / parquets exist

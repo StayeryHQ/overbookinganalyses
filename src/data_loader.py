@@ -272,7 +272,6 @@ def _validate_schema(df: pd.DataFrame) -> None:
 PROPERTY_PERF_TABLE: Final[str] = "property_performance_daily"
 PROPERTY_PERF_CACHE: Final[str] = "property_performance_daily.parquet"
 
-# Allow-list of the only columns we select (revenue columns are never pulled).
 PROP_PERF_COLUMNS: Final[tuple[str, ...]] = (
     "businessDay", "houseCount", "soldCount", "outOfOrderCount",
     "arrivalsCount", "departuresCount", "noShowsCount", "cancellationsCount",
@@ -289,7 +288,7 @@ def load_property_performance(force_refresh: bool = False, quiet: bool = False) 
     """Load `reporting.property_performance_daily` (occupancy + ops), dtype-cleaned.
 
     Only the operational columns are selected (revenue ignored). Cached to parquet
-    like `load_reservations`; `force_refresh=True` re-queries BigQuery. dtypes:
+    like `load_reservations`. `force_refresh=True` re-queries BigQuery. dtypes:
     businessDay -> datetime64[UTC], counts -> Int64, occupancyPercentage -> float64,
     propertyId -> string. Robust to schema drift (missing columns are skipped).
     """

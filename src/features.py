@@ -6,26 +6,14 @@
 #      (`country_to_region` / `add_country_region`).
 #   2. A *generator* + *loader* for the feature roster.
 #
-# IMPORTANT - where the roster decision lives:
-#   The authoritative decision about WHICH columns are model features is made
-#   at the END of `notebooks/00_data_audit.ipynb`, based on the full audit, and
+# The decision decision about which columns are model features is made
+#   at the end of `notebooks/00_data_audit.ipynb`, based on the full audit, and
 #   persisted to `Data/feature_roster.json`. Every notebook and the scoring
-#   module LOAD that artifact via `load_feature_roster()` - they do not hardcode
-#   feature lists any more (that drift was the root cause of the train/serve
-#   mismatch in 08_hazard / score_upcoming).
+#   module load that artifact via `load_feature_roster()`
 #
 #   `model_feature_roster()` + `NON_FEATURE_COLS` below are only the *mechanism*
 #   00 uses to generate the artifact. Treat them as a default; the real,
 #   commented blocklist is defined in 00 and passed in explicitly.
-#
-# Note on `guest_country_region` (corrected 2026-06-18):
-#   It is derived from `primaryGuest_address_countryCode`, an ADDRESS field that
-#   is frequently only completed at/around check-in - so for not-yet-arrived
-#   bookings (exactly what we score) it is missing, and the model would learn
-#   "missing => cancel". It is therefore treated as check-in leakage and is NOT
-#   a model feature. (An earlier version of this file praised the region
-#   encoding's AUC; that benchmark predates the leakage finding and was itself
-#   inflated by the leak - do not rely on it.)
 # ---------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -146,11 +134,11 @@ def model_feature_roster(df: pd.DataFrame, *, non_features=None, exclude=(), max
     """Derive modelable columns from the cleaned frame (00_data_audit).
 
     Blocklist logic: keep every numeric/bool column and every low-cardinality
-    categorical (2..max_card distinct) that is NOT in `non_features` (default
-    `NON_FEATURE_COLS`) and NOT in `exclude`. Returns `(numeric, categorical)`.
+    categorical (2..max_card distinct) that is not in `non_features` (default
+    `NON_FEATURE_COLS`) and not in `exclude`. Returns `(numeric, categorical)`.
 
     NB: because this is blocklist-based, any column you keep in the parquet but
-    do NOT want modelled must be listed in `non_features` - otherwise it is
+    do not want modelled must be listed in `non_features` - otherwise it is
     picked up automatically.
     """
     block = set(NON_FEATURE_COLS if non_features is None else non_features) | set(exclude)
@@ -165,12 +153,6 @@ def model_feature_roster(df: pd.DataFrame, *, non_features=None, exclude=(), max
               or pd.api.types.is_timedelta64_dtype(s)):
             continue  # timestamps / durations are never model features
         else:
-            # dtype-ROBUST categorical detection: anything that is not numeric,
-            # bool, or datetime is a categorical candidate. The previous
-            # `str(dtype) in {"object","string","category"}` check silently
-            # dropped arrow-backed string columns (e.g. "string[pyarrow]",
-            # "large_string[pyarrow]"), which produced a DEGENERATE roster
-            # (missing property_name / unitGroup_name / guaranteeType / ...).
             if 2 <= int(s.nunique(dropna=True)) <= max_card:
                 categorical.append(c)
     return numeric, categorical
