@@ -457,3 +457,65 @@ def walk_forward_eval_hazard(*, n_folds: int = 6, horizon_days: int = 14, step_d
         gate = {"mean_delta_auc": float(d.mean()), "std": float(d.std()),
                 "hazard_better": bool(d.mean() > d.std() and d.mean() > 0)}
     return {"per_fold": rows, "aggregate": agg, "gate": gate}
+
+
+# =============================================================================
+# Time-resolved (per-snapshot) evaluation — does the hazard track risk over time?
+# =============================================================================
+# The walk-forward above grades each booking ONCE (its decision horizon). To test
+# whether the hazard captures how risk CHANGES as arrival approaches, we score each
+# TEST booking at EVERY snapshot it traverses and measure discrimination +
+# calibration PER days-until-arrival. Leak-free: `hz` is trained on data resolved
+# before the test bookings.
+def per_snapshot_scores(hz: dict, clean_test: pd.DataFrame,
+                        *, max_days: int | None = None) -> pd.DataFrame:
+    """Long frame [days_until_arrival, width, y, p] — the CALIBRATED hazard for each
+    (test booking × snapshot). Feed a per-fold `hz` and that fold's TEST bookings.
+
+    `max_days` caps the evaluated horizon. A decision-time test set is open at
+    S* = arrival - H, so it is survivor-selected and CANNOT contain events beyond
+    the daily band (all y=0 for d>H) - pass `max_days=H` to keep the eval honest.
+    """
+    ce = add_event_columns(clean_test)
+    pp, _ = build_person_period(ce, hz["num"], hz["cat"], cat_dtypes=hz["cat_dtypes"])
+    if max_days is not None:
+        pp = pp[pp[AXIS] <= max_days]
+    FEATS = hz["num"] + [AXIS] + hz["cat"]
+    p = np.clip(hazard_fn(hz)(pp[FEATS]), 0.0, 1.0)
+    return pd.DataFrame({AXIS: pp[AXIS].to_numpy(), "width": pp["width"].to_numpy(),
+                         "y": pp["y"].to_numpy(), "p": p})
+
+
+def snapshot_metrics(scores: pd.DataFrame) -> pd.DataFrame:
+    """Per-snapshot discrimination + calibration from `per_snapshot_scores` output:
+    n, empirical vs predicted hazard, AUC, AP, Brier per days-until-arrival."""
+    from sklearn.metrics import roc_auc_score, average_precision_score, brier_score_loss
+    rows = []
+    for d, g in scores.groupby(AXIS):
+        yv = g["y"].to_numpy(); pv = g["p"].to_numpy()
+        rows.append({"days_until_arrival": int(d), "n": int(len(g)),
+                     "emp_hazard": float(yv.mean()), "pred_hazard": float(pv.mean()),
+                     "auc": float(roc_auc_score(yv, pv)) if len(np.unique(yv)) > 1 else float("nan"),
+                     "ap": float(average_precision_score(yv, pv)) if yv.sum() > 0 else float("nan"),
+                     "brier": float(brier_score_loss(yv, pv))})
+    return pd.DataFrame(rows).sort_values("days_until_arrival").reset_index(drop=True)
+
+
+def walk_forward_per_snapshot(*, n_folds: int = 6, horizon_days: int = 14,
+                              step_days: int = 14, seed: int = SEED) -> dict:
+    """Decision-time walk-forward evaluated PER SNAPSHOT (time-resolved accuracy):
+    fit per fold on train, score the fold's TEST bookings across ALL snapshots they
+    traverse, pool, then report AUC/AP/Brier + empirical-vs-predicted hazard per
+    days-until-arrival. Leak-free (each fold's test scored by that fold's model)."""
+    from . import walkforward as wf, load_clean_reservations
+    clean = wf.add_outcome_known_date(load_clean_reservations())
+    folds = wf.make_folds(clean, n_folds=n_folds, horizon_days=horizon_days, step_days=step_days)
+    parts = []
+    for f in folds:
+        tr, te = clean.iloc[f.train_idx], clean.iloc[f.test_idx]
+        if len(tr) < 500 or len(te) < 50:
+            continue
+        hz = fit_hazard(tr, seed=seed)
+        parts.append(per_snapshot_scores(hz, te, max_days=horizon_days))   # daily decision band only
+    scores = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=[AXIS, "width", "y", "p"])
+    return {"per_snapshot": snapshot_metrics(scores), "scores": scores}
