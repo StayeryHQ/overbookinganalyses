@@ -24,7 +24,10 @@ from .data_loader import (
 from .features import (
     add_country_region,
     country_to_region,
+    excluded_columns,
+    family_feature_lists,
     load_feature_roster,
+    log_twin_map,
     model_feature_roster,
     roster_features,
 )
@@ -69,6 +72,7 @@ __all__ = [
     # features (train/serve parity)
     "add_country_region", "country_to_region", "model_feature_roster",
     "load_feature_roster", "roster_features",
+    "excluded_columns", "family_feature_lists", "log_twin_map",
     # paths
     "configs_dir", "data_dir", "figures_dir", "repo_root",
     "schema_config_path", "tables_dir",

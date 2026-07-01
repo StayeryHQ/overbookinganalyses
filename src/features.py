@@ -11,9 +11,9 @@
 #   persisted to `Data/feature_roster.json`. Every notebook and the scoring
 #   module load that artifact via `load_feature_roster()`
 #
-#   `model_feature_roster()` + `NON_FEATURE_COLS` below are only the *mechanism*
-#   00 uses to generate the artifact. Treat them as a default; the real,
-#   commented blocklist is defined in 00 and passed in explicitly.
+#   The exclusion taxonomy (`FEATURE_EXCLUSIONS`) below is the SINGLE source of
+#   truth for which columns are NOT model features and why; `model_feature_roster`
+#   reads it. 00 just calls the generator — it no longer carries its own blocklist.
 # ---------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -99,49 +99,62 @@ def add_country_region(
 
 
 # ---------------------------------------------------------------------------
-# Roster GENERATOR (used once, by 00, to write Data/feature_roster.json)
+# Roster GENERATOR (used by 00 to write Data/feature_roster.json)
 # ---------------------------------------------------------------------------
-# DEFAULT blocklist. The authoritative, commented blocklist lives in
-# 00_data_audit.ipynb §11 and is passed into `model_feature_roster(..., non_features=...)`.
-# Kept here only as a sensible default / legacy fallback. Anything dropped in
-# 00's audit need not be repeated here (it is already gone from the frame).
-NON_FEATURE_COLS: Final[frozenset[str]] = frozenset({
-    "status", "is_cancelled",                                   # target
-    "is_temporal_test", "is_temporal_val", "temporal_split",    # split flags
-    "arrival", "departure", "created",                          # raw timestamps
-    "company_name_clean", "company_name_combined",              # high-card / intermediate
-    COUNTRY_CODE_COL,                                           # raw country code
-    # --- collinear duplicates kept in the parquet for reference only ---------
-    # gross_amount  : modelled via log_gross_amount (skew-damped); raw is collinear.
-    # ratePlan_type : coarse parent of ratePlan_category; the two are nested/collinear.
-    "gross_amount", "ratePlan_type",
-    # --- check-in / address leakage (missing for not-yet-arrived bookings) ---
-    # These are (often) only populated at/around check-in. On upcoming bookings
-    # they are blank, so the model would learn "blank => cancel" and explode the
-    # forecast. Quantified in 00 §7.5 (and experiments/profile_leakage_quantification).
-    "guest_country_region", "primaryGuest_preferredLanguage", "travelPurpose",
-    "is_international",
-    # --- company leakage --------------------------------------------------------
-    # Company / corporate data is frequently entered only at check-in, so the
-    # company linkage key is absent at scoring time for upcoming bookings; the
-    # history features that depend on it (prior_bookings / prior_cancel_rate)
-    # cannot be computed then either. Excluded as a bundle (domain knowledge).
-    "has_company", "is_repeat_company", "company_prior_bookings", "company_prior_cancel_rate",
-})
+# FEATURE_EXCLUSIONS is the ONE place that says which clean-parquet columns are
+# NOT model features, grouped by REASON. `reason -> [columns]`. Everything else
+# in the cleaned frame becomes a feature automatically (blocklist logic), so a
+# newly-kept column must be added to the right group here to stay out.
+# The roster's `excluded` audit map is derived from this — no second list to drift.
+FEATURE_EXCLUSIONS: Final[dict[str, list[str]]] = {
+    "target or split metadata (never a feature)": [
+        "status", "is_cancelled",
+        "is_temporal_test", "is_temporal_val", "temporal_split",
+        "cancel_days_before_arrival", "outcome_known_date",
+    ],
+    "raw timestamp (engineered into lead-time / calendar features)": [
+        "arrival", "departure", "created",
+    ],
+    "high-cardinality key / intermediate": [
+        "company_name_clean", "company_name_combined", COUNTRY_CODE_COL,
+    ],
+    "collinear duplicate (modelled via its skew-damped / finer twin)": [
+        "gross_amount",    # -> log_gross_amount
+        "ratePlan_type",   # -> ratePlan_category (coarse parent)
+    ],
+    "check-in / address leakage (blank for not-yet-arrived bookings)": [
+        "guest_country_region", "primaryGuest_preferredLanguage",
+        "travelPurpose", "is_international",
+    ],
+    "company leakage (linkage key absent at scoring time)": [
+        "has_company", "is_repeat_company",
+        "company_prior_bookings", "company_prior_cancel_rate",
+    ],
+    "dynamic point-in-time feature (built per scoring-date in build_features)": [
+        "days_until_arrival", "days_since_booking",
+        "pct_lead_time_elapsed", "is_within_7d_of_arrival",
+    ],
+}
+
+
+def excluded_columns() -> dict[str, str]:
+    """Flatten FEATURE_EXCLUSIONS to `{column: reason}` — the roster audit trail."""
+    return {col: reason for reason, cols in FEATURE_EXCLUSIONS.items() for col in cols}
+
+
+# Backwards-compatible flat view (older call sites import this name).
+NON_FEATURE_COLS: Final[frozenset[str]] = frozenset(excluded_columns())
 
 
 def model_feature_roster(df: pd.DataFrame, *, non_features=None, exclude=(), max_card: int = 100):
-    """Derive modelable columns from the cleaned frame (00_data_audit).
+    """Split the cleaned frame into `(numeric, categorical)` MODEL features.
 
-    Blocklist logic: keep every numeric/bool column and every low-cardinality
-    categorical (2..max_card distinct) that is not in `non_features` (default
-    `NON_FEATURE_COLS`) and not in `exclude`. Returns `(numeric, categorical)`.
-
-    NB: because this is blocklist-based, any column you keep in the parquet but
-    do not want modelled must be listed in `non_features` - otherwise it is
-    picked up automatically.
+    A column is kept unless it is in the exclusion taxonomy (`excluded_columns()`,
+    overridable via `non_features`) or in `exclude`. numeric/bool -> numeric;
+    low-cardinality (2..max_card) object/string/category -> categorical;
+    timestamps/durations and high-cardinality categoricals are skipped.
     """
-    block = set(NON_FEATURE_COLS if non_features is None else non_features) | set(exclude)
+    block = set(excluded_columns() if non_features is None else non_features) | set(exclude)
     numeric, categorical = [], []
     for c in df.columns:
         if c in block:
@@ -152,10 +165,47 @@ def model_feature_roster(df: pd.DataFrame, *, non_features=None, exclude=(), max
         elif (pd.api.types.is_datetime64_any_dtype(s)
               or pd.api.types.is_timedelta64_dtype(s)):
             continue  # timestamps / durations are never model features
-        else:
-            if 2 <= int(s.nunique(dropna=True)) <= max_card:
-                categorical.append(c)
+        elif 2 <= int(s.nunique(dropna=True)) <= max_card:
+            categorical.append(c)
     return numeric, categorical
+
+
+# ---------------------------------------------------------------------------
+# One roster, model-FAMILY-aware views (decided 2026-06-30)
+# ---------------------------------------------------------------------------
+# We keep a single candidate roster, but a skewed numeric column and its `_log`
+# twin both live in the parquet. Linear models want the log twin (scaling /
+# linearity); tree models want the raw column and ignore the resulting
+# collinearity. These helpers derive the per-family list from the one roster so
+# we never maintain three rosters.
+def log_twin_map(numeric: list[str]) -> dict[str, str]:
+    """`{raw: raw_log}` for every numeric column whose `<name>_log` partner is
+    also in `numeric` (e.g. `los_nights` -> `los_nights_log`). Standalone logs
+    with no raw partner in the roster (e.g. `log_gross_amount`) are not listed."""
+    present = set(numeric)
+    return {c: f"{c}_log" for c in numeric if f"{c}_log" in present}
+
+
+def family_feature_lists(roster: dict, family: str) -> tuple[list[str], list[str]]:
+    """`(numeric, categorical)` tuned for a model FAMILY from one roster dict.
+
+        family='tree'   -> raw skewed columns; drop their `_log` twins.
+        family='linear' -> use the `_log` twin in place of each raw skewed column.
+
+    `roster` is the loaded feature_roster.json (must carry `log_twins`, written
+    by 00 §11). Categoricals are family-agnostic.
+    """
+    num = list(roster["numeric"])
+    cat = list(roster["categorical"])
+    twins = roster.get("log_twins", {})          # {raw: raw_log}
+    logs = set(twins.values())
+    if family == "tree":
+        num = [c for c in num if c not in logs]                  # keep raw, drop logs
+    elif family == "linear":
+        num = [twins.get(c, c) for c in num if c not in logs]    # raw -> log twin
+    else:
+        raise ValueError("family must be 'tree' or 'linear'")
+    return num, cat
 
 
 # ---------------------------------------------------------------------------
