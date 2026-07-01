@@ -11,19 +11,23 @@
 #                          rule is: train on outcomes known before the scoring date.
 #   * arrival            = resolution.
 #
-# What the folds here measure — ARRIVAL-ANCHORED, production-faithful:
-#   Production scores, on each date S, the bookings that ARRIVE within the next
-#   H days. The folds mirror exactly that, at a sequence of scoring dates S_k:
-#       train = outcome_known_date <= S_k          # everything resolved by S_k
-#       test  = created<=S_k & S_k<arrival<=S_k+H  # the population scored at S_k
-#               & outcome_known_date>S_k           # (still open at S_k)
-#       deferred (embargo_idx) = active at S_k but arriving beyond H (info only)
-#   Graded on cancel-before-arrival — the same estimand for every model, so the
-#   hazard-vs-static comparison is apples-to-apples. Set step_days == H to tile
-#   the timeline contiguously, then POOL the per-fold test predictions into one
-#   large decision-aligned sample for AUC / AP / Brier / cost (per-fold spread =
-#   stability). This is the procedure metric; the deployed model is refit on ALL
-#   resolved data (training != production).
+# What the folds here measure — DECISION-TIME, production-faithful:
+#   Production scores a booking on every day it is open AND within H days of
+#   arrival. We test each booking EXACTLY ONCE, at its DECISION DATE
+#       S* = max(created, arrival - H)
+#   (long-lead -> arrival-H; short-lead -> its creation day), if it is still open
+#   then. Its evaluation horizon is d = min(lead, H). This is the fix for a short
+#   median lead: a non-overlapping arrival grid silently dropped ~half the
+#   decision population (bookings booked < H days out); anchoring on S* keeps them.
+#       train = outcome_known_date <= O_k              # resolved before the window
+#       test  = O_k < S* <= O_k+step  AND  known > S*  # decided here, still open
+#       deferred (embargo_idx) = decided later, still open (info only)
+#   Each booking falls in exactly one step-wide S* window -> no double-count.
+#   Graded on cancel-by-arrival — the same estimand for every model, so the
+#   hazard-vs-static comparison is apples-to-apples. POOL the per-fold test
+#   predictions into one large decision-aligned sample for AUC / AP / Brier / cost
+#   (per-fold spread = stability). Procedure metric; the deployed model is refit
+#   on ALL resolved data (training != production).
 #
 # `add_outcome_known_date` is also used by retraining to fit the deployment model
 # on all data resolved "now" (train = outcome_known_date <= asof). PURE
@@ -86,8 +90,8 @@ def add_outcome_known_date(df: pd.DataFrame, *, out_col: str = KNOWN_COL) -> pd.
 class Fold:
     """One walk-forward fold. Indices are POSITIONAL into the frame passed in."""
     k: int
-    origin: pd.Timestamp           # decision cutoff O_k
-    next_origin: pd.Timestamp      # end of this fold's test block O_{k+1}
+    origin: pd.Timestamp           # decision-window start O_k
+    next_origin: pd.Timestamp      # decision-window end O_k + step
     train_idx: np.ndarray
     test_idx: np.ndarray
     embargo_idx: np.ndarray
@@ -102,60 +106,71 @@ class Fold:
 
 
 # =============================================================================
-# 3. Walk-forward fold generator — ARRIVAL-ANCHORED (production-faithful)
+# 3. Walk-forward fold generator — DECISION-TIME (each booking tested once)
 # =============================================================================
+def decision_date(df: pd.DataFrame, *, horizon_days: int = 14,
+                  created_col: str = CREATED, arrival_col: str = ARRIVAL) -> pd.Series:
+    """Per-booking DECISION date S* = max(created_day, arrival - H): the first day
+    the booking is decidable (long-lead -> arrival-H; short-lead -> creation)."""
+    created = pd.to_datetime(df[created_col], utc=True, errors="coerce").dt.normalize()
+    arrival = pd.to_datetime(df[arrival_col], utc=True, errors="coerce")
+    horizon_start = arrival - pd.Timedelta(days=horizon_days)
+    return created.where(created >= horizon_start, horizon_start)
+
+
 def make_folds(df: pd.DataFrame, *, n_folds: int = 6, horizon_days: int = 14,
-               step_days: int = 30, scheme: str = "expanding",
+               step_days: int = 14, scheme: str = "expanding",
                window_days: int | None = None, asof: str | pd.Timestamp | None = None,
                created_col: str = CREATED, arrival_col: str = ARRIVAL,
                known_col: str = KNOWN_COL) -> list[Fold]:
-    """Arrival-anchored walk-forward folds that mirror the production decision.
+    """Decision-time walk-forward folds — each booking tested EXACTLY ONCE.
 
-    We do NOT decide at booking creation; we decide overbooking for bookings
-    ARRIVING in the next `horizon_days`. So at each scoring date S:
+    Production scores a booking on every day it is open and within `horizon_days`
+    of arrival. We test it ONCE, at its DECISION date S* = max(created, arrival-H)
+    (see `decision_date`), if it is still open then (outcome_known_date > S*). Its
+    evaluation horizon is d = min(lead, H). This keeps SHORT-LEAD bookings (booked
+    < H days out) that a non-overlapping arrival grid would drop.
 
-        train = outcome_known_date <= S                  # ALL bookings resolved by S
-        test  = active at S AND arriving within horizon:
-                created <= S  &  arrival > S  &  arrival <= S+H  &  known > S
-        deferred (embargo_idx) = active at S but arriving beyond the horizon (info)
+    Folds tile the S* axis in non-overlapping `step_days` windows (last ending at
+    `asof`), so each booking lands in exactly one -> no double-count:
 
-    `test` is exactly the population the desk would score at S (known to exist,
-    not yet resolved, arriving inside the decision window); graded on
-    cancel-before-arrival. Origins S are spaced `step_days` apart so the last
-    horizon ends at `asof`. scheme="expanding" trains on all history <= S;
-    "sliding" uses a fixed `window_days` look-back.
+        train = outcome_known_date <= O_k                  # resolved before the window
+        test  = O_k < S* <= O_k+step  AND  known > S*      # decided here, still open
+        deferred (embargo_idx) = decided later, still open at O_k+step (info only)
 
-    Returns folds with POSITIONAL indices into `df` (use df.iloc[idx]).
+    Graded on cancel-by-arrival. scheme="expanding" trains on all history <= O_k;
+    "sliding" uses a fixed `window_days` look-back. Positional indices into `df`.
     """
     if known_col not in df.columns:
         raise KeyError(f"{known_col!r} missing - call add_outcome_known_date(df) first.")
-    created = pd.to_datetime(df[created_col], utc=True, errors="coerce")
     arrival = pd.to_datetime(df[arrival_col], utc=True, errors="coerce")
+    created = pd.to_datetime(df[created_col], utc=True, errors="coerce")
     known = pd.to_datetime(df[known_col], utc=True, errors="coerce")
     asof_ts = pd.Timestamp(asof, tz="UTC") if asof is not None else pd.Timestamp(known.max())
-    H = pd.Timedelta(days=horizon_days)
     if scheme == "sliding" and window_days is None:
         window_days = step_days * n_folds
 
-    # Scoring dates S, spaced step_days apart, last one so S+H == asof (gradeable).
-    s_last = asof_ts - H
-    origins = sorted(s_last - pd.Timedelta(days=step_days * i) for i in range(n_folds))
+    s_star = decision_date(df, horizon_days=horizon_days,
+                           created_col=created_col, arrival_col=arrival_col)
+    step = pd.Timedelta(days=step_days)
+    # Non-overlapping S* windows (O_k, O_k+step], the last ending at asof.
+    origins = sorted(asof_ts - step * (i + 1) for i in range(n_folds))
 
     folds: list[Fold] = []
-    for k, S in enumerate(origins):
-        train_known = known <= S                                   # ALL resolved by S
+    for k, O in enumerate(origins):
+        O_next = O + step
+        train_mask = known <= O                                    # resolved before the window
         if scheme == "sliding":
-            train_mask = train_known & (known > S - pd.Timedelta(days=window_days))
-        else:
-            train_mask = train_known
-        active = (created <= S) & (arrival > S) & (known > S)      # exists, unresolved at S
-        test_mask = active & (arrival <= S + H)                    # arrives within the horizon
-        deferred = active & (arrival > S + H)                      # active but beyond horizon
+            train_mask = train_mask & (known > O - pd.Timedelta(days=window_days))
+        decided_here = (s_star > O) & (s_star <= O_next)
+        test_mask = decided_here & (known > s_star)                # still open at its decision date
+        deferred = (s_star > O_next) & (known > O_next) & (created <= O_next)
         folds.append(Fold(
-            k=k, origin=S, next_origin=S + H,
+            k=k, origin=O, next_origin=O_next,
             train_idx=np.where(train_mask.to_numpy())[0],
             test_idx=np.where(test_mask.to_numpy())[0],
             embargo_idx=np.where(deferred.to_numpy())[0],
+            meta={"horizon_days": horizon_days},
         ))
     return folds
 
@@ -164,20 +179,26 @@ def make_folds(df: pd.DataFrame, *, n_folds: int = 6, horizon_days: int = 14,
 # 4. Summaries + point-in-time invariants (used in 00 and by the unit test)
 # =============================================================================
 def fold_summary(df: pd.DataFrame, folds: list[Fold], *, target_col: str = STATUS,
-                 arrival_col: str = ARRIVAL, known_col: str = KNOWN_COL) -> pd.DataFrame:
-    """Per-fold sizes, base rates, and arrival ranges - the table 00 prints/persists."""
+                 arrival_col: str = ARRIVAL, created_col: str = CREATED,
+                 known_col: str = KNOWN_COL) -> pd.DataFrame:
+    """Per-fold sizes, base rates, decision-window + test-horizon ranges (00 prints)."""
     y = pd.to_numeric(df[target_col], errors="coerce") if target_col in df else None
     arrival = pd.to_datetime(df[arrival_col], utc=True, errors="coerce")
+    created = pd.to_datetime(df[created_col], utc=True, errors="coerce")
+    lead = (arrival - created) / pd.Timedelta(days=1)
     rows = []
     for f in folds:
+        H = int(f.meta.get("horizon_days", 14))
         def rate(idx):
             return float(y.iloc[idx].mean()) if (y is not None and idx.size) else float("nan")
+        d = np.minimum(lead.iloc[f.test_idx], H) if f.n_test else None
         rows.append({
             "fold": f.k,
-            "scoring_date_S": pd.Timestamp(f.origin).date(),
-            "horizon_end": pd.Timestamp(f.next_origin).date(),
+            "decision_win_start": pd.Timestamp(f.origin).date(),
+            "decision_win_end": pd.Timestamp(f.next_origin).date(),
             "n_train": f.n_train, "n_test": f.n_test, "n_deferred": f.n_embargo,
             "train_pos": rate(f.train_idx), "test_pos": rate(f.test_idx),
+            "test_horizon_med": float(d.median()) if f.n_test else None,
             "test_arr_min": arrival.iloc[f.test_idx].min().date() if f.n_test else None,
             "test_arr_max": arrival.iloc[f.test_idx].max().date() if f.n_test else None,
         })
@@ -187,24 +208,23 @@ def fold_summary(df: pd.DataFrame, folds: list[Fold], *, target_col: str = STATU
 def assert_point_in_time(df: pd.DataFrame, folds: list[Fold], *,
                          created_col: str = CREATED, arrival_col: str = ARRIVAL,
                          known_col: str = KNOWN_COL) -> None:
-    """Raise if any fold leaks the future (arrival-anchored). Per fold at S:
-        (1) every TRAIN label was known by S (outcome_known_date <= S),
-        (2) every TEST booking was visible by S (created <= S),
-        (3) every TEST booking was still future at S (arrival > S) and unresolved
-            at S (outcome_known_date > S),
-        (4) train ∩ test = ∅.
+    """Raise if any fold leaks the future (decision-time). Per fold window (O, O_next]:
+        (1) every TRAIN label was known by O (outcome_known_date <= O),
+        (2) every TEST booking was DECIDED inside (O, O_next] and still OPEN then
+            (outcome_known_date > O -> disjoint from train),
+        (3) train ∩ test = ∅.
     """
-    created = pd.to_datetime(df[created_col], utc=True, errors="coerce")
-    arrival = pd.to_datetime(df[arrival_col], utc=True, errors="coerce")
     known = pd.to_datetime(df[known_col], utc=True, errors="coerce")
     for f in folds:
-        S = pd.Timestamp(f.origin)
+        O = pd.Timestamp(f.origin); O_next = pd.Timestamp(f.next_origin)
+        H = int(f.meta.get("horizon_days", 14))
+        s_star = decision_date(df, horizon_days=H, created_col=created_col, arrival_col=arrival_col)
         if f.n_train:
-            assert known.iloc[f.train_idx].max() <= S, f"fold {f.k}: train label known after S"
+            assert known.iloc[f.train_idx].max() <= O, f"fold {f.k}: train label known after O"
         if f.n_test:
-            assert created.iloc[f.test_idx].max() <= S, f"fold {f.k}: test created after S"
-            assert arrival.iloc[f.test_idx].min() > S, f"fold {f.k}: test arrival on/before S"
-            assert known.iloc[f.test_idx].min() > S, f"fold {f.k}: test resolved before S (leak)"
+            ss = s_star.iloc[f.test_idx]
+            assert ss.min() > O and ss.max() <= O_next, f"fold {f.k}: test decided outside its window"
+            assert known.iloc[f.test_idx].min() > O, f"fold {f.k}: test resolved by O (leak into train)"
         assert np.intersect1d(f.train_idx, f.test_idx).size == 0, f"fold {f.k}: train/test overlap"
 
 

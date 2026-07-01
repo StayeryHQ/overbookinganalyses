@@ -241,17 +241,18 @@ def search_hyperparams(model_name: str, X, y, *, n_iter: int = 40, n_folds: int 
 # Walk-forward evaluation - honest one-step-ahead metrics
 # =============================================================================
 def walk_forward_eval(model_name: str, *, hp: dict | None = None, n_folds: int = 6,
-                      horizon_days: int = 14, step_days: int = 30, scheme: str = "expanding",
+                      horizon_days: int = 14, step_days: int = 14, scheme: str = "expanding",
                       c_walk: float = sc.COST_WALK, c_empty: float = sc.COST_EMPTY,
                       seed: int = SEED) -> dict:
-    """Fit the FROZEN-hp pipeline on each ARRIVAL-anchored fold's train, score the
-    bookings arriving in the next `horizon_days`, and return per-fold + aggregate
-    AUC / AP / Brier / cost@analytic-threshold.
+    """Fit the FROZEN-hp pipeline on each DECISION-TIME fold's train, score its test
+    bookings, and return per-fold + aggregate AUC / AP / Brier / cost@analytic-threshold.
 
-    This is the decision-aligned procedure metric: at each scoring date S the test
-    is the population the desk would decide on (active at S, arriving within the
-    horizon), trained on ALL bookings resolved by S. The deployment model uses all
-    resolved data; its expected performance is this distribution (live-monitored).
+    This is the decision-aligned procedure metric: each booking is graded once, at
+    its decision date S* = max(created, arrival - `horizon_days`) if still open then
+    (src.walkforward.make_folds), trained on ALL bookings resolved before the fold.
+    The deployment model uses all resolved data; its expected performance is this
+    distribution (live-monitored). (Static features are horizon-blind, so this fold
+    just selects which bookings/rows are in each test - incl. short-lead ones.)
     """
     from sklearn.metrics import roc_auc_score, average_precision_score, brier_score_loss
     num, cat = _feature_lists()

@@ -389,18 +389,18 @@ def coverage_report(per_night: pd.DataFrame, *, levels=(0.5, 0.8, 0.9, 0.95),
 
 
 # =============================================================================
-# Matched, arrival-anchored walk-forward: hazard vs static on the SAME estimand
+# Matched, decision-time walk-forward: hazard vs static on the SAME estimand
 # =============================================================================
-def walk_forward_eval_hazard(*, n_folds: int = 6, horizon_days: int = 14, step_days: int = 30,
+def walk_forward_eval_hazard(*, n_folds: int = 6, horizon_days: int = 14, step_days: int = 14,
                              compare_static: bool = True, seed: int = SEED) -> dict:
-    """Arrival-anchored walk-forward for the hazard model, matched to the decision.
+    """Decision-time walk-forward for the hazard model, matched to the decision.
 
-    At each scoring date S: fit the hazard model on bookings resolved by S, then
-    score the bookings ACTIVE at S and arriving within `horizon_days` via the
-    SURVIVAL PRODUCT over their remaining days-to-arrival, and grade on
-    cancel-before-arrival. If `compare_static`, the best static model is scored on
-    the SAME rows + SAME label so the comparison targets the same estimand
-    (P(cancel before arrival | alive at S)) — the apples-to-apples fix. The
+    Each test booking is graded once, at its decision-time horizon d = min(lead,
+    `horizon_days`) (src.walkforward.make_folds). Per fold: fit the hazard model on
+    bookings resolved before the window, score the test bookings via the SURVIVAL
+    PRODUCT over d, and grade on cancel-by-arrival. If `compare_static`, the best
+    static model is scored on the SAME rows + SAME label so the comparison targets
+    the same estimand (P(cancel by arrival | open at the decision date)). The
     promotion signal uses mean(delta_AUC) > its own std (signal beats noise), not a
     magic 0.01 gate.
     """
@@ -427,7 +427,9 @@ def walk_forward_eval_hazard(*, n_folds: int = 6, horizon_days: int = 14, step_d
         teb = te.copy()
         arr = pd.to_datetime(teb[ARRIVAL], utc=True); cre = pd.to_datetime(teb["created"], utc=True)
         teb["lead"] = (arr - cre) / pd.Timedelta(days=1)
-        teb[AXIS] = ((arr - S) / pd.Timedelta(days=1)).clip(lower=1)        # remaining days to arrival
+        # Decision-time horizon: each booking is scored at d = min(lead, H) days out
+        # (long-lead -> H; short-lead -> its lead), matching src.walkforward.make_folds.
+        teb[AXIS] = np.minimum(teb["lead"], horizon_days).clip(lower=1)
         p_haz = survival_cancel_proba(teb, hazard_fn(hz), hz["num"], hz["cat"],
                                       hz["cat_dtypes"], snaps=hz.get("snap"))
         y = (pd.to_numeric(teb["status"], errors="coerce").fillna(0).astype(int).to_numpy() == 1)
