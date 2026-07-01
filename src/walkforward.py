@@ -1,6 +1,7 @@
 # ---------------------------------------------------------------------------
 # src/walkforward.py
-# Point-in-time temporal helpers for the cancellation models.
+# Point-in-time temporal helpers — the SINGLE evaluation regime for every
+# cancellation model (static classifiers AND the hazard model).
 #
 # Three timestamps, kept distinct (this is the thing that was previously muddled):
 #   * created            = when a booking's FEATURES first exist (information time).
@@ -10,20 +11,23 @@
 #                          rule is: train on outcomes known before the scoring date.
 #   * arrival            = resolution.
 #
-# What the folds here measure (be precise about it):
-#   This is a NEW-BOOKING GENERALISATION check, anchored on `created`:
-#       train  = every booking whose OUTCOME was known by O_k
-#       test   = the next block of bookings CREATED in (O_k, O_{k+1}]
-#       embargo= created <= O_k but outcome not yet known (in-flight)
-#   It answers "can the model rank cancellation for newly-created bookings?" — a
-#   useful secondary check, but NOT the decision metric. The DECISION-ALIGNED
-#   evaluation is horizon-based (d = 1..14 days before arrival) and lives in
-#   `src.hazard` (the per-horizon / per-night metrics), because the overbooking
-#   decision is made a horizon before arrival, not at booking creation.
+# What the folds here measure — ARRIVAL-ANCHORED, production-faithful:
+#   Production scores, on each date S, the bookings that ARRIVE within the next
+#   H days. The folds mirror exactly that, at a sequence of scoring dates S_k:
+#       train = outcome_known_date <= S_k          # everything resolved by S_k
+#       test  = created<=S_k & S_k<arrival<=S_k+H  # the population scored at S_k
+#               & outcome_known_date>S_k           # (still open at S_k)
+#       deferred (embargo_idx) = active at S_k but arriving beyond H (info only)
+#   Graded on cancel-before-arrival — the same estimand for every model, so the
+#   hazard-vs-static comparison is apples-to-apples. Set step_days == H to tile
+#   the timeline contiguously, then POOL the per-fold test predictions into one
+#   large decision-aligned sample for AUC / AP / Brier / cost (per-fold spread =
+#   stability). This is the procedure metric; the deployed model is refit on ALL
+#   resolved data (training != production).
 #
 # `add_outcome_known_date` is also used by retraining to fit the deployment model
-# on all data resolved "now" (train = outcome_known_date <= asof), which is
-# correct regardless of anchor. PURE pandas/numpy (unit-testable).
+# on all data resolved "now" (train = outcome_known_date <= asof). PURE
+# pandas/numpy (unit-testable).
 # ---------------------------------------------------------------------------
 
 from __future__ import annotations
