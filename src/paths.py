@@ -19,7 +19,6 @@ from typing import Any
 
 import yaml
 
-
 # ---- Repo root discovery --------------------------------------------------
 
 _MARKERS = ("pyproject.toml", ".git")
@@ -45,6 +44,7 @@ def repo_root() -> Path:
 
 
 # ---- Convenience getters --------------------------------------------------
+
 
 def configs_dir() -> Path:
     return repo_root() / "configs"
@@ -78,11 +78,6 @@ def tables_dir() -> Path:
 def brand_config_path() -> Path:
     """Path to configs/stayery_brand.yaml."""
     return configs_dir() / "stayery_brand.yaml"
-
-
-def locations_config_path() -> Path:
-    """Path to configs/locations.yaml."""
-    return configs_dir() / "locations.yaml"
 
 
 def schema_config_path() -> Path:

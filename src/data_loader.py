@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------------------
 # Data loader for the Stayery overbooking project.
 #
-#   1. Querying BigQuery (`stayery-analytics.reporting.reservations`),
+#   1. Querying BigQuery (`stayery-analytics.reporting.reservations` and performance analytics),
 #      excluding PII columns at SQL level (`SELECT * EXCEPT(...)`)
 #   2. `strip_pii` as a safety net 
 #   3. Coercing dtypes
@@ -348,7 +348,7 @@ def _query_property_performance(limit: int | None = None) -> pd.DataFrame:
 
 
 def property_universe(force_refresh: bool = False) -> pd.DataFrame:
-    """Location universe from the performance table — REPLACES configs/locations.yaml.
+    """Location universe from the performance table — replaces configs/locations.yaml.
 
     Returns one row per propertyId with `units` = the most recent houseCount
     (the property's bookable unit count). New properties appear automatically.

@@ -12,15 +12,13 @@ from pathlib import Path
 from typing import Any
 
 import matplotlib as mpl
-import pandas as pd
-import yaml
 
-from .paths import brand_config_path, locations_config_path
-
+from .paths import brand_config_path
 
 # =============================================================================
 # Brand config / palette
 # =============================================================================
+
 
 @lru_cache(maxsize=1)
 def load_brand_config() -> dict[str, Any]:
@@ -73,6 +71,7 @@ def apply_stayery_style() -> None:
     and we put always-available fallbacks at the END of the chain.
     """
     import logging
+
     # Matplotlib emits this warning per missing font, per draw call.
     # Silence it once; the fallback chain still does its job.
     logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
@@ -80,7 +79,9 @@ def apply_stayery_style() -> None:
     cfg = load_brand_config()
     lookup = _color_lookup()
 
-    primary_chain = [cfg["typography"]["primary"]] + cfg["typography"]["primary_fallback"]
+    primary_chain = [cfg["typography"]["primary"]] + cfg["typography"][
+        "primary_fallback"
+    ]
     if "DejaVu Sans" not in primary_chain:
         primary_chain.append("DejaVu Sans")
     palette = categorical_palette()
@@ -132,26 +133,6 @@ def apply_stayery_style() -> None:
             "savefig.bbox": "tight",
         }
     )
-
-
-# =============================================================================
-# Locations reference table
-# =============================================================================
-
-@lru_cache(maxsize=1)
-def load_locations() -> pd.DataFrame:
-    """Return the locations table from configs/locations.yaml as a DataFrame.
-
-    Columns: hotel_code, city, neighborhood, bundesland, opening_date,
-    units_total, notes. `units_total` is the size benchmark we use to switch
-    between the <50 rooms (2 overbookings) and >=50 rooms (4 overbookings)
-    policies.
-    """
-    with locations_config_path().open("r", encoding="utf-8") as fh:
-        data = yaml.safe_load(fh)
-    df = pd.DataFrame(data["locations"])
-    df["units_total"] = df["units_total"].astype(int)
-    return df
 
 
 def benchmark_overbooking_allowance(units_total: int) -> int:
