@@ -56,6 +56,16 @@ def _feature_lists() -> tuple[list[str], list[str]]:
     return list(r["numeric"]), list(r["categorical"])
 
 
+def _family_feature_lists(model_name: str) -> tuple[list[str], list[str]]:
+    """Family-aware feature view (decided 2026-06-30): the LINEAR model (logreg)
+    uses the skew-damped `_log` twins + scaling; the TREE models (xgboost, histgb)
+    use the raw columns and ignore collinearity. Reads `log_twins` from the roster."""
+    from .features import family_feature_lists
+    roster = load_feature_roster()
+    family = "linear" if MODEL_KIND[model_name] == "logreg" else "tree"
+    return family_feature_lists(roster, family)
+
+
 def _target(df: pd.DataFrame) -> pd.Series:
     """Binary target. Clean parquet ships `status` as 0/1; fall back to is_cancelled."""
     col = "is_cancelled" if "is_cancelled" in df.columns else "status"
@@ -208,7 +218,7 @@ def search_hyperparams(model_name: str, X, y, *, n_iter: int = 40, n_folds: int 
     """
     from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
     from scipy.stats import loguniform, uniform, randint
-    num, cat = _feature_lists()
+    num, cat = _family_feature_lists(model_name)
     kind = MODEL_KIND[model_name]
     pipe = build_pipeline(model_name, _default_hp(model_name), num, cat, calibrate=False, seed=seed)
 
@@ -255,7 +265,7 @@ def walk_forward_eval(model_name: str, *, hp: dict | None = None, n_folds: int =
     just selects which bookings/rows are in each test - incl. short-lead ones.)
     """
     from sklearn.metrics import roc_auc_score, average_precision_score, brier_score_loss
-    num, cat = _feature_lists()
+    num, cat = _family_feature_lists(model_name)
     hp = hp or _card_hp(model_name)
     df = wf.add_outcome_known_date(_load_clean())
     folds = wf.make_folds(df, n_folds=n_folds, horizon_days=horizon_days,
@@ -283,6 +293,34 @@ def walk_forward_eval(model_name: str, *, hp: dict | None = None, n_folds: int =
            for m in ["auc", "ap", "brier", "cost"]} if len(pf) else {}
     return {"model": model_name, "scheme": scheme, "n_folds_used": len(pf),
             "per_fold": per_fold, "aggregate": agg}
+
+
+def walk_forward_predict(model_name: str, *, hp: dict | None = None, n_folds: int = 6,
+                         horizon_days: int = 14, step_days: int = 14,
+                         scheme: str = "expanding", seed: int = SEED) -> pd.DataFrame:
+    """Pooled out-of-time predictions across the decision-time folds: fit the
+    frozen-hp CALIBRATED pipeline on each fold's train, predict its test, and return
+    a long DataFrame [fold, y_true, y_prob]. One place to get honest OOS scores for
+    reliability curves, cost-optimal thresholds and pooled metrics (notebooks 01-03).
+    """
+    num, cat = _family_feature_lists(model_name)
+    hp = hp or _card_hp(model_name)
+    df = wf.add_outcome_known_date(_load_clean())
+    folds = wf.make_folds(df, n_folds=n_folds, horizon_days=horizon_days,
+                          step_days=step_days, scheme=scheme)
+    X, y = df[num + cat], _target(df)
+    parts = []
+    for f in folds:
+        if f.n_train < 500 or f.n_test < 50 or y.iloc[f.train_idx].nunique() < 2:
+            continue
+        pipe = build_pipeline(model_name, hp, num, cat, calibrate=True, seed=seed)
+        pipe.fit(X.iloc[f.train_idx], y.iloc[f.train_idx].values)
+        p = pipe.predict_proba(X.iloc[f.test_idx])[:, 1]
+        parts.append(pd.DataFrame({"fold": f.k,
+                                   "y_true": y.iloc[f.test_idx].to_numpy(),
+                                   "y_prob": p}))
+    return (pd.concat(parts, ignore_index=True) if parts
+            else pd.DataFrame(columns=["fold", "y_true", "y_prob"]))
 
 
 # =============================================================================
@@ -313,7 +351,7 @@ def retrain(model_name: str, *, mode: str = "refit", asof: str | pd.Timestamp | 
         # so refit/retune behave the same here.
         from . import hazard as hz
         return hz.retrain_hazard(asof=asof, persist=persist, seed=seed)
-    num, cat = _feature_lists()
+    num, cat = _family_feature_lists(model_name)
     df = wf.add_outcome_known_date(_load_clean())
     known = pd.to_datetime(df[wf.KNOWN_COL], utc=True, errors="coerce")
     asof_ts = pd.Timestamp(asof, tz="UTC") if asof is not None else pd.Timestamp(known.max())
