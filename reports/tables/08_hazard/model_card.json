@@ -1,8 +1,8 @@
 {
   "model": "hazard",
-  "retrained_at": "2026-07-01T08:57:56.662039+00:00",
-  "asof": "2026-06-19",
-  "val_ap": 0.07277024013567032,
+  "retrained_at": "2026-07-01T10:53:52.140569+00:00",
+  "asof": "2026-06-27",
+  "val_ap": 0.0751453686846795,
   "hyperparams": {
     "max_depth": 7,
     "learning_rate": 0.04184263761235187,
@@ -11,7 +11,7 @@
     "subsample": 0.945807721451697,
     "colsample_bytree": 0.8166907233119949
   },
-  "n_train_person_period": 1210650,
+  "n_train_person_period": 1225225,
   "snap": [
     1,
     2,
