@@ -1,6 +1,6 @@
 # Overbooking Analyse
 
-Cancellation prediction + overbooking dashboards for Stayery.
+Cancellation prediction + overbooking dashboards.
 Built on uv + Python 3.12.
 
 ---
@@ -26,7 +26,7 @@ That's it. `uv sync` reads `pyproject.toml`, creates `.venv/`, and installs ever
 
 ## Running things
 
-**Never** call `python somefile.py` directly with your shell's bare Python - that's not the project's venv and won't have the dependencies. Always go through `uv run`, or activate the venv first.
+**Do not** call `python somefile.py` directly with your shell's bare Python - that's not the project's venv and won't have the dependencies. Always go through `uv run`, or activate the venv first.
 
 ### Option A - `uv run` (recommended, no activation needed)
 
@@ -38,7 +38,7 @@ uv run jupyter lab          # opens the notebooks in a browser
 
 `uv run` automatically uses `.venv/bin/python` and makes sure the venv is in sync with `pyproject.toml` first.
 
-### Option B - activate the venv (more traditional)
+### Option B - activate the venv
 
 ```bash
 source .venv/bin/activate
@@ -61,24 +61,6 @@ uv lock --upgrade            # refresh uv.lock (rebuild later via uv sync)
 uv tree                      # show the full dep tree
 uv run python -c "import src; print(src.__all__)"   # smoke-test the package
 ```
-
----
-
-## Pipeline order
-
-Model lineup decided 2026-06-11:
-3 static classifiers + 3 survival models, then a fair comparison.
-
-1. `notebooks/00_data_audit.ipynb`   - load + audit + clean + temporal_split (60/15/25) → `Data/reservations_clean.parquet`
-2. `notebooks/01_logreg.ipynb`       - logistic regression (gold-standard template, fully commented)
-3. `notebooks/02_xgboost.ipynb`      - XGBoost (clone of 01, swap §5)        [to rebuild]
-4. `notebooks/03_histgb.ipynb`       - HistGradientBoosting (clone of 01)    [to rebuild]
-5. `notebooks/08_hazard.ipynb`       - discrete-time hazard (daily rescoring) [to finish]
-6. `notebooks/05_model_comparison.ipynb` - fair bake-off + tuning of finalists [to rebuild]
-7. `uv run python main.py score`     - daily scoring with the chosen model
-
-Each notebook is self-contained: cleaning + features + modeling live inline; loading + styling + paths + scoring are imported from `src/`.
-
 ---
 
 ## Why the `python data_loader.py` call failed

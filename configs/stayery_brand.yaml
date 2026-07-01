@@ -2,7 +2,7 @@
 # Brand Configuration
 # =============================================================================
 
-colors: # this is a nested dictionary defining the color palette for the Stayery brand, organized into core and supporting colors.
+colors: # this is a nested dictionary defining the color palette for the brand, organized into core and supporting colors.
   core:
     black:  "#000000"   # Text on light backgrounds
     white:  "#FFFFFF"   # Default chart background
