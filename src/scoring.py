@@ -330,6 +330,13 @@ def build_features(df: pd.DataFrame, today: pd.Timestamp | None = None) -> pd.Da
     cf = pd.to_numeric(out.get("cancellationFee_fee_amount"), errors="coerce")
     out["diff_gross_cancellation_fee"] = gross - cf
 
+    # Log twins (LINEAR family) — mirror 00 §3.0.i so the linear model is scoreable
+    # on upcoming bookings (trees use the raw columns; the roster picks per family).
+    for _b, _l in [("los_nights", "los_nights_log"), ("lead_time_days", "lead_time_days_log"),
+                   ("gross_per_night", "gross_per_night_log"),
+                   ("diff_gross_cancellation_fee", "diff_gross_cancellation_fee_log")]:
+        out[_l] = np.log1p(pd.to_numeric(out[_b], errors="coerce").clip(lower=0))
+
     # has_children — mirrors 00 §3.0.g (roster feature).
     out["has_children"] = (
         (pd.to_numeric(out.get("children"), errors="coerce").fillna(0) > 0)
