@@ -7,6 +7,9 @@
 # What it does
 #   * expands bookings into a person-period grid (one row per day-before-arrival
 #     snapshot) and learns h_d = P(cancel in window ending at d | survived, x);
+#   * calibrates with PER-SNAPSHOT-BAND isotonic maps (daily d<=14 vs the coarse
+#     tail) — a wide-window hazard is not on the same probability scale as a daily
+#     one, so one pooled map over heterogeneous widths miscalibrates both;
 #   * serves a per-booking P(cancel before arrival) via the survival product
 #     P_cum(D) = 1 - Π_{u=1..D} (1 - h_u), evaluated on a FRESH forward grid
 #     u=1..D (D = the booking's current days_until_arrival) — the v11 bugfix;
@@ -39,6 +42,10 @@ SNAP_FINE: Final[list[int]] = list(range(1, 15))                  # daily, decis
 # of bookings; >270 cancels ~0.1% — negligible residual).
 SNAP_COARSE: Final[list[int]] = [21, 30, 45, 60, 90, 120, 180, 270]
 SNAP: Final[list[int]] = sorted(SNAP_FINE + SNAP_COARSE)
+# Calibration band edge: daily snapshots (<=14, width 1) vs the coarse tail
+# (>14, widths 7..90). Isotonic is fit separately per band (see fit_hazard) —
+# pooling a wide-window hazard with a daily one miscalibrates both.
+CAL_BAND_EDGE: Final[int] = max(SNAP_FINE)   # = 14
 
 HAZARD_PATH: Final[str] = "08_hazard_model.joblib"
 HAZARD_CARD: Final[str] = "reports/tables/08_hazard/model_card.json"
@@ -67,8 +74,9 @@ def feature_lists(clean: pd.DataFrame) -> tuple[list[str], list[str]]:
 def add_event_columns(clean: pd.DataFrame) -> pd.DataFrame:
     """Add `lead`, `event_d` (cancel timing for events else NaN) and `src_idx`.
 
-    Mirrors nb08: event = status==1 AND cancel_days_before_arrival>0; event_d is
-    the days-before-arrival timing; non-events are censored survivors. Keeps lead>0.
+    Matches 00's target: event = status==1 AND cancel_days_before_arrival>=0
+    (pre-arrival or same-day cancels); event_d is the days-before-arrival timing;
+    non-events (incl. no-shows) are censored survivors. Keeps lead>0.
     """
     out = clean.copy()
     arr = pd.to_datetime(out["arrival"], utc=True, errors="coerce")
@@ -76,8 +84,11 @@ def add_event_columns(clean: pd.DataFrame) -> pd.DataFrame:
     out["lead"] = (arr - cre) / pd.Timedelta(days=1)
     status = pd.to_numeric(out["status"], errors="coerce").fillna(0).astype(int)
     cdba = pd.to_numeric(out.get("cancel_days_before_arrival"), errors="coerce")
-    is_event = status.eq(1) & cdba.gt(0)
-    out["event_d"] = np.where(is_event, cdba, np.nan)
+    # Event = pre-arrival OR same-day cancel (cdba >= 0), matching 00's target.
+    # Clip to a tiny positive so an exactly-on-arrival cancel (cdba == 0) lands in
+    # the first daily window (0, 1] instead of being lost at the boundary.
+    is_event = status.eq(1) & cdba.ge(0)
+    out["event_d"] = np.where(is_event, np.clip(cdba, 1e-6, None), np.nan)
     out = out[out["lead"] > 0].reset_index(drop=True)
     out["src_idx"] = out.index
     return out
@@ -185,11 +196,12 @@ def _sample_hp(rng) -> dict:
 def fit_hazard(clean_resolved: pd.DataFrame, *, val_frac: float = 0.15,
                n_iter: int = 15, seed: int = SEED) -> dict:
     """Fit the hazard model on RESOLVED bookings via a RandomizedSearch (with
-    EARLY STOPPING — no fixed tree count) + isotonic calibration, both on a
-    temporally held-out (most-recent-by-created) validation slice.
+    EARLY STOPPING — no fixed tree count) + PER-SNAPSHOT-BAND isotonic calibration,
+    both on a temporally held-out (most-recent-by-created) validation slice.
 
-    Returns a dict artifact: {model, iso, num, cat, cat_dtypes, snap, axis, hp,
-    val_ap, best_iteration, n_train_pp}.
+    Returns a dict artifact: {model, iso, iso_bands, num, cat, cat_dtypes, snap,
+    axis, hp, val_ap, best_iteration, n_train_pp}. `iso` is the pooled map (kept
+    as a fallback); `iso_bands` = {edge, le, gt} holds the daily/coarse maps.
     """
     from xgboost import XGBClassifier
     from sklearn.isotonic import IsotonicRegression
@@ -220,17 +232,49 @@ def fit_hazard(clean_resolved: pd.DataFrame, *, val_frac: float = 0.15,
         if best is None or ap > best[0]:
             best = (ap, hp, m)
     val_ap, hp, model = best
-    iso = IsotonicRegression(out_of_bounds="clip").fit(model.predict_proba(Xva)[:, 1], yva)
-    return {"model": model, "iso": iso, "num": num, "cat": cat, "cat_dtypes": cat_dtypes,
+    # Per-snapshot-band isotonic calibration. A wide-window (coarse-tail) hazard
+    # and a daily hazard live on different probability scales, so ONE pooled map
+    # over mixed widths miscalibrates both. Fit a map for the daily band
+    # (d<=CAL_BAND_EDGE) and one for the coarse tail; fall back to the pooled map
+    # for any band too sparse to fit a stable isotonic on.
+    raw_va  = model.predict_proba(Xva)[:, 1]
+    axis_va = pp_va[AXIS].to_numpy()
+    iso_pooled = IsotonicRegression(out_of_bounds="clip").fit(raw_va, yva)
+    def _fit_band(mask):
+        if int(mask.sum()) >= 500 and np.unique(yva[mask]).size > 1:
+            return IsotonicRegression(out_of_bounds="clip").fit(raw_va[mask], yva[mask])
+        return iso_pooled
+    iso_bands = {"edge": CAL_BAND_EDGE,
+                 "le": _fit_band(axis_va <= CAL_BAND_EDGE),
+                 "gt": _fit_band(axis_va >  CAL_BAND_EDGE)}
+    return {"model": model, "iso": iso_pooled, "iso_bands": iso_bands,
+            "num": num, "cat": cat, "cat_dtypes": cat_dtypes,
             "snap": SNAP, "axis": AXIS, "hp": hp, "val_ap": float(val_ap),
             "best_iteration": int(getattr(model, "best_iteration", 0) or 0),
             "n_train_pp": int(len(pp_tr))}
 
 
 def hazard_fn(hz: dict):
-    """Return a calibrated hazard callable haz(X)->h from a fitted artifact."""
-    model, iso = hz["model"], hz["iso"]
-    return lambda X: iso.predict(model.predict_proba(X)[:, 1])
+    """Return a calibrated hazard callable haz(X)->h from a fitted artifact.
+
+    Applies PER-SNAPSHOT-BAND isotonic calibration: rows with days_until_arrival
+    (AXIS) <= edge use the daily-band map, the rest the coarse-tail map. AXIS is
+    always part of the scoring FEATS (survival_cancel_proba guarantees it), so the
+    band is known per row. Falls back to the single pooled map for older artifacts
+    that predate `iso_bands`.
+    """
+    model = hz["model"]
+    bands = hz.get("iso_bands")
+    if not bands:                                  # backward-compat: pooled map only
+        iso = hz["iso"]
+        return lambda X: iso.predict(model.predict_proba(X)[:, 1])
+    edge, iso_le, iso_gt = bands["edge"], bands["le"], bands["gt"]
+
+    def haz(X):
+        raw = model.predict_proba(X)[:, 1]
+        d = np.asarray(X[AXIS], dtype=float)
+        return np.where(d <= edge, iso_le.predict(raw), iso_gt.predict(raw))
+    return haz
 
 
 def score_upcoming_hazard(hz: dict, bookings: pd.DataFrame) -> np.ndarray:
@@ -361,9 +405,9 @@ def walk_forward_eval_hazard(*, n_folds: int = 6, horizon_days: int = 14, step_d
     magic 0.01 gate.
     """
     from sklearn.metrics import roc_auc_score, average_precision_score, brier_score_loss
-    from . import scoring as sc, walkforward as wf
+    from . import scoring as sc, walkforward as wf, load_clean_reservations
 
-    clean = wf.add_outcome_known_date(_load_clean())
+    clean = wf.add_outcome_known_date(load_clean_reservations())
     folds = wf.make_folds(clean, n_folds=n_folds, horizon_days=horizon_days, step_days=step_days)
     static_pipe = None
     if compare_static:
