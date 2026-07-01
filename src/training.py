@@ -154,7 +154,8 @@ def build_pipeline(model_name: str, hp: dict, num: list[str], cat: list[str],
     from sklearn.calibration import CalibratedClassifierCV
 
     kind = MODEL_KIND[model_name]
-    ohe = OneHotEncoder(handle_unknown="ignore")  # robust to unseen categories (new hotels)
+    # dense output: HistGradientBoosting rejects sparse; robust to unseen categories.
+    ohe = OneHotEncoder(handle_unknown="ignore", sparse_output=False)
 
     if kind == "logreg":
         from sklearn.linear_model import LogisticRegression
@@ -210,30 +211,65 @@ def _card_hp(model_name: str) -> dict:
 # =============================================================================
 # Hyperparameter search (retune) - train-only, TimeSeriesSplit, AP
 # =============================================================================
+def _search_xgboost_earlystop(num: list[str], cat: list[str], X, y, *,
+                              n_iter: int = 40, seed: int = SEED, val_frac: float = 0.15) -> dict:
+    """XGBoost tuning with EARLY STOPPING (no fixed 600 trees). Sample structural hp,
+    fit each with early stopping on a TIME-based val tail, keep the best by AP, and
+    return the best hp incl. the early-stopped `n_estimators`. `X` must be time-ordered
+    (retrain passes created-sorted rows). Mirrors src.hazard.fit_hazard's approach."""
+    from xgboost import XGBClassifier
+    from sklearn.compose import ColumnTransformer
+    from sklearn.preprocessing import OneHotEncoder
+    from sklearn.metrics import average_precision_score
+    cut = int(len(X) * (1 - val_frac))
+    prep = ColumnTransformer([("cat", OneHotEncoder(handle_unknown="ignore"), cat),
+                              ("num", "passthrough", num)])
+    Xtr = prep.fit_transform(X.iloc[:cut]); Xva = prep.transform(X.iloc[cut:])
+    ytr = np.asarray(y.iloc[:cut]); yva = np.asarray(y.iloc[cut:])
+    rng = np.random.RandomState(seed)
+
+    def _sample():
+        return dict(max_depth=int(rng.choice([3, 4, 5, 6, 8])),
+                    learning_rate=float(np.exp(rng.uniform(np.log(0.02), np.log(0.3)))),
+                    subsample=float(rng.uniform(0.6, 1.0)),
+                    colsample_bytree=float(rng.uniform(0.6, 1.0)),
+                    min_child_weight=int(rng.choice([1, 3, 5, 10, 20])),
+                    reg_lambda=float(np.exp(rng.uniform(np.log(0.5), np.log(50.0)))),
+                    reg_alpha=float(np.exp(rng.uniform(np.log(1e-3), np.log(5.0)))))
+
+    candidates = [dict(max_depth=6, learning_rate=0.05, subsample=0.8, colsample_bytree=0.8,
+                       min_child_weight=1, reg_lambda=1.0, reg_alpha=0.0)]
+    candidates += [_sample() for _ in range(n_iter)]
+    best = None
+    for hp in candidates:
+        m = XGBClassifier(n_estimators=2000, early_stopping_rounds=50, eval_metric="aucpr",
+                          tree_method="hist", objective="binary:logistic", n_jobs=-1,
+                          random_state=seed, **hp)
+        m.fit(Xtr, ytr, eval_set=[(Xva, yva)], verbose=False)
+        ap = average_precision_score(yva, m.predict_proba(Xva)[:, 1])
+        if best is None or ap > best[0]:
+            n_est = int(getattr(m, "best_iteration", 0) or 0) + 1     # early-stopped tree count
+            best = (ap, {**hp, "n_estimators": n_est})
+    return best[1]
+
+
 def search_hyperparams(model_name: str, X, y, *, n_iter: int = 40, n_folds: int = 5,
                        seed: int = SEED) -> dict:
-    """RandomizedSearch (TimeSeriesSplit, scoring=AP) on UNcalibrated pipeline.
-
-    Mirrors the notebook search spaces; returns the best estimator params.
+    """Return the best estimator hp (scoring=AP). XGBoost: tree count via EARLY
+    STOPPING (no fixed count). logreg / histgb: RandomizedSearch on a TimeSeriesSplit
+    (histgb early-stops natively; its max_iter is a cap). `X` should be time-ordered.
     """
     from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
     from scipy.stats import loguniform, uniform, randint
     num, cat = _family_feature_lists(model_name)
     kind = MODEL_KIND[model_name]
+    if kind == "xgboost":
+        return _search_xgboost_earlystop(num, cat, X, y, n_iter=n_iter, seed=seed)
     pipe = build_pipeline(model_name, _default_hp(model_name), num, cat, calibrate=False, seed=seed)
 
     if kind == "logreg":
         space = {"clf__C": loguniform(1e-4, 1e3), "clf__l1_ratio": uniform(0.0, 1.0)}
-    elif kind == "xgboost":
-        space = {"clf__n_estimators": [300, 600, 900, 1200],
-                 "clf__max_depth": [3, 4, 5, 6, 8, 10],
-                 "clf__learning_rate": loguniform(0.01, 0.3),
-                 "clf__subsample": uniform(0.5, 0.5),
-                 "clf__colsample_bytree": uniform(0.5, 0.5),
-                 "clf__min_child_weight": [1, 3, 5, 10, 20],
-                 "clf__reg_lambda": loguniform(0.5, 50),
-                 "clf__reg_alpha": loguniform(1e-3, 5.0)}
-    else:  # histgb
+    else:  # histgb (early-stops natively; max_iter is a cap)
         space = {"clf__learning_rate": loguniform(0.01, 0.3),
                  "clf__max_leaf_nodes": randint(15, 127),
                  "clf__min_samples_leaf": randint(10, 200),
@@ -323,6 +359,46 @@ def walk_forward_predict(model_name: str, *, hp: dict | None = None, n_folds: in
             else pd.DataFrame(columns=["fold", "y_true", "y_prob"]))
 
 
+def bakeoff_walk_forward(*, n_folds: int = 8, horizon_days: int = 14, step_days: int = 14,
+                         seed: int = SEED) -> pd.DataFrame:
+    """FAIR matched bake-off (notebook 05). On each decision-time fold, fit LogReg,
+    XGBoost, HistGB (family-correct, frozen card hp, calibrated) AND the hazard model
+    on the SAME train, then score the SAME test rows. Pool. Returns a wide frame
+    [fold, y_true, p_logreg, p_xgboost, p_histgb, p_hazard] - every model on the
+    identical rows + label, so AUC / AP / Brier / confusion are directly comparable.
+    Hazard uses the survival product at d = min(lead, H) (its decision horizon).
+    """
+    from . import hazard as hz
+    df = wf.add_outcome_known_date(_load_clean())
+    folds = wf.make_folds(df, n_folds=n_folds, horizon_days=horizon_days, step_days=step_days)
+    tgt = _target(df)
+    lin_num, lin_cat = _family_feature_lists("logreg")
+    tree_num, tree_cat = _family_feature_lists("xgboost")   # xgboost == histgb family
+    statics = {"logreg": (lin_num, lin_cat), "xgboost": (tree_num, tree_cat),
+               "histgb": (tree_num, tree_cat)}
+    parts = []
+    for f in folds:
+        if f.n_train < 500 or f.n_test < 50 or tgt.iloc[f.train_idx].nunique() < 2:
+            continue
+        ytr = tgt.iloc[f.train_idx].to_numpy()
+        te = df.iloc[f.test_idx].copy()
+        arr = pd.to_datetime(te["arrival"], utc=True); cre = pd.to_datetime(te["created"], utc=True)
+        te["lead"] = (arr - cre) / pd.Timedelta(days=1)
+        te[hz.AXIS] = np.minimum(te["lead"], horizon_days).clip(lower=1)   # remaining decision horizon d
+        out = {"fold": f.k, "y_true": tgt.iloc[f.test_idx].to_numpy(),
+               "d": te[hz.AXIS].to_numpy()}
+        for m, (num, cat) in statics.items():
+            pipe = build_pipeline(m, _card_hp(m), num, cat, calibrate=True, seed=seed)
+            pipe.fit(df[num + cat].iloc[f.train_idx], ytr)
+            out[f"p_{m}"] = pipe.predict_proba(df[num + cat].iloc[f.test_idx])[:, 1]
+        hzm = hz.fit_hazard(df.iloc[f.train_idx], seed=seed)
+        out["p_hazard"] = hz.survival_cancel_proba(te, hz.hazard_fn(hzm), hzm["num"], hzm["cat"],
+                                                   hzm["cat_dtypes"], snaps=hzm.get("snap"))
+        parts.append(pd.DataFrame(out))
+    return (pd.concat(parts, ignore_index=True) if parts
+            else pd.DataFrame(columns=["fold", "y_true", "d", "p_logreg", "p_xgboost", "p_histgb", "p_hazard"]))
+
+
 # =============================================================================
 # Retrain - fit deployment model on ALL resolved data
 # =============================================================================
@@ -371,10 +447,11 @@ def retrain(model_name: str, *, mode: str = "refit", asof: str | pd.Timestamp | 
 
     # ---- hyperparameters ------------------------------------------------------
     if mode == "retune":
-        # search on the resolved data (TimeSeriesSplit inside the search)
-        Xr = X[resolved].sort_index()
-        hp = search_hyperparams(model_name, Xr, y[resolved].loc[Xr.index],
-                                n_iter=n_iter, seed=seed)
+        # search on the resolved data, TIME-ORDERED by `created` (so xgboost's
+        # early-stopping val is a true temporal tail, and TimeSeriesSplit is honest).
+        order = pd.to_datetime(df.loc[resolved, "created"], utc=True, errors="coerce").sort_values().index
+        Xr, yr = X.loc[order], y.loc[order]
+        hp = search_hyperparams(model_name, Xr, yr, n_iter=n_iter, seed=seed)
     else:
         hp = _card_hp(model_name)
 
