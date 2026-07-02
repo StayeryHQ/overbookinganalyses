@@ -1,6 +1,6 @@
 # =============================================================================
 # Path configuration
-# Resolved by src/revenueblindspots/paths.py against the repo root.
+# Resolved by src/paths.py against the repo root.
 # =============================================================================
 raw_data_dir: Data
 

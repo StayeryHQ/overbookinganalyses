@@ -69,3 +69,36 @@ def benchmark_overbooking_allowance(units_total: int) -> int:
     50 rooms or more -> 4 allowed
     """
     return 4 if units_total >= 50 else 2
+
+
+# =============================================================================
+# Room-type capacities (for the Occupancy dashboard's room-type sub-view)
+# =============================================================================
+from .paths import configs_dir  # noqa: E402  (kept local to this section)
+
+ROOM_TYPE_CAPACITY_FILE = "room_type_capacity.yaml"
+
+
+@lru_cache(maxsize=1)
+def load_room_type_capacity() -> dict[str, dict[str, int]]:
+    """Load configs/room_type_capacity.yaml -> {property_name: {unitGroup_name: capacity}}.
+
+    This file is HAND-MAINTAINED (real per-room-type capacities aren't in either
+    BigQuery table). Entries whose capacity is still null/blank are dropped, so the
+    room-type view simply omits a capacity reference line for those types instead of
+    drawing a wrong one. Returns {} if the file is missing.
+    """
+    path: Path = configs_dir() / ROOM_TYPE_CAPACITY_FILE
+    if not path.exists():
+        return {}
+    with path.open("r", encoding="utf-8") as fh:
+        raw = yaml.safe_load(fh) or {}
+    caps = raw.get("capacities", raw)  # allow either a top-level 'capacities:' or a flat map
+    out: dict[str, dict[str, int]] = {}
+    for prop, groups in (caps or {}).items():
+        if not isinstance(groups, dict):
+            continue
+        clean = {str(g): int(v) for g, v in groups.items() if v is not None and str(v) != ""}
+        if clean:
+            out[str(prop)] = clean
+    return out

@@ -1,0 +1,78 @@
+{
+  "model": "xgboost",
+  "retrained_at": "2026-07-02T11:34:46.253018+00:00",
+  "mode": "retune",
+  "asof": "2026-06-28",
+  "n_train_deploy": 179576,
+  "features_numeric": [
+    "adults_n",
+    "arrival_dow",
+    "arrival_month",
+    "diff_gross_cancellation_fee",
+    "gross_per_night",
+    "has_children",
+    "has_corporate_code",
+    "has_group",
+    "has_promo",
+    "is_weekend_arrival",
+    "lead_time_days",
+    "log_gross_amount",
+    "los_nights",
+    "ratePlan_isSubjectToCityTax"
+  ],
+  "features_categorical": [
+    "cancellationFee_name",
+    "channelCode",
+    "guaranteeType",
+    "property_name",
+    "ratePlan_category",
+    "stay_bucket",
+    "unitGroup_name"
+  ],
+  "roster_hash": "40169eb23eec",
+  "feature_change": {
+    "hash": "40169eb23eec",
+    "added": [
+      "diff_gross_cancellation_fee_log",
+      "gross_per_night_log",
+      "lead_time_days_log",
+      "los_nights_log"
+    ],
+    "removed": [],
+    "changed": true
+  },
+  "hyperparams": {
+    "max_depth": 6,
+    "learning_rate": 0.05,
+    "subsample": 0.8,
+    "colsample_bytree": 0.8,
+    "min_child_weight": 1,
+    "reg_lambda": 1.0,
+    "reg_alpha": 0.0,
+    "n_estimators": 471
+  },
+  "walk_forward": {
+    "auc": {
+      "mean": 0.7453591674734623,
+      "std": 0.03016868903701044
+    },
+    "ap": {
+      "mean": 0.2740003093819689,
+      "std": 0.030968121022620577
+    },
+    "brier": {
+      "mean": 0.12034715152288401,
+      "std": 0.014617832538530015
+    },
+    "cost": {
+      "mean": 29413.333333333332,
+      "std": 9226.142567003106
+    }
+  },
+  "operating_points": [
+    {
+      "name": "cost_optimal",
+      "threshold": 0.7894736842105263
+    }
+  ]
+}

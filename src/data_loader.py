@@ -267,15 +267,33 @@ def _validate_schema(df: pd.DataFrame) -> None:
 # Property performance (occupancy / daily operations) — second BigQuery table
 # =============================================================================
 # `reporting.property_performance_daily` holds one row per property per business
-# day. We pull only the operational columns (occupancy + counts) and ignore every
-# revenue column completely. 
+# day. Live schema (confirmed 2026-07-02):
+#   businessDay, houseCount, soldCount, outOfOrderCount, arrivalsCount,
+#   departuresCount, noShowsCount, cancellationsCount, occupancyPercentage,
+#   netUnitRevenue_amount, netAccommodationRevenue_amount,
+#   netFoodAndBeveragesRevenue_amount, netOtherRevenue_amount, netAdr_amount,
+#   revPar_amount, propertyId
+# We pull the operational columns (occupancy + counts) PLUS one documented
+# exception: `netAdr_amount` (average daily rate). ADR is technically a revenue
+# figure, but the Occupancy dashboard uses it to PRE-FILL the "cost of an empty
+# room" parameter, so it earns its place on the allow-list. Every OTHER revenue
+# column is still never listed -> never scanned/pulled (data minimisation + cost).
 PROPERTY_PERF_TABLE: Final[str] = "property_performance_daily"
 PROPERTY_PERF_CACHE: Final[str] = "property_performance_daily.parquet"
 
+# Allow-list — the ONLY columns we select from the table (operational + ADR).
 PROP_PERF_COLUMNS: Final[tuple[str, ...]] = (
     "businessDay", "houseCount", "soldCount", "outOfOrderCount",
     "arrivalsCount", "departuresCount", "noShowsCount", "cancellationsCount",
-    "occupancyPercentage", "propertyId",
+    "occupancyPercentage", "netAdr_amount", "propertyId",
+)
+# Remaining revenue columns present in the table but DELIBERATELY excluded
+# (documentation only; never referenced by the query). Keep in sync with the live
+# schema above. NOTE: netAdr_amount is intentionally NOT here — see above.
+PROP_PERF_REVENUE_EXCLUDED: Final[tuple[str, ...]] = (
+    "netUnitRevenue_amount", "netAccommodationRevenue_amount",
+    "netFoodAndBeveragesRevenue_amount", "netOtherRevenue_amount",
+    "revPar_amount",
 )
 # Integer-count columns (nullable Int64 so a missing value never becomes 0/NaN-float).
 _PERF_INT_COLS: Final[tuple[str, ...]] = (
@@ -316,8 +334,9 @@ def _clean_perf_dtypes(df: pd.DataFrame) -> pd.DataFrame:
     for c in _PERF_INT_COLS:                               # counts -> nullable Int64
         if c in out.columns:
             out[c] = pd.to_numeric(out[c], errors="coerce").astype("Int64")
-    if "occupancyPercentage" in out.columns:               # occupancy -> float
-        out["occupancyPercentage"] = pd.to_numeric(out["occupancyPercentage"], errors="coerce")
+    for c in ("occupancyPercentage", "netAdr_amount"):     # occupancy % + ADR -> float
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
     if "propertyId" in out.columns:                        # property code -> string
         out["propertyId"] = out["propertyId"].astype("string")
     return out
@@ -369,3 +388,35 @@ def property_universe(force_refresh: bool = False) -> pd.DataFrame:
     out["units"] = (pd.to_numeric(latest.get("houseCount"), errors="coerce")
                     .fillna(0).astype(int).values)
     return out.reset_index(drop=True)
+
+
+def average_room_rate_by_property(force_refresh: bool = False,
+                                  lookback_days: int | None = 90) -> dict[str, float]:
+    """Mean ADR (`netAdr_amount`) per propertyId — used to PRE-FILL the empty-room
+    cost in the Occupancy dashboard.
+
+    `lookback_days` restricts the average to the most recent N business days per
+    property (None = whole history). Returns {propertyId: adr}; an EMPTY dict if the
+    performance cache / BigQuery is unavailable or ADR is absent, so callers pre-fill
+    nothing rather than guessing.
+
+    NOTE: the key is `propertyId` (the performance table's code), NOT the
+    `property_name` used in reservations. Mapping the two is still open (see
+    audit_findings.md); until a mapping exists the app can only pre-fill when it can
+    resolve that link.
+    """
+    try:
+        perf = load_property_performance(force_refresh=force_refresh, quiet=True)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"average_room_rate_by_property: performance table unavailable ({e})")
+        return {}
+    if perf.empty or "netAdr_amount" not in perf.columns or "propertyId" not in perf.columns:
+        return {}
+    df = perf.dropna(subset=["netAdr_amount"]).copy()
+    if lookback_days is not None and "businessDay" in df.columns and not df.empty:
+        cutoff = pd.to_datetime(df["businessDay"], utc=True).max() - pd.Timedelta(days=lookback_days)
+        df = df[pd.to_datetime(df["businessDay"], utc=True) >= cutoff]
+    if df.empty:
+        return {}
+    means = df.groupby("propertyId")["netAdr_amount"].mean()
+    return {str(k): round(float(v), 2) for k, v in means.items() if pd.notna(v)}

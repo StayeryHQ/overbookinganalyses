@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Final, Literal
 
@@ -31,6 +32,8 @@ import pandas as pd
 from .data_loader import load_reservations
 from .features import add_country_region
 from .paths import data_dir, repo_root, tables_dir
+
+logger = logging.getLogger(__name__)
 
 # ---- Asymmetric overbooking costs -----------------------------------------
 # The per-booking "treat as a cancellation" decision is cost-sensitive, NOT
@@ -61,18 +64,31 @@ HIGH_THR: Final[float] = analytic_threshold()
 
 
 # ---- Model registry -------------------------------------------------------
-# Centralised so notebooks/dashboards refer to models by name, not by path.
-# Add a new model here when you add a new model notebook.
+# Centralised so notebooks / dashboards / the app refer to models by name, not by
+# path. Each entry has a `kind` so callers can score without knowing the internals:
+#   * kind="static"  -> a plain sklearn Pipeline; probability = predict_proba[:, 1].
+#   * kind="hazard"  -> the discrete-time survival artifact (a dict, see src.hazard);
+#                       probability = survival product, via src.hazard.
 #
-# Lineup 2026-06-11 (see reports/open_decisions.md): logreg (01), xgboost (02),
-# histgb (03). RandomForest and MLP are OUT of the lineup, so they are no longer
-# registered here. Filenames follow the {NN}_{name}_model.joblib convention each
-# model notebook saves with.
+# MVP lineup (2026-07-02): hazard (08) is the STANDARD/default model; xgboost (02)
+# is the FALLBACK static model used when the hazard artifact is missing (and for the
+# static-vs-hazard comparison on the model-performance page later). logreg (01) and
+# histgb (03) are intentionally OUT of the MVP — they may be re-added later. Filenames
+# follow the {NN}_{name}_model.joblib convention each model notebook saves with.
+DEFAULT_MODEL:  Final[str] = "hazard"    # standard scoring model
+FALLBACK_MODEL: Final[str] = "xgboost"   # used when the hazard artifact is absent
+
 MODEL_REGISTRY: Final[dict[str, dict[str, str]]] = {
-    "logreg":  {"joblib": "01_logreg_model.joblib",  "card": "reports/tables/01_logreg/model_card.json"},
-    "xgboost": {"joblib": "02_xgboost_model.joblib", "card": "reports/tables/02_xgboost/model_card.json"},
-    "histgb":  {"joblib": "03_histgb_model.joblib",  "card": "reports/tables/03_histgb/model_card.json"},
+    "hazard":  {"kind": "hazard", "joblib": "08_hazard_model.joblib",
+                "card": "reports/tables/08_hazard/model_card.json"},
+    "xgboost": {"kind": "static", "joblib": "02_xgboost_model.joblib",
+                "card": "reports/tables/02_xgboost/model_card.json"},
 }
+
+
+def _models_of_kind(kind: str) -> list[str]:
+    """Registry names of a given kind ('static' / 'hazard')."""
+    return [n for n, r in MODEL_REGISTRY.items() if r["kind"] == kind]
 
 
 # =============================================================================
@@ -86,13 +102,20 @@ def list_available_models() -> list[str]:
 
 
 def load_model(name: str):
-    """Load a trained pipeline by registry name (e.g. 'xgb')."""
+    """Load a model artifact by registry name.
+
+    Returns the RAW joblib object: a fitted sklearn Pipeline for static models
+    (predict_proba), or the hazard artifact dict for the hazard model. Most callers
+    should use `score_reservations()` / `cancel_proba()` instead, which handle the
+    kind-specific scoring for you.
+    """
     if name not in MODEL_REGISTRY:
         raise KeyError(f"unknown model '{name}'. Known: {list(MODEL_REGISTRY)}")
     p = data_dir() / MODEL_REGISTRY[name]["joblib"]
     if not p.exists():
         raise FileNotFoundError(
-            f"{p} not found. Run notebooks/0{list(MODEL_REGISTRY).index(name)+1}_*.ipynb first."
+            f"{p} not found. Train/copy the '{name}' artifact "
+            f"({MODEL_REGISTRY[name]['joblib']}) into {data_dir()} first."
         )
     return joblib.load(p)
 
@@ -107,10 +130,14 @@ def load_model_card(name: str) -> dict:
 
 
 def best_model_by_auc() -> str:
-    """Return the name of the available model with the highest test AUC."""
-    avail = list_available_models()
+    """Return the available STATIC model with the highest test AUC.
+
+    Only static models expose the `test_metrics.auc` model-card field, so the hazard
+    model is excluded here by design (it is compared on its own estimand elsewhere).
+    """
+    avail = [n for n in list_available_models() if n in _models_of_kind("static")]
     if not avail:
-        raise RuntimeError("no trained models on disk — run 01-03 first.")
+        raise RuntimeError("no static model on disk — need 02_xgboost_model.joblib.")
     # NOTE: the model cards store the test AUC under the key "auc" (see the
     # `test_metrics` Series in notebooks 01-03), not "roc_auc".
     scored = [(name, load_model_card(name)["test_metrics"]["auc"])
@@ -128,10 +155,12 @@ BRIER_TOL: Final[float] = 0.005
 
 
 def best_model(brier_tol: float = BRIER_TOL) -> str:
-    """Highest test AP among models whose test Brier is within `brier_tol` of best."""
-    avail = list_available_models()
+    """Highest test AP among STATIC models whose test Brier is within `brier_tol` of
+    best. Static-only: this picks the fallback/comparison static model, not the
+    hazard model (which is the default scorer — see resolve_model)."""
+    avail = [n for n in list_available_models() if n in _models_of_kind("static")]
     if not avail:
-        raise RuntimeError("no trained models on disk — run 01-03 first.")
+        raise RuntimeError("no static model on disk — need 02_xgboost_model.joblib.")
     cards = {name: load_model_card(name)["test_metrics"] for name in avail}
     briers = [m["brier"] for m in cards.values() if "brier" in m]
     if briers:
@@ -445,64 +474,134 @@ def bucketize(prob: float | np.ndarray,
     return pd.Series(out, dtype="string")
 
 
-def score_upcoming(
-    model_name: str | None = None,
-    force_refresh: bool = False,
-    save: bool = True,
-    threshold: float | None = None,
-) -> pd.DataFrame:
-    """Score upcoming arrivals with the chosen model.
+# ---- Which model do we score with? ----------------------------------------
 
-    Parameters
-    ----------
-    model_name : str | None
-        Registry name ('logreg', 'xgboost', 'histgb'). If None, pick via
-        best_model() (highest test AP among well-calibrated models).
-    force_refresh : bool
-        Re-pull from BigQuery instead of using the parquet cache.
-    save : bool
-        If True (default), writes `Data/scored_upcoming.parquet` and returns it.
-    threshold : float | None
-        Manual decision threshold override (UI slider). None => the model's
-        cost-optimal validation threshold (operating_threshold).
+def resolve_model(model_name: str | None = None) -> str:
+    """Decide which model to score with.
 
-    Returns
-    -------
-    pd.DataFrame
-        One row per upcoming booking with the engineered features, a
-        `cancel_proba`, `pred_cancel`, `cancel_threshold`, and `risk_bucket`.
+    An explicit `model_name` wins (must be registered AND present on disk). With no
+    name, use the DEFAULT (hazard) if its artifact exists, otherwise fall back to the
+    static FALLBACK (xgboost). Raises if neither artifact is on disk.
     """
-    chosen = model_name or best_model()
-    pipeline = load_model(chosen)
-    low_thr, high_thr = serving_thresholds(chosen)
-    if threshold is not None:                 # manual override from the app
-        high_thr = float(threshold)
-        low_thr = min(low_thr, high_thr)
+    avail = list_available_models()
+    if model_name is not None:
+        if model_name not in MODEL_REGISTRY:
+            raise KeyError(f"unknown model '{model_name}'. Known: {list(MODEL_REGISTRY)}")
+        if model_name not in avail:
+            raise FileNotFoundError(
+                f"model '{model_name}' artifact not found on disk. Available: {avail or 'none'}."
+            )
+        return model_name
+    if DEFAULT_MODEL in avail:
+        return DEFAULT_MODEL
+    if FALLBACK_MODEL in avail:
+        logger.warning("hazard artifact missing — falling back to '%s'.", FALLBACK_MODEL)
+        return FALLBACK_MODEL
+    raise RuntimeError(
+        "no scoring model available — need 08_hazard_model.joblib (standard) or "
+        "02_xgboost_model.joblib (fallback) in the Data folder."
+    )
 
-    df = load_reservations(force_refresh=force_refresh, upcoming_only=True)
-    feat = build_features(df)
-    feat = apply_scoring_bounds(feat)
 
-    if feat.empty:
-        cols = list(feat.columns) + ["cancel_proba", "pred_cancel", "cancel_threshold",
-                                     "risk_bucket", "model_used", "scored_at"]
-        return pd.DataFrame(columns=cols)
+# ---- One dispatch point: features -> per-booking cancel probability --------
 
+def cancel_proba(model_name: str, feat: pd.DataFrame) -> np.ndarray:
+    """Per-booking P(cancel at/before arrival) for a feature frame already produced
+    by build_features(). This is the single place the kind-specific scoring lives:
+
+      * static model  -> sklearn Pipeline.predict_proba[:, 1]
+      * hazard model  -> survival product over the trained snapshot grid
+                         (src.hazard.score_upcoming_hazard)
+
+    Fails loud if build_features did not produce a column the chosen model needs,
+    instead of a cryptic error deep inside the estimator.
+    """
+    kind = MODEL_REGISTRY[model_name]["kind"]
+
+    if kind == "hazard":
+        from . import hazard as hz_mod
+        hz = hz_mod.load_hazard()
+        needed = list(hz["num"]) + list(hz["cat"]) + [hz_mod.AXIS]
+        missing = [c for c in needed if c not in feat.columns]
+        if missing:
+            raise KeyError(
+                f"cancel_proba(hazard): build_features did not produce {missing}; "
+                f"the hazard artifact expects these columns (incl. the day axis)."
+            )
+        return np.asarray(hz_mod.score_upcoming_hazard(hz, feat), dtype=float)
+
+    # Static sklearn pipeline (xgboost in the MVP). The pipeline's ColumnTransformer
+    # selects the columns it was trained on by name, so passing the roster superset
+    # (numeric incl. log twins) is safe — the extras are dropped by the transformer.
+    pipeline = load_model(model_name)
     num, cat = model_feature_lists()           # from the roster (single source of truth)
     needed = num + cat
-    # Fail loud: build_features must produce EVERY roster feature, otherwise the
-    # pipeline silently sees a wrong shape. NB known parity gap (2026-06-18):
-    # build_features does not yet engineer `ratePlan_category` (and a few other
-    # 00-derived columns) - see TODO in build_features. This check surfaces it
-    # clearly instead of a cryptic KeyError deep in sklearn.
     missing = [c for c in needed if c not in feat.columns]
     if missing:
         raise KeyError(
-            f"score_upcoming: build_features did not produce roster features {missing}. "
-            f"build_features must mirror 00_data_audit's engineering for these columns."
+            f"cancel_proba({model_name}): build_features did not produce roster "
+            f"features {missing}. build_features must mirror 00_data_audit's engineering."
         )
-    X = feat[needed].copy()
-    proba = pipeline.predict_proba(X)[:, 1]
+    return pipeline.predict_proba(feat[needed])[:, 1]
+
+
+# ---- Public scoring entry point --------------------------------------------
+
+# Columns score_reservations / score_upcoming append to the feature frame.
+_SCORE_COLS: Final[tuple[str, ...]] = (
+    "cancel_proba", "pred_cancel", "cancel_threshold", "risk_bucket",
+    "model_used", "scored_at",
+)
+
+
+def score_reservations(
+    df: pd.DataFrame,
+    model_name: str | None = None,
+    *,
+    threshold: float | None = None,
+    today: pd.Timestamp | None = None,
+    apply_bounds: bool = True,
+    save_as: str | None = None,
+) -> pd.DataFrame:
+    """Score an arbitrary set of (raw, PII-stripped) reservations — THE entry point.
+
+    Builds features, optionally applies the light scoring bounds, then scores via
+    `cancel_proba` (hazard by default, xgboost fallback — see resolve_model). Returns
+    a NEW frame with the engineered features plus: cancel_proba, pred_cancel,
+    cancel_threshold, risk_bucket, model_used, scored_at.
+
+    Parameters
+    ----------
+    df : DataFrame
+        Raw reservations (post PII strip), e.g. from load_reservations().
+    model_name : str | None
+        'hazard' or 'xgboost'. None -> the default (hazard) if its artifact exists.
+    threshold : float | None
+        Manual decision-threshold override (UI slider). None -> the model's
+        cost-optimal validation threshold.
+    today : pd.Timestamp | None
+        As-of date for the DYNAMIC features. None -> wall-clock (live scoring). Pass
+        the simulated scoring date for replay/eval (see build_features).
+    apply_bounds : bool
+        Drop rows whose essential features can't be computed (default True).
+    save_as : str | None
+        If given, also write the result to Data/<save_as> as parquet.
+    """
+    chosen = resolve_model(model_name)
+    low_thr, high_thr = serving_thresholds(chosen)
+    if threshold is not None:                       # manual override from the app
+        high_thr = float(threshold)
+        low_thr = min(low_thr, high_thr)
+
+    feat = build_features(df, today=today)
+    if apply_bounds:
+        feat = apply_scoring_bounds(feat)
+
+    if feat.empty:
+        return pd.DataFrame(columns=list(feat.columns) + list(_SCORE_COLS))
+
+    proba = cancel_proba(chosen, feat)
+    feat = feat.copy()
     feat["cancel_proba"]     = proba
     feat["pred_cancel"]      = (proba >= high_thr).astype(int)
     feat["cancel_threshold"] = high_thr
@@ -510,11 +609,29 @@ def score_upcoming(
     feat["model_used"]       = chosen
     feat["scored_at"]        = pd.Timestamp.utcnow()
 
-    if save:
-        out_path = data_dir() / "scored_upcoming.parquet"
+    if save_as:
+        out_path = data_dir() / save_as
         feat.to_parquet(out_path, index=False)
         print(f"saved {len(feat):,} scored bookings → {out_path}")
-
     return feat
+
+
+def score_upcoming(
+    model_name: str | None = None,
+    force_refresh: bool = False,
+    save: bool = True,
+    threshold: float | None = None,
+) -> pd.DataFrame:
+    """Score upcoming (future-arrival) bookings — thin wrapper over score_reservations.
+
+    Loads the upcoming bookings from the reservations cache (force_refresh re-pulls
+    BigQuery), scores them with the chosen model (hazard by default), and by default
+    writes Data/scored_upcoming.parquet.
+    """
+    df = load_reservations(force_refresh=force_refresh, upcoming_only=True)
+    return score_reservations(
+        df, model_name=model_name, threshold=threshold,
+        save_as="scored_upcoming.parquet" if save else None,
+    )
 
 

@@ -15,9 +15,22 @@ from __future__ import annotations
 # Data loading + PII handling
 from .data_loader import (
     PII_COLUMNS,
+    average_room_rate_by_property,
     load_clean_reservations,
+    load_property_performance,
     load_reservations,
+    property_universe,
     strip_pii,
+)
+
+# Overbooking decision (newsvendor / cost-optimal allowance)
+from .overbooking import (
+    DEFAULT_HIGH_DEMAND_MULTIPLIER,
+    critical_ratio,
+    effective_walk_cost,
+    recommend_allowance,
+    recommend_from_per_night,
+    summarize_property,
 )
 
 # Shared feature engineering (train/serve parity)
@@ -44,13 +57,19 @@ from .paths import (
 
 # Daily scoring
 from .scoring import (
+    DEFAULT_MODEL,
+    FALLBACK_MODEL,
     HIGH_THR,
     LOW_THR,
+    best_model,
     best_model_by_auc,
     bucketize,
+    cancel_proba,
     list_available_models,
     load_model,
     model_feature_lists,
+    resolve_model,
+    score_reservations,
     score_upcoming,
 )
 
@@ -61,14 +80,25 @@ from .utils import (
     color,
     diverging_triplet,
     load_brand_config,
+    load_room_type_capacity,
 )
 
 __all__ = [
     # data_loader
     "PII_COLUMNS",
+    "average_room_rate_by_property",
     "load_clean_reservations",
+    "load_property_performance",
     "load_reservations",
+    "property_universe",
     "strip_pii",
+    # overbooking
+    "DEFAULT_HIGH_DEMAND_MULTIPLIER",
+    "critical_ratio",
+    "effective_walk_cost",
+    "recommend_allowance",
+    "recommend_from_per_night",
+    "summarize_property",
     # features (train/serve parity)
     "add_country_region",
     "country_to_region",
@@ -86,13 +116,19 @@ __all__ = [
     "schema_config_path",
     "tables_dir",
     # scoring
+    "DEFAULT_MODEL",
+    "FALLBACK_MODEL",
     "HIGH_THR",
     "LOW_THR",
+    "best_model",
     "best_model_by_auc",
     "bucketize",
+    "cancel_proba",
     "list_available_models",
     "load_model",
     "model_feature_lists",
+    "resolve_model",
+    "score_reservations",
     "score_upcoming",
     # utils
     "benchmark_overbooking_allowance",
@@ -100,4 +136,5 @@ __all__ = [
     "color",
     "diverging_triplet",
     "load_brand_config",
+    "load_room_type_capacity",
 ]

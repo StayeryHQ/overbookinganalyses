@@ -6,24 +6,11 @@
 from __future__ import annotations
 
 # Raw SVG icon markup.
-from .icons import icon_markup
+from .icons import icon as icon_markup
 
 # The persistent sidebar nav.
-from .sidebar import sidebar
 
-# Layout / content helpers (Dash component factories).
-from .ui import (
-    alert,
-    caption,
-    explain,
-    hero,
-    metric,
-    metric_row,
-    nav_card,
-    nav_card_grid,
-    placeholder_panel,
-    section,
-)
+
 
 # Public names of this package.
 __all__ = [

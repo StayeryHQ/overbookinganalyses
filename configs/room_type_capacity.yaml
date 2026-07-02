@@ -1,0 +1,78 @@
+# =============================================================================
+# Room-type capacities — HAND-MAINTAINED
+# =============================================================================
+# Real per-room-type (unitGroup) capacities are NOT available in either BigQuery
+# table (property_performance_daily only has property-level houseCount; reservations
+# only has the unitGroup_name label). The Occupancy dashboard's room-type sub-view
+# draws a dashed capacity reference line per room type from THIS file.
+#
+# HOW TO FILL IN:
+#   * Put the number of bookable units for each room type under its property.
+#   * Leave a value blank / null if unknown -> the dashboard simply omits the
+#     reference line for that room type (it will NOT invent one).
+#   * Property and unitGroup names must match the reservations data EXACTLY
+#     (including quirks like the trailing space in "BIGGER AIRCON ").
+#   * The combinations below were generated from the data on 2026-07-02; add/remove
+#     rows if the room-type mix changes.
+#   * Room types flagged "Not in use" are pre-set to 0 — adjust if that changes.
+# =============================================================================
+
+capacities:
+  Berlin Friedrichshain:
+    BIG:
+    BIGGER:
+    BIGGER COURTYARD:
+    UPPER:
+    UPPER AIR:
+
+  Bielefeld Hauptbahnhof:
+    BIG:
+    BIG AIRCON:
+    BIGGER:
+    "BIGGER AIRCON ":        # note: trailing space, matches the source data
+
+  Bochum Ehrenfeld:
+    BIG:
+    BIGGER:
+
+  Bremen Am Wall:
+    BIG:
+    BIG WITH BALCONY:
+    BIGGER:
+    BOX:
+    UPPER:
+
+  Cologne Ehrenfeld:
+    BIG:
+    BIGGER:
+
+  Cologne Sülz:
+    BIG:
+    BIGGER:
+    BIGGER AIRCON Not in use: 0
+    UPPER:
+    UPPER AIR:
+
+  Frankfurt Sachsenhausen:
+    BIG:
+    BIGGER:
+    UPPER:
+
+  Fürth Hallstraße:
+    BIG:
+    BIGGER:
+    BOX:
+
+  Gütersloh Langer Weg:
+    BIG:
+    BIGGER:
+
+  Osnabrück Johannisstraße:
+    BIG:
+    BIGGER:
+    BOX:
+    UPPER:
+
+  Wolfsburg Schachtweg:
+    BIG:
+    BIGGER:
