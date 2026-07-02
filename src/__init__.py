@@ -56,7 +56,6 @@ from .scoring import (
 
 # Styling + brand + locations
 from .utils import (
-    apply_stayery_style,
     benchmark_overbooking_allowance,
     categorical_palette,
     color,
@@ -96,7 +95,6 @@ __all__ = [
     "model_feature_lists",
     "score_upcoming",
     # utils
-    "apply_stayery_style",
     "benchmark_overbooking_allowance",
     "categorical_palette",
     "color",
