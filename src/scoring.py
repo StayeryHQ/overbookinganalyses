@@ -183,6 +183,40 @@ def cost_at_threshold(y_true, y_prob, threshold: float,
             "precision": prec, "recall": rec, "total_cost": fp * c_walk + fn * c_empty}
 
 
+def brier_decomposition(y_true, y_prob, *, n_bins: int = 10) -> dict:
+    """Murphy decomposition of the Brier score + Brier Skill Score.
+
+        Brier = Reliability - Resolution + Uncertainty
+          * Uncertainty = base_rate*(1-base_rate)  -> irreducible; DOMINATES at low
+            prevalence, which is why a raw Brier of ~0.10 at a ~12% base rate is
+            NOT bad - it is close to the best any model can do.
+          * Reliability = mean squared gap between predicted and observed frequency
+            per probability bin -> the CALIBRATION error (0 = perfectly calibrated).
+          * Resolution  = how far the binned outcomes sit from the base rate -> SKILL
+            (higher = better; a constant predictor has 0).
+        BSS = 1 - Brier / Uncertainty  -> skill vs the base-rate ("climatology")
+        predictor; > 0 means better than always guessing the base rate.
+
+    Judge CALIBRATION by Reliability (and the reliability diagram), not raw Brier.
+    """
+    y = np.asarray(y_true, dtype=float); p = np.clip(np.asarray(y_prob, dtype=float), 0, 1)
+    n = len(y); base = float(y.mean()); unc = base * (1 - base)
+    edges = np.quantile(p, np.linspace(0, 1, n_bins + 1))
+    edges[0], edges[-1] = -np.inf, np.inf
+    idx = np.digitize(p, edges[1:-1])
+    rel = res = 0.0
+    for b in np.unique(idx):
+        m = idx == b; nk = int(m.sum())
+        if not nk:
+            continue
+        rel += nk * (p[m].mean() - y[m].mean()) ** 2
+        res += nk * (y[m].mean() - base) ** 2
+    rel /= n; res /= n
+    brier = float(np.mean((p - y) ** 2))
+    return {"brier": brier, "reliability": rel, "resolution": res, "uncertainty": unc,
+            "bss": (1 - brier / unc) if unc > 0 else float("nan"), "base_rate": base}
+
+
 def _val_predictions(name: str) -> "pd.DataFrame | None":
     """Load a model's persisted VALIDATION predictions (y_true, y_prob) or None."""
     fname = MODEL_REGISTRY[name]["joblib"].replace("_model.joblib", "_predictions.parquet")

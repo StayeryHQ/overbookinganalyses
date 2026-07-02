@@ -519,3 +519,47 @@ def walk_forward_per_snapshot(*, n_folds: int = 6, horizon_days: int = 14,
         parts.append(per_snapshot_scores(hz, te, max_days=horizon_days))   # daily decision band only
     scores = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=[AXIS, "width", "y", "p"])
     return {"per_snapshot": snapshot_metrics(scores), "scores": scores}
+
+
+def _wf_hazard_folds(n_folds, horizon_days, step_days, seed):
+    """Shared decision-time loop: yield (fold, test_frame_with_p, y) per fold, the
+    hazard trained leak-free on that fold's train, scored at d = min(lead, H)."""
+    from . import walkforward as wf, load_clean_reservations
+    clean = wf.add_outcome_known_date(load_clean_reservations())
+    folds = wf.make_folds(clean, n_folds=n_folds, horizon_days=horizon_days, step_days=step_days)
+    for f in folds:
+        tr, te = clean.iloc[f.train_idx], clean.iloc[f.test_idx]
+        if len(tr) < 500 or len(te) < 50:
+            continue
+        hz = fit_hazard(tr, seed=seed)
+        te = te.copy()
+        arr = pd.to_datetime(te[ARRIVAL], utc=True); cre = pd.to_datetime(te["created"], utc=True)
+        te["lead"] = (arr - cre) / pd.Timedelta(days=1)
+        te[AXIS] = np.minimum(te["lead"], horizon_days).clip(lower=1)     # decision horizon d
+        te["p"] = survival_cancel_proba(te, hazard_fn(hz), hz["num"], hz["cat"],
+                                        hz["cat_dtypes"], snaps=hz.get("snap"))
+        te["y"] = (pd.to_numeric(te["status"], errors="coerce").fillna(0).astype(int).to_numpy() == 1).astype(int)
+        yield f, te
+
+
+def walk_forward_predict_hazard(*, n_folds: int = 8, horizon_days: int = 14,
+                                step_days: int = 14, seed: int = SEED) -> pd.DataFrame:
+    """Pooled PER-BOOKING hazard predictions on the decision-time folds (survival
+    product at d = min(lead, H)). Returns [fold, y_true, y_prob] for reliability
+    diagrams, Brier decomposition and matched comparisons."""
+    parts = [pd.DataFrame({"fold": f.k, "y_true": te["y"].to_numpy(), "y_prob": te["p"].to_numpy()})
+             for f, te in _wf_hazard_folds(n_folds, horizon_days, step_days, seed)]
+    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=["fold", "y_true", "y_prob"])
+
+
+def walk_forward_per_night(*, n_folds: int = 8, horizon_days: int = 14, step_days: int = 14,
+                           seed: int = SEED, hotel_col: str | None = None) -> pd.DataFrame:
+    """Pooled PER-ARRIVAL-NIGHT expected-vs-actual freed rooms across ALL decision-time
+    folds (leak-free per fold) - the sample the aggregate overbooking calibration needs
+    (one fold alone is ~14 nights = noise). Feed the result to `coverage_report`."""
+    parts = []
+    for f, te in _wf_hazard_folds(n_folds, horizon_days, step_days, seed):
+        pn = per_night_table(te, te["p"].to_numpy(), hotel_col=hotel_col, label=te["y"].to_numpy())
+        pn["fold"] = f.k
+        parts.append(pn)
+    return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
