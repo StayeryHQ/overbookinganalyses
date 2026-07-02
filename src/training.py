@@ -184,11 +184,14 @@ def build_pipeline(model_name: str, hp: dict, num: list[str], cat: list[str],
 
 
 def _default_hp(model_name: str) -> dict:
-    """Baseline hyperparameters (used if no card / as search seed). From notebooks."""
+    """Baseline hyperparameters (structural search seed only). NB: xgboost carries
+    NO fixed `n_estimators` on purpose - the tree count is set by early stopping in
+    `search_hyperparams`, and `retrain` forces a retune when no card exists, so we
+    never silently deploy a fixed-tree XGBoost (the old n_estimators=600 trap)."""
     return {
         "logreg": dict(C=1.0, l1_ratio=0.5),
-        "xgboost": dict(n_estimators=600, max_depth=6, learning_rate=0.05, subsample=1.0,
-                        colsample_bytree=1.0, min_child_weight=1, reg_lambda=1.0),
+        "xgboost": dict(max_depth=6, learning_rate=0.05, subsample=0.8,
+                        colsample_bytree=0.8, min_child_weight=1, reg_lambda=1.0),
         "histgb": dict(learning_rate=0.05, max_leaf_nodes=31, min_samples_leaf=40,
                        l2_regularization=1.0, max_iter=600),
     }[MODEL_KIND[model_name]]
@@ -444,6 +447,18 @@ def retrain(model_name: str, *, mode: str = "refit", asof: str | pd.Timestamp | 
                 f"[retrain:{model_name}] feature set changed but mode='refit' reuses "
                 "hyperparameters tuned for the OLD set. Consider mode='retune'.",
                 stacklevel=2)
+
+    # ---- safety: never deploy an UN-TUNED model -------------------------------
+    # A 'refit' with no existing card would fall back to the structural defaults;
+    # for xgboost that is a fixed tree count with no early stopping. Escalate to a
+    # retune so the tree count is always chosen by early stopping.
+    if mode == "refit":
+        try:
+            sc.load_model_card(model_name)
+        except Exception:  # noqa: BLE001 - no card yet
+            warnings.warn(f"[retrain:{model_name}] no model card -> switching refit to retune "
+                          "(never deploy an un-tuned / fixed-tree model).", stacklevel=2)
+            mode = "retune"
 
     # ---- hyperparameters ------------------------------------------------------
     if mode == "retune":
