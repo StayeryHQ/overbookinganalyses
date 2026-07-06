@@ -15,9 +15,17 @@ import os
 
 import dash
 import dash_bootstrap_components as dbc
-from dash import Dash, page_container
+import dash_mantine_components as dmc
+from dash import Dash, _dash_renderer, dcc, html, page_container
 
-from dash_app.theme import BLACK, EXTERNAL_STYLESHEETS, YELLOW
+# dash-mantine-components 2.x renders against React 18. Dash 4.3.0 already ships
+# React 18 (default 18.3.1); we pin 18.2.0 explicitly — dmc's documented target and
+# part of Dash's bundled set — so dmc renders deterministically. dbc / dash-ag-grid
+# also support React 18, so this is safe for the existing Occupancy page.
+# NOTE: must run BEFORE the Dash() instance is created.
+_dash_renderer._set_react_version("18.2.0")
+
+from dash_app.theme import BLACK, DMC_THEME, EXTERNAL_STYLESHEETS, YELLOW
 
 
 def _background_manager():
@@ -46,6 +54,44 @@ app = Dash(
 # WSGI server object (gunicorn dash_app.app:server). Exposed early on purpose.
 server = app.server
 
+
+def _navbar() -> html.Header:
+    """Top navigation, auto-built from the page registry (ordered). Styled in
+    assets/brand.css: white bar, yellow accent + Topol wordmark, underlined active link.
+    dbc.NavLink is kept for its built-in active-route detection (adds `.active`)."""
+    pages = sorted(dash.page_registry.values(), key=lambda p: p.get("order", 99))
+    links = [dbc.NavLink(p["name"], href=p["relative_path"], active="exact",
+                         className="stayery-navlink") for p in pages]
+    brand = html.A(
+        html.Div([
+            html.Span(className="stayery-accent"),
+            html.Span("STAYERY", className="stayery-wordmark"),
+            html.Span("Overbooking Suite", className="stayery-subbrand"),
+        ], className="stayery-brand-inner"),
+        href="/", className="stayery-brand")
+    return html.Header(
+        html.Div([brand, html.Nav(links, className="stayery-nav")],
+                 className="stayery-header-inner"),
+        className="stayery-header")
+
+
+# The layout MUST contain dash.page_container for Pages to render. It is wrapped in a
+# dmc.MantineProvider so dash-mantine-components (used from the Cancellation History
+# page onward) get their theme context. The provider is ADDITIVE: dbc components on the
+# existing Occupancy page render unchanged inside it. forceColorScheme="light" keeps the
+# brand's white canvas regardless of the viewer's OS dark-mode preference.
+# The overbooking COST parameter is a single shared source of truth across pages
+# (Occupancy cost sandbox, Model-Performance cost-optimal threshold, future Retraining
+# page). It lives here in the GLOBAL layout — one dcc.Store instance, persisted in the
+# browser (storage_type="local") — so no page keeps its own copy. Pages read/write it by
+# id ("cost-store"); its schema is owned by the Occupancy page's cost callbacks.
+app.layout = dmc.MantineProvider(
+    dbc.Container(
+        [dcc.Store(id="cost-store", storage_type="local"), _navbar(), page_container],
+        fluid=True, style={"maxWidth": "1500px"}),
+    theme=DMC_THEME,
+    forceColorScheme="light",
+)
 
 
 if __name__ == "__main__":

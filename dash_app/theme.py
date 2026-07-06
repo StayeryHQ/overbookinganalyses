@@ -33,6 +33,28 @@ CATEGORICAL = [YELLOW, BLUE, GREEN, ORANGE, PINK, PURPLE, RED]
 # ---- Typography ------------------------------------------------------------
 _typ = _brand["typography"]
 FONT_FAMILY = ", ".join([_typ["primary"], *_typ["primary_fallback"]])
+# Display font stack (Topol) for headings / callouts.
+HEADING_FONT_FAMILY = ", ".join([_typ["display"], *_typ["display_fallback"]])
+
+# ---- Cancel-rate heatmap colourscale (green = low/good → red = high/bad) ----
+# Intuitive traffic-light reading for a "higher is worse" metric, built from the
+# brand's supporting green/yellow/red so it stays on-brand.
+CANCEL_SCALE = [[0.0, GREEN], [0.5, YELLOW], [1.0, RED]]
+
+# ---- dash-mantine-components theme -----------------------------------------
+# Seeded from the same brand config so dmc components match the notebooks/charts.
+# primaryColor "dark" => controls render near-black (STAYERY is black + yellow);
+# yellow is used as an explicit accent (KPI bar, highlights) rather than as the UI
+# primary, which keeps text-on-accent contrast readable. forceColorScheme="light"
+# is applied at the provider so the brand's white canvas is stable regardless of the
+# viewer's OS dark-mode setting.
+DMC_THEME = {
+    "primaryColor": "dark",
+    "defaultRadius": "md",
+    "fontFamily": FONT_FAMILY,
+    "fontFamilyMonospace": "SFMono-Regular, Menlo, monospace",
+    "headings": {"fontFamily": HEADING_FONT_FAMILY, "fontWeight": "700"},
+}
 
 # ---- Stylesheets -----------------------------------------------------------
 # FLATLY = clean, light Bootstrap theme; brand accents are applied via inline

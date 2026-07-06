@@ -1,6 +1,6 @@
 {
-  "model": "xgboost",
-  "retrained_at": "2026-07-03T20:39:37.146110+00:00",
+  "model": "logreg",
+  "retrained_at": "2026-07-04T00:15:08.980582+00:00",
   "mode": "retune",
   "asof": "2026-06-28",
   "n_train_deploy": 179576,
@@ -8,16 +8,16 @@
     "adults_n",
     "arrival_dow",
     "arrival_month",
-    "diff_gross_cancellation_fee",
-    "gross_per_night",
+    "diff_gross_cancellation_fee_log",
+    "gross_per_night_log",
     "has_children",
     "has_corporate_code",
     "has_group",
     "has_promo",
     "is_weekend_arrival",
-    "lead_time_days",
+    "lead_time_days_log",
     "log_gross_amount",
-    "los_nights",
+    "los_nights_log",
     "ratePlan_isSubjectToCityTax"
   ],
   "features_categorical": [
@@ -33,36 +33,51 @@
   "feature_change": {
     "hash": "40169eb23eec",
     "added": [
+      "adults_n",
+      "arrival_dow",
+      "arrival_month",
+      "cancellationFee_name",
+      "channelCode",
+      "diff_gross_cancellation_fee",
       "diff_gross_cancellation_fee_log",
+      "gross_per_night",
       "gross_per_night_log",
+      "guaranteeType",
+      "has_children",
+      "has_corporate_code",
+      "has_group",
+      "has_promo",
+      "is_weekend_arrival",
+      "lead_time_days",
       "lead_time_days_log",
-      "los_nights_log"
+      "log_gross_amount",
+      "los_nights",
+      "los_nights_log",
+      "property_name",
+      "ratePlan_category",
+      "ratePlan_isSubjectToCityTax",
+      "stay_bucket",
+      "unitGroup_name"
     ],
     "removed": [],
     "changed": true
   },
   "hyperparams": {
-    "max_depth": 6,
-    "learning_rate": 0.05,
-    "subsample": 0.8,
-    "colsample_bytree": 0.8,
-    "min_child_weight": 1,
-    "reg_lambda": 1.0,
-    "reg_alpha": 0.0,
-    "n_estimators": 471
+    "C": 0.15577217702693022,
+    "l1_ratio": 0.7851759613930136
   },
   "walk_forward": {
     "auc": {
-      "mean": 0.7453591674734623,
-      "std": 0.03016868903701044
+      "mean": 0.7296640947429095,
+      "std": 0.036757430895822334
     },
     "ap": {
-      "mean": 0.2740003093819689,
-      "std": 0.030968121022620577
+      "mean": 0.24257998755614688,
+      "std": 0.023348507423552368
     },
     "brier": {
-      "mean": 0.12034715152288401,
-      "std": 0.014617832538530015
+      "mean": 0.11274879525922958,
+      "std": 0.016077432982653028
     },
     "cost": {
       "mean": 29413.333333333332,

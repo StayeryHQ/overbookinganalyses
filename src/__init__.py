@@ -80,7 +80,9 @@ from .utils import (
     color,
     diverging_triplet,
     load_brand_config,
+    load_risk_buckets,
     load_room_type_capacity,
+    risk_label,
 )
 
 __all__ = [
@@ -136,5 +138,7 @@ __all__ = [
     "color",
     "diverging_triplet",
     "load_brand_config",
+    "load_risk_buckets",
     "load_room_type_capacity",
+    "risk_label",
 ]

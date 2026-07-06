@@ -102,3 +102,53 @@ def load_room_type_capacity() -> dict[str, dict[str, int]]:
         if clean:
             out[str(prop)] = clean
     return out
+
+
+RISK_BUCKETS_FILE = "risk_buckets.yaml"
+
+# Fallback if the config file is missing — same PLACEHOLDER values, so the column is
+# never silently empty. Replace via configs/risk_buckets.yaml.
+_RISK_BUCKETS_DEFAULT: dict = {
+    "low_max": 0.20, "high_min": 0.50,
+    "labels": {"low": "Low", "medium": "Medium", "high": "High"},
+}
+
+
+@lru_cache(maxsize=1)
+def load_risk_buckets() -> dict:
+    """Load configs/risk_buckets.yaml -> {low_max, high_min, labels{low,medium,high}}.
+
+    These are the (currently PLACEHOLDER) cancel-probability cut points for the
+    booking table's Risk column. Falls back to sane defaults if the file is absent.
+    """
+    path: Path = configs_dir() / RISK_BUCKETS_FILE
+    if not path.exists():
+        return dict(_RISK_BUCKETS_DEFAULT)
+    with path.open("r", encoding="utf-8") as fh:
+        cfg = yaml.safe_load(fh) or {}
+    out = dict(_RISK_BUCKETS_DEFAULT)
+    out.update({k: cfg[k] for k in ("low_max", "high_min", "labels") if k in cfg})
+    return out
+
+
+def risk_label(p: float | None, cfg: dict | None = None) -> str:
+    """Map a cancel probability to its bucket LABEL using the config thresholds.
+
+    Returns "" for a missing/NaN probability (so the column is blank only when there
+    is genuinely no score, never because the mapping was forgotten).
+    """
+    if p is None:
+        return ""
+    try:
+        p = float(p)
+    except (TypeError, ValueError):
+        return ""
+    if p != p:  # NaN
+        return ""
+    cfg = cfg or load_risk_buckets()
+    labels = cfg.get("labels", _RISK_BUCKETS_DEFAULT["labels"])
+    if p < cfg.get("low_max", 0.20):
+        return labels.get("low", "Low")
+    if p < cfg.get("high_min", 0.50):
+        return labels.get("medium", "Medium")
+    return labels.get("high", "High")

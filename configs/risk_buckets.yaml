@@ -1,0 +1,18 @@
+# =============================================================================
+# Risk-bucket thresholds for the booking table's "Risk" column.
+# =============================================================================
+# Maps a predicted cancellation probability p to a label:
+#     p < low_max            -> Low
+#     low_max <= p < high_min -> Medium
+#     p >= high_min          -> High
+#
+# ⚠ PLACEHOLDER VALUES — these are NOT researched business thresholds. Replace them
+# with real numbers from the Revenue Manager. They are kept here (not hardcoded in
+# code) precisely so they're easy to change.
+low_max: 0.20
+high_min: 0.50
+
+labels:
+  low: "Low"
+  medium: "Medium"
+  high: "High"

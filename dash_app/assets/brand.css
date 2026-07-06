@@ -1,0 +1,99 @@
+/* =============================================================================
+   STAYERY brand fonts + header. Dash auto-serves everything in dash_app/assets,
+   so these @font-face rules make the .otf files in assets/fonts actually load
+   (previously the theme referenced font names that were never defined, so the app
+   silently fell back to a system sans-serif).
+   ============================================================================= */
+
+/* ---- Neue Haas Grotesk Display Pro (body / UI) ---- */
+@font-face {
+  font-family: "Neue Haas Grotesk Display Pro";
+  src: url("/assets/fonts/NeueHaasGroteskDisplay-Regular.otf") format("opentype");
+  font-weight: 400; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: "Neue Haas Grotesk Display Pro";
+  src: url("/assets/fonts/NeueHaasGroteskDisplay-Italic.otf") format("opentype");
+  font-weight: 400; font-style: italic; font-display: swap;
+}
+@font-face {
+  font-family: "Neue Haas Grotesk Display Pro";
+  src: url("/assets/fonts/NeueHaasGroteskDisplay-Medium.otf") format("opentype");
+  font-weight: 500; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: "Neue Haas Grotesk Display Pro";
+  src: url("/assets/fonts/NeueHaasGroteskDisplay-MediumItalic.otf") format("opentype");
+  font-weight: 500; font-style: italic; font-display: swap;
+}
+@font-face {
+  font-family: "Neue Haas Grotesk Display Pro";
+  src: url("/assets/fonts/NeueHaasGroteskDisplay-Bold.otf") format("opentype");
+  font-weight: 700; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: "Neue Haas Grotesk Display Pro";
+  src: url("/assets/fonts/NeueHaasGroteskDisplay-BoldItalic.otf") format("opentype");
+  font-weight: 700; font-style: italic; font-display: swap;
+}
+
+/* ---- Topol (display / wordmark, headings) ---- */
+@font-face {
+  font-family: "Topol";
+  src: url("/assets/fonts/Topol-Bold.otf") format("opentype");
+  font-weight: 700; font-style: normal; font-display: swap;
+}
+
+/* Make the whole app default to the brand body font (covers dbc/bootstrap bits
+   that MantineProvider's theme does not reach). */
+body, .dash-table-container, .ag-theme-alpine {
+  font-family: "Neue Haas Grotesk Display Pro", "Inter", "Helvetica Neue", Arial, sans-serif;
+}
+
+/* =============================================================================
+   Header / top bar
+   ============================================================================= */
+.stayery-header {
+  position: sticky; top: 0; z-index: 1030;
+  background: #FFFFFF;
+  border-bottom: 1px solid #ECECEC;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.02);
+  margin-bottom: 1.25rem;
+}
+.stayery-header-inner {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 1.5rem; padding: 0.7rem 0.25rem; flex-wrap: wrap;
+}
+
+/* Brand block: yellow accent bar + Topol wordmark + muted tagline */
+.stayery-brand { text-decoration: none; display: inline-flex; }
+.stayery-brand-inner { display: flex; align-items: center; gap: 0.6rem; }
+.stayery-accent {
+  width: 10px; height: 26px; background: #FFE650; border-radius: 2px;
+  display: inline-block;
+}
+.stayery-wordmark {
+  font-family: "Topol", "Inter", sans-serif;
+  font-weight: 700; font-size: 1.35rem; letter-spacing: 0.14em;
+  color: #000000; line-height: 1;
+}
+.stayery-subbrand {
+  font-family: "Neue Haas Grotesk Display Pro", sans-serif;
+  font-size: 0.72rem; letter-spacing: 0.16em; text-transform: uppercase;
+  color: #8A8A8A; margin-left: 0.15rem;
+}
+
+/* Nav links */
+.stayery-nav { display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap; }
+.stayery-navlink {
+  font-size: 0.92rem; font-weight: 500; color: #4A4A4A !important;
+  padding: 0.4rem 0.75rem !important; border-radius: 8px;
+  text-decoration: none; transition: background 0.12s ease, color 0.12s ease;
+  border-bottom: 2px solid transparent;
+}
+.stayery-navlink:hover { background: #F5F5F5; color: #000000 !important; }
+.stayery-navlink.active {
+  color: #000000 !important; font-weight: 700;
+  border-bottom: 2px solid #FFE650; border-radius: 8px 8px 0 0;
+  background: #FFFBE0;
+}

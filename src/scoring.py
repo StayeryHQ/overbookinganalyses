@@ -78,11 +78,22 @@ HIGH_THR: Final[float] = analytic_threshold()
 DEFAULT_MODEL:  Final[str] = "hazard"    # standard scoring model
 FALLBACK_MODEL: Final[str] = "xgboost"   # used when the hazard artifact is absent
 
+# The registry lists EVERY trainable/persistable model — src.training.retrain() and
+# the model notebooks look a model up here BY NAME to save its joblib + card, so all
+# four must stay registered even though only two are served. SERVING is controlled
+# separately (DEFAULT_MODEL=hazard, FALLBACK_MODEL=xgboost via resolve_model); logreg
+# (01) and histgb (03) are trainable baselines / comparison models, NOT part of the
+# MVP serving lineup. `kind`: static = sklearn Pipeline (predict_proba); hazard =
+# survival artifact (scored via src.hazard).
 MODEL_REGISTRY: Final[dict[str, dict[str, str]]] = {
     "hazard":  {"kind": "hazard", "joblib": "08_hazard_model.joblib",
                 "card": "reports/tables/08_hazard/model_card.json"},
     "xgboost": {"kind": "static", "joblib": "02_xgboost_model.joblib",
                 "card": "reports/tables/02_xgboost/model_card.json"},
+    "logreg":  {"kind": "static", "joblib": "01_logreg_model.joblib",
+                "card": "reports/tables/01_logreg/model_card.json"},
+    "histgb":  {"kind": "static", "joblib": "03_histgb_model.joblib",
+                "card": "reports/tables/03_histgb/model_card.json"},
 }
 
 
@@ -627,8 +638,14 @@ def score_upcoming(
     Loads the upcoming bookings from the reservations cache (force_refresh re-pulls
     BigQuery), scores them with the chosen model (hazard by default), and by default
     writes Data/scored_upcoming.parquet.
+
+    Already-CANCELLED bookings are excluded before scoring — a cancelled booking has
+    no bearing on future occupancy or cancellation risk, so it must never enter the
+    scored set (the app's data layer filters again defensively).
     """
     df = load_reservations(force_refresh=force_refresh, upcoming_only=True)
+    if "status" in df.columns:
+        df = df[df["status"].astype("string") != "Canceled"].copy()
     return score_reservations(
         df, model_name=model_name, threshold=threshold,
         save_as="scored_upcoming.parquet" if save else None,

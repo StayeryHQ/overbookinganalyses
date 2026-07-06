@@ -1,6 +1,6 @@
 {
-  "model": "xgboost",
-  "retrained_at": "2026-07-03T20:39:37.146110+00:00",
+  "model": "histgb",
+  "retrained_at": "2026-07-03T21:41:02.484294+00:00",
   "mode": "retune",
   "asof": "2026-06-28",
   "n_train_deploy": 179576,
@@ -33,36 +33,54 @@
   "feature_change": {
     "hash": "40169eb23eec",
     "added": [
+      "adults_n",
+      "arrival_dow",
+      "arrival_month",
+      "cancellationFee_name",
+      "channelCode",
+      "diff_gross_cancellation_fee",
       "diff_gross_cancellation_fee_log",
+      "gross_per_night",
       "gross_per_night_log",
+      "guaranteeType",
+      "has_children",
+      "has_corporate_code",
+      "has_group",
+      "has_promo",
+      "is_weekend_arrival",
+      "lead_time_days",
       "lead_time_days_log",
-      "los_nights_log"
+      "log_gross_amount",
+      "los_nights",
+      "los_nights_log",
+      "property_name",
+      "ratePlan_category",
+      "ratePlan_isSubjectToCityTax",
+      "stay_bucket",
+      "unitGroup_name"
     ],
     "removed": [],
     "changed": true
   },
   "hyperparams": {
-    "max_depth": 6,
-    "learning_rate": 0.05,
-    "subsample": 0.8,
-    "colsample_bytree": 0.8,
-    "min_child_weight": 1,
-    "reg_lambda": 1.0,
-    "reg_alpha": 0.0,
-    "n_estimators": 471
+    "l2_regularization": 10.25616274847308,
+    "learning_rate": 0.012886065671894011,
+    "max_iter": 900,
+    "max_leaf_nodes": 23,
+    "min_samples_leaf": 97
   },
   "walk_forward": {
     "auc": {
-      "mean": 0.7453591674734623,
-      "std": 0.03016868903701044
+      "mean": 0.7507047653919278,
+      "std": 0.036199275386902534
     },
     "ap": {
-      "mean": 0.2740003093819689,
-      "std": 0.030968121022620577
+      "mean": 0.28052839867420404,
+      "std": 0.03875108514882043
     },
     "brier": {
-      "mean": 0.12034715152288401,
-      "std": 0.014617832538530015
+      "mean": 0.1151138559144178,
+      "std": 0.014251082467157226
     },
     "cost": {
       "mean": 29413.333333333332,

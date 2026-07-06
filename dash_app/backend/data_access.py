@@ -23,13 +23,35 @@ DEFAULT_RISK_THRESHOLD = 0.50         # KPI "high-risk bookings" default cut (UI
 RAW_CACHE_FILE = "reservations_raw_no_pii.parquet"
 SCORED_CACHE_FILE = "scored_upcoming.parquet"
 CLEAN_META_FILE = "reservations_clean_meta.json"
+PERF_CACHE_FILE = "property_performance_daily.parquet"
 
 # Statuses that OCCUPY a room on a given night (for the room-type occupancy view).
 OCCUPYING_STATUSES = ("Confirmed", "InHouse")
+# Statuses excluded EVERYWHERE (scoring, KPIs, heatmap, table). A cancelled booking
+# has zero bearing on future occupancy/risk. Filtered once here, at the data layer.
+EXCLUDED_STATUSES = ("Canceled",)
 
 
 def _data_dir() -> Path:
     return src.data_dir()
+
+
+def _drop_cancelled(df: pd.DataFrame) -> pd.DataFrame:
+    """Remove already-cancelled bookings. Single choke point so no chart can forget."""
+    if df.empty or "status" not in df.columns:
+        return df
+    return df[~df["status"].astype("string").isin(EXCLUDED_STATUSES)].copy()
+
+
+def _fmt_ts(value) -> str | None:
+    """Human-readable timestamp: 'Jul 02, 2026, 14:30' (no milliseconds, no offset).
+    Parses ISO strings / datetimes via pandas. Returns None if unparseable/empty."""
+    if value is None or value == "":
+        return None
+    ts = pd.to_datetime(value, utc=True, errors="coerce")
+    if pd.isna(ts):
+        return None
+    return ts.strftime("%b %d, %Y, %H:%M")
 
 
 # ---- Time window -----------------------------------------------------------
@@ -47,7 +69,8 @@ def window_bounds(today: pd.Timestamp | None = None) -> tuple[pd.Timestamp, pd.T
 def _mtime(path: Path) -> str | None:
     if not path.exists():
         return None
-    return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    dt = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+    return _fmt_ts(dt)   # clean 'Jul 02, 2026, 14:30' (no ms / offset)
 
 
 def data_freshness() -> dict:
@@ -77,7 +100,7 @@ def model_meta() -> dict:
         card_path = src.repo_root() / sc.MODEL_REGISTRY[name]["card"]
         if card_path.exists():
             card = json.loads(card_path.read_text())
-            out["retrained_at"] = card.get("retrained_at")
+            out["retrained_at"] = _fmt_ts(card.get("retrained_at"))
     except Exception:  # noqa: BLE001
         pass
     # Training-set size: the hazard card stores person-periods, not bookings, so we
@@ -120,11 +143,12 @@ def scored_cache_exists() -> bool:
 
 
 def load_scored() -> pd.DataFrame:
-    """Read the cached scored upcoming bookings. Empty frame if not scored yet."""
+    """Read the cached scored upcoming bookings, already-cancelled bookings removed.
+    Empty frame if not scored yet."""
     p = _data_dir() / SCORED_CACHE_FILE
     if not p.exists():
         return pd.DataFrame()
-    return pd.read_parquet(p)
+    return _drop_cancelled(pd.read_parquet(p))
 
 
 def refresh_scored(model_name: str | None = None) -> int:
@@ -209,3 +233,163 @@ def room_type_occupancy(property_name: str,
             for group, cnt in ug[occ_mask].value_counts().items():
                 records.append({"date": night, "unitGroup": group, "occupied": int(cnt)})
     return pd.DataFrame(records, columns=["date", "unitGroup", "occupied"])
+
+
+# ---- Display enrichment: risk label + group flag ---------------------------
+def add_display_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Add `risk_label` (config-driven Low/Medium/High) and `is_group` (booking is
+    part of a group: blockId or groupName present). No-op on an empty frame."""
+    if df.empty:
+        return df
+    out = df.copy()
+    if "cancel_proba" in out.columns:
+        out["risk_label"] = [src.risk_label(p) for p in out["cancel_proba"]]
+    else:
+        out["risk_label"] = ""
+    block = out["blockId"].astype("string").fillna("") if "blockId" in out.columns else ""
+    group = out["groupName"].astype("string").fillna("") if "groupName" in out.columns else ""
+    if isinstance(block, str) and isinstance(group, str):
+        out["is_group"] = False
+    else:
+        out["is_group"] = (block.str.len() > 0) | (group.str.len() > 0)
+    return out
+
+
+# ---- Capacity per property (for occupancy %) -------------------------------
+@lru_cache(maxsize=1)
+def _property_code_to_name() -> dict[str, str]:
+    """{property_code -> property_name} from the reservations cache. This is the
+    propertyId<->property_name bridge that was previously missing: the reservations
+    cache carries BOTH property_code (e.g. 'BER_FR') and property_name, and those codes
+    are exactly the performance table's propertyId. Empty dict if columns are absent."""
+    df = _reservations_cached()
+    if df.empty or not {"property_code", "property_name"} <= set(df.columns):
+        return {}
+    m = df[["property_code", "property_name"]].dropna().drop_duplicates()
+    return dict(zip(m["property_code"].astype(str), m["property_name"].astype(str)))
+
+
+@lru_cache(maxsize=1)
+def _capacity_from_perf() -> dict[str, int]:
+    """{property_name -> total bookable units} from the performance table's most recent
+    houseCount, mapped propertyId->property_name via the reservations cache. Real data,
+    not a placeholder. Empty dict if the perf cache or the mapping is unavailable."""
+    p = _data_dir() / PERF_CACHE_FILE
+    if not p.exists():
+        return {}
+    perf = pd.read_parquet(p)
+    if perf.empty or not {"propertyId", "houseCount"} <= set(perf.columns):
+        return {}
+    if "businessDay" in perf.columns:
+        perf = perf.assign(_bd=pd.to_datetime(perf["businessDay"], errors="coerce")).sort_values("_bd")
+    latest = perf.groupby("propertyId")["houseCount"].last()   # current room count
+    code2name = _property_code_to_name()
+    out: dict[str, int] = {}
+    for code, hc in latest.items():
+        name = code2name.get(str(code))
+        if name and pd.notna(hc) and hc > 0:
+            out[name] = int(hc)
+    return out
+
+
+def property_capacity() -> dict[str, int]:
+    """Total bookable units per property_name, for the occupancy-% heatmap.
+
+    Primary source is the performance table's houseCount (real room counts), mapped to
+    property_name via the reservations cache's property_code. Falls back to the sum of
+    the hand-maintained room-type capacities in configs/room_type_capacity.yaml (unset
+    today). Returns {} only if neither is available — the heatmap then shows occupied
+    units without a % (never a fabricated %).
+    """
+    caps = _capacity_from_perf()
+    if caps:
+        return caps
+    yaml_caps = src.load_room_type_capacity()   # fallback: hand-maintained room types
+    return {prop: int(sum(groups.values())) for prop, groups in yaml_caps.items() if groups}
+
+
+# ---- Empty-room cost pre-fill (visible in the input) -----------------------
+def empty_room_cost_prefill() -> tuple[dict[str, float], str]:
+    """({property_name: value}, source_label) to PRE-FILL the empty-room cost.
+
+    Primary intent is ADR from property_performance, but that needs the (still open)
+    propertyId->name mapping AND the perf cache. Until then we fall back to a real,
+    visible proxy: the average gross-per-night per property from the reservations
+    cache (keyed by property_name, always available). The source label is surfaced in
+    the UI so the RM knows exactly what the pre-filled number represents.
+    """
+    # (Primary) ADR path — inert until the propertyId->name mapping exists.
+    adr = src.average_room_rate_by_property()  # keyed by propertyId; no name mapping yet
+    if adr:
+        # No mapping to property_name available -> cannot key by name; skip for now.
+        pass
+    # (Fallback proxy) average gross per night per property_name from reservations.
+    res = _reservations_cached()
+    if res.empty or "property_name" not in res.columns:
+        return {}, "unavailable"
+    gross = pd.to_numeric(res.get("totalGrossAmount_amount"), errors="coerce")
+    arr = pd.to_datetime(res["arrival"], utc=True, errors="coerce")
+    dep = pd.to_datetime(res["departure"], utc=True, errors="coerce")
+    nights = ((dep.dt.normalize() - arr.dt.normalize()) / pd.Timedelta(days=1)).clip(lower=1)
+    gpn = (gross / nights).replace([float("inf"), -float("inf")], pd.NA)
+    tmp = pd.DataFrame({"property_name": res["property_name"], "gpn": gpn}).dropna()
+    if tmp.empty:
+        return {}, "unavailable"
+    means = tmp.groupby("property_name")["gpn"].mean()
+    return {str(k): round(float(v), 2) for k, v in means.items()}, "avg. room revenue / night (proxy)"
+
+
+# ---- Arrivals filtering (for composition charts + table) -------------------
+def arrivals_window(scored: pd.DataFrame, properties: list[str] | None = None,
+                    day: str | None = None, today: pd.Timestamp | None = None) -> pd.DataFrame:
+    """Scored bookings whose ARRIVAL falls in the window (and, if given, on the
+    exact `day`) for the selected properties. `day` is an ISO date string
+    (YYYY-MM-DD) from a heatmap tile click; None = all 14 days (aggregate)."""
+    win = in_window(scored, properties, today=today)
+    if day is not None and not win.empty:
+        d = pd.to_datetime(win["arrival"], utc=True).dt.normalize()
+        target = pd.Timestamp(day, tz="UTC").normalize()
+        win = win[d == target].copy()
+    return win
+
+
+# ---- Heatmap grid: one row per (property, day) -----------------------------
+def heatmap_grid(properties: list[str] | None = None, threshold: float | None = None,
+                 today: pd.Timestamp | None = None) -> pd.DataFrame:
+    """Per (property_name, day) over the 14-day window:
+    occupancy_pct (NaN if capacity unknown), occupied_units, arrivals, departures,
+    pred_cancels (scored arrivals with cancel_proba >= threshold). Cancelled bookings
+    are already excluded (reservations filtered here, scored filtered in load_scored).
+    """
+    thr = DEFAULT_RISK_THRESHOLD if threshold is None else float(threshold)
+    start, end = window_bounds(today)
+    days = pd.date_range(start, end - pd.Timedelta(days=1), freq="D", tz="UTC")
+    props = properties or property_list()
+
+    res = _drop_cancelled(_reservations_cached())
+    scored = load_scored()
+    caps = property_capacity()
+
+    rows = []
+    for prop in props:
+        sub = res[res["property_name"] == prop] if not res.empty else res
+        a = pd.to_datetime(sub["arrival"], utc=True).dt.normalize() if not sub.empty else pd.Series([], dtype="datetime64[ns, UTC]")
+        d = pd.to_datetime(sub["departure"], utc=True).dt.normalize() if not sub.empty else pd.Series([], dtype="datetime64[ns, UTC]")
+        occ_ok = sub["status"].isin(OCCUPYING_STATUSES) if not sub.empty else pd.Series([], dtype=bool)
+        sc_sub = scored[scored["property_name"] == prop] if not scored.empty else scored
+        sc_arr = (pd.to_datetime(sc_sub["arrival"], utc=True).dt.normalize()
+                  if not sc_sub.empty else None)
+        sc_p = (pd.to_numeric(sc_sub["cancel_proba"], errors="coerce")
+                if not sc_sub.empty else None)
+        cap = caps.get(prop)
+        for day in days:
+            arrivals = int((a == day).sum()) if len(a) else 0
+            departures = int((d == day).sum()) if len(d) else 0
+            occupied = int(((a <= day) & (d > day) & occ_ok).sum()) if len(a) else 0
+            occ_pct = (round(occupied / cap * 100, 1) if cap else float("nan"))
+            pred = int(((sc_arr == day) & (sc_p >= thr)).sum()) if sc_arr is not None else 0
+            rows.append({"property_name": prop, "day": day.date().isoformat(),
+                         "occupancy_pct": occ_pct, "occupied_units": occupied,
+                         "capacity": cap, "arrivals": arrivals,
+                         "departures": departures, "pred_cancels": pred})
+    return pd.DataFrame(rows)

@@ -29,6 +29,7 @@ from src import (
     resolve_model,
     score_upcoming,
 )
+from src.model_eval import EVAL_MODELS, model_eval
 
 
 def cmd_refresh(args: argparse.Namespace) -> int:
@@ -100,6 +101,38 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_eval(args: argparse.Namespace) -> int:
+    """Pre-warm the per-model evaluation artifact(s) the Model-Performance page reads.
+
+    Runs the leak-free decision-time walk-forward once per model and writes
+    Data/model_eval_<model>.parquet (+ provenance JSON). Static models are fast; the
+    hazard refit is the slow one. Run this offline / in the Docker build so the app
+    only ever READS the parquet.
+    """
+    if args.all:
+        models = list(EVAL_MODELS)
+    elif args.model:
+        models = [args.model]
+    else:
+        print("ERROR: pass --model <name> or --all", file=sys.stderr)
+        return 1
+
+    for m in models:
+        print(f"Evaluating '{m}' (leak-free decision-time walk-forward, {args.folds} folds)…")
+        try:
+            d = model_eval(m, refresh=args.refresh, n_folds=args.folds)
+        except Exception as e:  # noqa: BLE001 — surface the reason, keep going
+            print(f"  FAILED for '{m}': {e}", file=sys.stderr)
+            continue
+        if d.empty:
+            print(f"  no usable folds/data for '{m}'.")
+            continue
+        print(f"  pooled n={len(d):,}  folds={d['fold'].nunique()}  "
+              f"base_rate={d['y_true'].mean():.3f}  mean_pred={d['y_prob'].mean():.3f}")
+        print(f"  saved → {data_dir() / f'model_eval_{m}.parquet'}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="overbooking-analyse",
@@ -120,6 +153,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     pst = sub.add_parser("status", help="Show what's on disk and which model wins.")
     pst.set_defaults(func=cmd_status)
+
+    pe = sub.add_parser("eval", help="Pre-warm the Model-Performance eval artifact(s).")
+    pe.add_argument("--model", choices=list(EVAL_MODELS),
+                    help="Which model to evaluate. Omit and pass --all for every model.")
+    pe.add_argument("--all", action="store_true", help="Evaluate all four models.")
+    pe.add_argument("--folds", type=int, default=6,
+                    help="Walk-forward folds to pool (default 6). More = larger sample, slower.")
+    pe.add_argument("--refresh", action="store_true",
+                    help="Recompute even if the parquet already exists.")
+    pe.set_defaults(func=cmd_eval)
 
     return p
 

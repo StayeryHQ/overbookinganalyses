@@ -1,20 +1,24 @@
 # dash_app/pages/occupancy.py
-# MAIN PAGE — Occupancy & Overbooking. Fixed 14-day forward window; only a property
-# filter (no date filter). Shell + KPI tiles render immediately from the local cache;
-# scoring runs in a BACKGROUND callback (Refresh). No filter/table interaction ever
-# hits BigQuery — everything reads the Phase-1 caches.
+# MAIN PAGE — Occupancy & Overbooking. Fixed 14-day forward window; property filter
+# only (no date filter). Layout top→bottom: KPI tiles → heatmap → composition charts
+# → booking table → cost panel → room-type sub-view. Shell + KPIs render immediately
+# from the local cache; scoring runs in a BACKGROUND callback. Already-cancelled
+# bookings are excluded centrally in the data layer. No filter/table interaction ever
+# hits BigQuery.
 
 from __future__ import annotations
 
 import dash
 import dash_ag_grid as dag
 import dash_bootstrap_components as dbc
+import dash_mantine_components as dmc
 import pandas as pd
-from dash import Input, Output, State, callback, dcc, html, no_update
+from dash import Input, Output, State, callback, ctx, dcc, html, no_update
 
 from dash_app import theme
 from dash_app.backend import data_access as da
 from dash_app.components import panels
+from dash_app.components import ui
 from src import overbooking as ob
 
 dash.register_page(__name__, path="/occupancy", name="Occupancy & Overbooking",
@@ -27,6 +31,13 @@ def _iso_week(today: pd.Timestamp | None = None) -> str:
     return f"{iso[0]}-W{int(iso[1]):02d}"
 
 
+def _selected_props(value) -> list[str]:
+    """Normalise the multiselect value; empty selection is treated as 'all'."""
+    if value is None:
+        return []
+    return list(value)
+
+
 # ---------------------------------------------------------------------------
 # Layout (callable => re-read on each navigation, so property list stays fresh)
 # ---------------------------------------------------------------------------
@@ -34,29 +45,40 @@ def layout(**_kwargs):
     props = da.property_list()
     prop_opts = [{"label": p, "value": p} for p in props]
 
-    controls = dbc.Row([
-        dbc.Col([
-            dbc.Label("Properties", class_name="mb-1"),
-            dcc.Dropdown(id="occ-property-filter", options=prop_opts, value=props,
-                         multi=True, placeholder="All properties"),
-        ], md=6),
-        dbc.Col([
-            dbc.Label("High-risk threshold", class_name="mb-1"),
-            dbc.Input(id="occ-risk-threshold", type="number", min=0, max=1, step=0.05,
-                      value=da.DEFAULT_RISK_THRESHOLD),
-        ], md=2),
-        dbc.Col([
-            dbc.Label("Scores", class_name="mb-1 d-block"),
-            dbc.Button("Refresh scores", id="occ-refresh-btn", color="dark", size="sm"),
-            html.Span(id="occ-refresh-status", className="text-muted ms-2",
-                      style={"fontSize": "0.8rem"}),
-        ], md=4),
-    ], class_name="g-2 align-items-end mb-2")
+    header = dmc.Group([
+        dmc.Group([
+            dmc.Title("Occupancy & overbooking", order=3),
+            dmc.Badge("Next 14 days · live scoring", color="gray", variant="light", radius="sm"),
+        ], gap="sm", align="center"),
+        dmc.Text("Click a heatmap tile to drill into one property + day.",
+                 size="sm", c="dimmed"),
+    ], justify="space-between", align="center", wrap="wrap", mb="xs")
+
+    controls = dmc.Paper(dmc.Group([
+        dmc.MultiSelect(
+            id="occ-property-filter", data=prop_opts, value=props, label="Properties",
+            placeholder="All properties", clearable=True, searchable=True,
+            leftSection=html.I(className="bi bi-geo-alt"),
+            comboboxProps={"withinPortal": True},
+            style={"flex": "1 1 320px", "minWidth": "260px"}),
+        dmc.NumberInput(id="occ-risk-threshold", label="High-risk threshold", min=0, max=1,
+                        step=0.05, value=da.DEFAULT_RISK_THRESHOLD, style={"width": "170px"}),
+        dmc.Stack([
+            dmc.Text("Scores", size="sm", fw=600),
+            dmc.Group([
+                dmc.Button("Refresh scores", id="occ-refresh-btn", size="sm", variant="filled",
+                           leftSection=html.I(className="bi bi-arrow-clockwise")),
+                dmc.Text(id="occ-refresh-status", size="xs", c="dimmed"),
+            ], gap="xs", align="center"),
+        ], gap=4),
+    ], align="flex-end", gap="md", wrap="wrap"), p="md", radius="lg", withBorder=True)
 
     stores = html.Div([
         dcc.Store(id="occ-scored-version", data=0),
         dcc.Store(id="occ-pernight-store"),
-        dcc.Store(id="cost-store", storage_type="local"),  # persists across reloads
+        dcc.Store(id="occ-selection"),                    # {"property":..,"day":..} or None
+        # NOTE: "cost-store" now lives in the GLOBAL app.layout (single shared source of
+        # truth across pages). Declaring it here too would duplicate the component id.
     ])
 
     grid = dag.AgGrid(
@@ -68,59 +90,109 @@ def layout(**_kwargs):
         defaultColDef={"sortable": True, "filter": True, "resizable": True},
         dashGridOptions={"rowSelection": {"mode": "singleRow", "enableClickSelection": True},
                          "animateRows": True},
-        style={"height": "520px"},
+        style={"height": "460px"},
     )
 
-    return dbc.Container([
-        html.H3("Occupancy & Overbooking"),
-        html.P("Next 14 days · predicted cancellations drive the overbooking "
-               "recommendation per property.", className="text-muted"),
+    # Heatmap card: the clear button + live selection label live in the card header.
+    heatmap_extra = dmc.Group([
+        dmc.Text(id="occ-selection-label", size="xs", c="dimmed"),
+        dmc.Button("Clear selection", id="occ-clear-btn", size="xs", variant="subtle",
+                   color="gray"),
+    ], gap="sm", align="center", wrap="nowrap")
+
+    heatmap_card = ui.chart_card(
+        "Occupancy heatmap", "occ-heatmap", height=None, header_extra=heatmap_extra,
+        subtitle="Colour = occupancy % (occupied units if capacity unset). "
+                 "Click a tile to filter the views below.")
+
+    booking_row = dmc.Grid([
+        dmc.GridCol([dmc.Text("Bookings", fw=600, size="sm", mb=6), grid],
+                    span={"base": 12, "md": 8}),
+        dmc.GridCol(
+            dmc.Card([dmc.Text("Booking detail", fw=600, size="sm", mb=6),
+                      html.Div(id="occ-side-panel",
+                               children=panels.side_panel_content(None))],
+                     withBorder=True, radius="lg", p="md", style={"height": "100%"}),
+            span={"base": 12, "md": 4}),
+    ], gutter="md")
+
+    cost_row = dmc.Grid([
+        dmc.GridCol(panels.cost_panel(prop_opts), span={"base": 12, "md": 6}),
+        dmc.GridCol(html.Div(id="occ-reco"), span={"base": 12, "md": 6}),
+    ], gutter="md")
+
+    return dmc.Stack([
+        header,
         stores,
         controls,
         dbc.Alert(id="occ-scored-warning", color="warning", is_open=False, class_name="py-2"),
-        dbc.Row(id="occ-kpi-row", class_name="g-2 mb-2"),
-        dbc.Row([
-            dbc.Col([html.H6("Bookings in the next 14 days"), grid], md=8),
-            dbc.Col(dbc.Card(dbc.CardBody([html.H6("Booking detail"),
-                                           html.Div(id="occ-side-panel",
-                                                    children=panels.side_panel_content(None))]),
-                             style=theme.CARD_STYLE), md=4),
-        ], class_name="g-2 mb-2"),
-        dbc.Row([
-            dbc.Col(panels.cost_panel(prop_opts), md=6),
-            dbc.Col(html.Div(id="occ-reco"), md=6),
-        ], class_name="g-2 mb-3"),
+
+        # 1) KPI tiles (filled by callback; skeleton until then)
+        html.Div(id="occ-kpi-row", children=dmc.Skeleton(height=110, radius="lg")),
+
+        # 2) Heatmap + selection controls
+        heatmap_card,
+
+        # 3) Composition charts (filtered by heatmap selection)
+        html.Div(id="occ-composition"),
+
+        # 4) Booking table (filtered by heatmap selection) + detail side panel
+        booking_row,
+
+        # 5) Cost-parameter panel + recommendation
+        cost_row,
+
+        # 6) Room-type sub-view (single property only)
         html.Div(id="occ-roomtype-section"),
-    ], fluid=True)
+    ], gap="md")
 
 
 # ---------------------------------------------------------------------------
-# Callbacks
+# Selection: a heatmap click selects (property, day); clear button / filter /
+# threshold reset it. Single callback (ctx decides) => one owner of the store.
 # ---------------------------------------------------------------------------
-def _selected_props(value) -> list[str]:
-    """Normalise the multiselect value; empty selection is treated as 'all'."""
-    if value is None:
-        return []
-    return list(value)
-
-
 @callback(
-    Output("cost-active-property", "options"),
+    Output("occ-selection", "data"),
+    Output("occ-selection-label", "children"),
+    Input("occ-heatmap", "clickData"),
+    Input("occ-clear-btn", "n_clicks"),
+    Input("occ-property-filter", "value"),
+    Input("occ-risk-threshold", "value"),
+)
+def _selection(click, _clear, _props, _thr):
+    if ctx.triggered_id == "occ-heatmap" and click:
+        p = click["points"][0]
+        sel = {"property": p["y"], "day": p["x"]}
+        return sel, f"Filtered to {sel['property']} · {sel['day']} (click ‘Clear selection’ to reset)"
+    return None, "Showing all selected properties across 14 days"
+
+
+# ---------------------------------------------------------------------------
+# Cost panel's active-property selector: follows the heatmap selection, else the
+# property filter.
+# ---------------------------------------------------------------------------
+@callback(
+    Output("cost-active-property", "data"),   # dmc.Select uses `data` (was dbc `options`)
     Output("cost-active-property", "value"),
     Input("occ-property-filter", "value"),
+    Input("occ-selection", "data"),
     State("cost-active-property", "value"),
 )
-def _sync_active_property(selected, current):
-    """Cost panel's per-property selector tracks the filtered properties."""
+def _sync_active_property(selected, selection, current):
     props = _selected_props(selected) or da.property_list()
     opts = [{"label": p, "value": p} for p in props]
+    if selection and selection.get("property") in props:
+        return opts, selection["property"]
     value = current if current in props else (props[0] if props else None)
     return opts, value
 
 
+# ---------------------------------------------------------------------------
+# KPI tiles + heatmap + per-night store + scored warning
+# ---------------------------------------------------------------------------
 @callback(
     Output("occ-kpi-row", "children"),
-    Output("occ-grid", "rowData"),
+    Output("occ-heatmap", "figure"),
     Output("occ-pernight-store", "data"),
     Output("occ-scored-warning", "children"),
     Output("occ-scored-warning", "is_open"),
@@ -135,24 +207,56 @@ def _update_main(selected, threshold, _version):
     thr = da.DEFAULT_RISK_THRESHOLD if threshold is None else float(threshold)
 
     scored = da.load_scored()
+    grid_fig = panels.heatmap_figure(da.heatmap_grid(props or None, thr))
+
     if scored.empty:
         kpis = panels.kpi_tiles(freshness, mm, None, thr)
-        warn = "No scored bookings yet. Click 'Refresh scores' to run the model on the " \
-               "cached reservations (no BigQuery query is triggered)."
-        return kpis, [], None, warn, True
+        warn = ("No scored bookings yet. Click 'Refresh scores' to run the model on the "
+                "cached reservations (no BigQuery query is triggered).")
+        return kpis, grid_fig, None, warn, True
 
     win = da.in_window(scored, props)
     high_risk = int((pd.to_numeric(win["cancel_proba"], errors="coerce") >= thr).sum()) \
         if not win.empty else 0
     kpis = panels.kpi_tiles(freshness, mm, high_risk, thr)
-    row_data = panels.booking_row_data(win)
 
     pernight = da.per_night_expected_freed(win, hotel_col="property_name")
     if not pernight.empty:
         pernight = pernight.assign(arrival_date=pernight["arrival_date"].astype(str))
-    return kpis, row_data, pernight.to_dict("records"), "", False
+    return kpis, grid_fig, pernight.to_dict("records"), "", False
 
 
+# ---------------------------------------------------------------------------
+# Composition charts + booking table (both follow the heatmap selection)
+# ---------------------------------------------------------------------------
+@callback(
+    Output("occ-composition", "children"),
+    Output("occ-grid", "rowData"),
+    Input("occ-selection", "data"),
+    Input("occ-property-filter", "value"),
+    Input("occ-scored-version", "data"),
+)
+def _update_views(selection, selected, _version):
+    scored = da.add_display_columns(da.load_scored())
+    if scored.empty:
+        return panels.composition_row(pd.DataFrame(), "no scored data"), []
+
+    if selection:
+        props = [selection["property"]]
+        day = selection["day"]
+        label = f"{selection['property']} · {selection['day']}"
+    else:
+        props = _selected_props(selected)
+        day = None
+        label = "all selected properties · 14 days"
+
+    arrivals = da.arrivals_window(scored, props, day)
+    return panels.composition_row(arrivals, label), panels.booking_row_data(arrivals)
+
+
+# ---------------------------------------------------------------------------
+# Booking detail side panel (raw record — no SHAP/XAI, that's Phase 4)
+# ---------------------------------------------------------------------------
 @callback(
     Output("occ-side-panel", "children"),
     Input("occ-grid", "selectedRows"),
@@ -169,6 +273,10 @@ def _update_side_panel(selected_rows):
     return panels.side_panel_content(record)
 
 
+# ---------------------------------------------------------------------------
+# Overbooking recommendation — follows the active property; if a heatmap DAY is
+# selected, the recommendation is for that specific night.
+# ---------------------------------------------------------------------------
 @callback(
     Output("occ-reco", "children"),
     Input("cost-walk", "value"),
@@ -177,8 +285,10 @@ def _update_side_panel(selected_rows):
     Input("cost-multiplier", "value"),
     Input("cost-active-property", "value"),
     Input("occ-pernight-store", "data"),
+    Input("occ-selection", "data"),
 )
-def _update_recommendation(cost_walk, cost_empty, high_demand, multiplier, prop, pernight_data):
+def _update_recommendation(cost_walk, cost_empty, high_demand, multiplier, prop,
+                           pernight_data, selection):
     costs_ready = cost_walk is not None and cost_empty is not None
     if not prop or not pernight_data:
         return panels.recommendation_card(None, costs_ready, prop)
@@ -186,6 +296,9 @@ def _update_recommendation(cost_walk, cost_empty, high_demand, multiplier, prop,
     pernight = pd.DataFrame(pernight_data)
     if "hotel" in pernight.columns:
         pernight = pernight[pernight["hotel"] == prop]
+    # If a specific day is selected for this property, recommend for that night only.
+    if selection and selection.get("property") == prop and "arrival_date" in pernight.columns:
+        pernight = pernight[pernight["arrival_date"] == selection.get("day")]
     if pernight.empty:
         return panels.recommendation_card(None, costs_ready, prop)
     if not costs_ready:
@@ -200,6 +313,9 @@ def _update_recommendation(cost_walk, cost_empty, high_demand, multiplier, prop,
     return panels.recommendation_card(summary, True, prop)
 
 
+# ---------------------------------------------------------------------------
+# Room-type occupancy sub-view (single property only)
+# ---------------------------------------------------------------------------
 @callback(
     Output("occ-roomtype-section", "children"),
     Input("occ-property-filter", "value"),
@@ -214,16 +330,21 @@ def _update_roomtype(selected, _version):
     occ = da.room_type_occupancy(prop)
     caps = load_room_type_capacity().get(prop, {})
     fig = panels.room_type_figure(occ, caps, prop)
-    hint = None if caps else dbc.Alert(
+    hint = None if caps else dmc.Alert(
         "No room-type capacities set for this property yet — fill in "
         "configs/room_type_capacity.yaml to show the dashed capacity lines.",
-        color="secondary", class_name="py-2")
-    return html.Div([html.H6("Room-type occupancy"),
-                     dcc.Graph(figure=fig, config={"displayModeBar": False}),
-                     hint])
+        color="gray", variant="light", radius="md",
+        icon=html.I(className="bi bi-info-circle"))
+    return dmc.Card([
+        dmc.Text("Room-type occupancy", fw=600, size="sm", mb=6),
+        dcc.Graph(figure=fig, config={"displayModeBar": False}),
+        hint,
+    ], withBorder=True, radius="lg", p="md")
 
 
-# ---- Cost-parameter persistence (per property, per ISO week) ---------------
+# ---------------------------------------------------------------------------
+# Cost-parameter persistence (per property, per ISO week) + visible pre-fill
+# ---------------------------------------------------------------------------
 @callback(
     Output("cost-walk", "value"),
     Output("cost-empty", "value"),
@@ -236,15 +357,19 @@ def _update_roomtype(selected, _version):
 def _load_cost_params(prop, store):
     store = store or {}
     key = f"{prop}|{_iso_week()}"
-    help_txt = ("Empty-room cost pre-fills from ADR once the property_performance cache "
-                "is built and the propertyId↔property mapping is set; until then, enter it.")
     if key in store:
         s = store[key]
+        help_txt = "Loaded your saved values for this property/week."
         return (s.get("walk"), s.get("empty"), bool(s.get("high", False)),
                 s.get("mult", ob.DEFAULT_HIGH_DEMAND_MULTIPLIER), help_txt)
-    # Defaults for a property/week not seen before. Walk cost has no default (RM sets
-    # it). Empty-room ADR pre-fill needs the propertyId mapping (open) — blank for now.
-    return None, None, False, ob.DEFAULT_HIGH_DEMAND_MULTIPLIER, help_txt
+    # New property/week: walk cost has no default (RM sets it). Empty-room cost is
+    # PRE-FILLED and shown in the field from the best available source.
+    prefill, source = da.empty_room_cost_prefill()
+    empty_val = prefill.get(prop)
+    help_txt = (f"Empty-room cost pre-filled from {source} = {empty_val}. "
+                "Adjust as needed." if empty_val is not None
+                else "No pre-fill available yet — enter the empty-room cost.")
+    return None, empty_val, False, ob.DEFAULT_HIGH_DEMAND_MULTIPLIER, help_txt
 
 
 @callback(
@@ -266,7 +391,9 @@ def _save_cost_params(walk, empty, high, mult, prop, store):
     return store
 
 
-# ---- Background: (re)score upcoming bookings from the cache ----------------
+# ---------------------------------------------------------------------------
+# Background: (re)score upcoming bookings from the cache (no BigQuery)
+# ---------------------------------------------------------------------------
 @callback(
     Output("occ-scored-version", "data"),
     Output("occ-refresh-status", "children"),
@@ -280,5 +407,5 @@ def _refresh_scores(_n, version):
     try:
         count = da.refresh_scored()
         return (version or 0) + 1, f"Scored {count:,} bookings."
-    except Exception as e:  # noqa: BLE001 — surface the reason in the UI, don't crash
+    except Exception as e:  # noqa: BLE001 — surface the reason, don't crash
         return no_update, f"Refresh failed: {e}"
