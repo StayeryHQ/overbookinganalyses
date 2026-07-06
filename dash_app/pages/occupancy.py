@@ -373,7 +373,10 @@ def _load_cost_params(prop, store):
 
 
 @callback(
-    Output("cost-store", "data"),
+    # allow_duplicate: the Model-Performance page also writes cost-store (its own global-cost
+    # key). Both target the same shared store; each declares allow_duplicate so registration
+    # is independent of page import order.
+    Output("cost-store", "data", allow_duplicate=True),
     Input("cost-walk", "value"),
     Input("cost-empty", "value"),
     Input("cost-high-demand", "value"),

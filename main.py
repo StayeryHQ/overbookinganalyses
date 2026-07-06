@@ -133,6 +133,40 @@ def cmd_eval(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_explain(args: argparse.Namespace) -> int:
+    """Pre-warm the global SHAP artifact(s) the Model-Performance page reads (beeswarm +
+    feature importance). Model-agnostic over the scalar P(cancel) adapter, so it can be
+    slow — run offline / in the Docker build. Requires a scored set (`main.py score`)."""
+    from dash_app.backend.explain import compute_global_shap, iteration_curve, shap_cache_path
+
+    if args.all:
+        models = list(EVAL_MODELS)
+    elif args.model:
+        models = [args.model]
+    else:
+        print("ERROR: pass --model <name> or --all", file=sys.stderr)
+        return 1
+
+    for m in models:
+        print(f"Computing global SHAP for '{m}' (model-agnostic; may take a while)…")
+        try:
+            d = compute_global_shap(m, refresh=args.refresh)
+        except Exception as e:  # noqa: BLE001
+            print(f"  FAILED for '{m}': {e}", file=sys.stderr)
+            continue
+        if d.empty:
+            print(f"  nothing to explain for '{m}' (is anything scored? run `main.py score`).")
+            continue
+        print(f"  features={d['feature'].nunique()}  rows={len(d):,}  saved → {shap_cache_path(m)}")
+        if m in ("xgboost", "histgb"):                       # warm the boosting iteration curve too
+            try:
+                iteration_curve(m, refresh=args.refresh)
+                print(f"  iteration curve warmed for '{m}'.")
+            except Exception as e:  # noqa: BLE001
+                print(f"  (iteration curve skipped for '{m}': {e})", file=sys.stderr)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="overbooking-analyse",
@@ -163,6 +197,14 @@ def build_parser() -> argparse.ArgumentParser:
     pe.add_argument("--refresh", action="store_true",
                     help="Recompute even if the parquet already exists.")
     pe.set_defaults(func=cmd_eval)
+
+    px = sub.add_parser("explain", help="Pre-warm global SHAP (beeswarm + importance).")
+    px.add_argument("--model", choices=list(EVAL_MODELS),
+                    help="Which model to explain. Omit and pass --all for every model.")
+    px.add_argument("--all", action="store_true", help="Explain all four models.")
+    px.add_argument("--refresh", action="store_true",
+                    help="Recompute even if the SHAP parquet already exists.")
+    px.set_defaults(func=cmd_explain)
 
     return p
 

@@ -91,6 +91,15 @@ def _decoder(cols, cat_maps, num, extra):
     return decode
 
 
+def explainable_features(model: str) -> list[str]:
+    """Model features available for PDP/ICE on the current scored frame (numeric + day-axis
+    first, then categoricals). Empty if nothing is scored yet."""
+    num, cat, extra = _feature_lists(model)
+    frame = _explain_frame(1)
+    have = set(frame.columns) if not frame.empty else set()
+    return [c for c in list(num) + list(extra) + list(cat) if (not have or c in have)]
+
+
 def _predict_fn(model: str, decode):
     """f: numeric-matrix -> P(cancel) via the unified adapter (survival product for hazard)."""
     def f(X: np.ndarray) -> np.ndarray:
@@ -256,19 +265,34 @@ def partial_dependence(model: str, feature: str, *, n_rows: int = 120,
 # ---------------------------------------------------------------------------
 # Boosting iteration curve (XGBoost / HistGB only) — best-effort, labelled
 # ---------------------------------------------------------------------------
-def iteration_curve(model: str) -> dict:
-    """Train/validation loss vs boosting iteration. Only meaningful for the boosting models
-    (xgboost, histgb). Returns {} for logreg (no iterations) and — unless the persisted
-    hazard booster retained its eval history — for hazard (its curve is person-period
-    logloss, a different scale; shown only if available and clearly labelled)."""
+def _itercurve_path(model: str):
+    return src.data_dir() / f"itercurve_{model}.json"
+
+
+def iteration_curve(model: str, *, refresh: bool = False) -> dict:
+    """Train/validation loss vs boosting iteration, CACHED to JSON (computing it refits a
+    model, so we never redo it on every page interaction). Only meaningful for the boosting
+    models (xgboost, histgb); returns {} for logreg (no iterations) and for hazard (its curve
+    is person-period logloss on a different scale — not shown next to the others)."""
+    import json
+    p = _itercurve_path(model)
+    if p.exists() and not refresh:
+        try:
+            return json.loads(p.read_text())
+        except Exception:  # noqa: BLE001
+            pass
+    if model not in ("xgboost", "histgb"):
+        return {}
     try:
-        if model == "xgboost":
-            return _xgb_iteration_curve()
-        if model == "histgb":
-            return _histgb_iteration_curve()
+        curve = _xgb_iteration_curve() if model == "xgboost" else _histgb_iteration_curve()
     except Exception:  # noqa: BLE001 — never fabricate a curve; fall through to empty
         return {}
-    return {}
+    if curve:
+        try:
+            p.write_text(json.dumps(curve))
+        except Exception:  # noqa: BLE001
+            pass
+    return curve
 
 
 def _train_val_split():

@@ -163,17 +163,45 @@ Umgebungs-Hinweis: Die Modelle laufen nur in der Projekt-venv/Docker (Python ≥
 nicht in der Cowork-Sandbox. Neuer Code wird gegen die bereits getesteten Funktionen gebaut;
 Ausführung/Verifikation der Zahlen passiert in deiner venv bzw. im Docker-Build.
 
-## 4a. Umsetzungsstand
+## 4a. Umsetzungsstand — komplett gebaut (in Sandbox nur syntaxgeprüft)
 
-- **Increment 1 — Eval-Grundlage: FERTIG (ungetestet in Sandbox).**
-  - `src/model_eval.py`: `model_eval(model_name)` → leckfreies, gecachtes Vorhersage-Artefakt
-    pro Modell mit `property_name` + leckfreier Baseline (global + pro Standort). Nutzt
-    `training.build_pipeline/_card_hp/_family_feature_lists` und `hazard.fit_hazard/
-    survival_cancel_proba` wieder (keine Modell-Logik dupliziert), Muster von
-    `bakeoff_walk_forward`. Syntax geprüft; Baseline-Logik per Self-Test verifiziert.
-  - `main.py eval [--model X | --all] [--folds N] [--refresh]`: Vorwärm-CLI für Docker.
-  - Zu prüfen in deiner venv: `python main.py eval --model xgboost --folds 6`
-    (schnell) und danach `--model hazard` (langsam, Person-Perioden-Refit pro Fold).
+Alle Dateien kompilieren; Ausführung/Zahlen bitte in der venv gegenprüfen (Sandbox hat
+keinen ML-Stack). Neue/geänderte Dateien:
+
+- `src/model_eval.py` — leckfreies, gecachtes Vorhersage-Artefakt pro Modell + leckfreie
+  Baseline (global/Standort) + **Train-vs-Test-Fold-Metriken** (für 4.4). CLI
+  `main.py eval`.
+- `dash_app/backend/model_performance.py` — Lese-/Aggregationsschicht: KPIs, ROC (global +
+  Standort, **ohne** Baseline), P/R/F1 + kostenoptimaler Threshold + Baseline-Op-Punkt,
+  Reliability + Brier-Zerlegung, Train-vs-Test, Best/Worst-Standort nach Brier-Skill.
+- `dash_app/components/performance_charts.py` — alle Plotly-Builder (`brand_figure`).
+- `dash_app/backend/explain.py` — SHAP **modell-agnostisch** über `cancel_proba` (B1, ein
+  Codepfad; kein SurvSHAP), global gecacht + Einzelfall live; manuelle PDP/ICE über den
+  Adapter (alle Modelle); Iterationskurve (xgb/histgb) gecacht. CLI `main.py explain`.
+- `dash_app/components/shap_explain.py` — **wiederverwendbares** Einzelfall-Modul (voll +
+  `mini=True` für die spätere Overbooking-Sidebar).
+- `dash_app/pages/model_performance.py` — dmc-Seite: Modell-Dropdown, Standortfilter,
+  Kostenparameter (aus geteiltem Store), 4.1–4.9, Klick-zu-Erklärung-Drawer.
+- `dash_app/app.py` — `cost-store` global gehoben (Single Source of Truth);
+  `occupancy.py`/`home.py` entsprechend angepasst (Duplikat entfernt, Karte aktiviert).
+
+**Vor dem ersten Öffnen der Seite in der venv (einmalig, offline / im Docker-Build):**
+
+```
+python main.py eval --all            # Metrik-Artefakte (hazard ist langsam)
+python main.py score                 # falls scored_upcoming.parquet fehlt
+python main.py explain --all         # SHAP-Beeswarm/Importance + Iterationskurven
+python -m dash_app.app               # Seite testen
+```
+
+Die Seite funktioniert schon mit nur `eval` (Metriken); SHAP-Charts zeigen bis
+`explain` einen freundlichen „noch nicht gebaut"-Hinweis.
+
+**Zwei Stellen bitte gegen die installierten Versionen prüfen (siehe User-Regel „APIs
+nicht erfinden"):** (1) `shap.Explainer(f, masker=shap.maskers.Independent(...))` und
+`Explanation.values/.base_values` gegen `shap.__version__`; (2) `cellClicked["rowId"]` bei
+dash-ag-grid (Einzelfall-Klick) — falls die Version `rowId` anders liefert, den Handler
+`_explain_booking` anpassen.
 
 ---
 

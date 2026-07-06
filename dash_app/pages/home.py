@@ -64,8 +64,8 @@ def layout(**_kwargs):
                   "lead time — with a location × month heatmap and drill-down.",
                   "/cancellation-history"),
         _nav_card("bi bi-clipboard-data", "Model Performance",
-                  "Model quality, calibration and explainability (XAI).",
-                  "/model-performance", disabled=True),
+                  "Fair model comparison vs baseline, calibration and explainability (XAI).",
+                  "/model-performance"),
     ], cols={"base": 1, "sm": 2, "lg": 3}, spacing="md")
 
     return dmc.Stack([hero, dmc.Divider(my="sm"), cards], gap="md")
