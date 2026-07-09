@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -62,6 +63,85 @@ def diverging_triplet() -> tuple[str, str, str]:
     return lookup[div["negative"]], lookup[div["neutral"]], lookup[div["positive"]]
 
 
+def apply_stayery_style() -> None:
+    """Apply the Stayery matplotlib style globally for the current session.
+
+    For the matplotlib/seaborn notebooks (the Dash app itself uses Plotly via
+    theme.brand_figure and does NOT need this). `matplotlib` is imported LAZILY inside the
+    function, so importing `src`/`src.utils` never requires matplotlib — only calling this
+    helper does. Install matplotlib in the notebook env if it isn't already (it ships as a
+    dependency again; `uv sync`).
+
+    Defensive against missing brand fonts (Neue Haas Grotesk is a paid Linotype font most
+    laptops don't have). We silence the 'findfont: Font family not found' warning so users
+    don't get spammed, and we put always-available fallbacks at the END of the chain.
+    """
+    import logging
+
+    import matplotlib as mpl
+
+    # Matplotlib emits this warning per missing font, per draw call.
+    # Silence it once; the fallback chain still does its job.
+    logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
+
+    cfg = load_brand_config()
+    lookup = _color_lookup()
+
+    primary_chain = [cfg["typography"]["primary"]] + cfg["typography"][
+        "primary_fallback"
+    ]
+    if "DejaVu Sans" not in primary_chain:
+        primary_chain.append("DejaVu Sans")
+    palette = categorical_palette()
+
+    mpl.rcParams.update(
+        {
+            # Typography
+            "font.family": "sans-serif",
+            "font.sans-serif": primary_chain,
+            "font.size": 11,
+            "axes.titlesize": 14,
+            "axes.titleweight": "bold",
+            "axes.labelsize": 11,
+            "axes.labelweight": "regular",
+            "xtick.labelsize": 10,
+            "ytick.labelsize": 10,
+            "legend.fontsize": 10,
+            "figure.titlesize": 16,
+            "figure.titleweight": "bold",
+            # Color cycle
+            "axes.prop_cycle": mpl.cycler(color=palette),
+            # Backgrounds
+            "figure.facecolor": lookup["white"],
+            "axes.facecolor": lookup["white"],
+            "savefig.facecolor": lookup["white"],
+            # Spines
+            "axes.spines.top": False,
+            "axes.spines.right": False,
+            "axes.edgecolor": lookup["black"],
+            "axes.linewidth": 1.0,
+            # Grid
+            "axes.grid": True,
+            "axes.grid.axis": "y",
+            "grid.color": "#E5E5E5",
+            "grid.linewidth": 0.6,
+            "grid.linestyle": "-",
+            # Ticks
+            "xtick.color": lookup["black"],
+            "ytick.color": lookup["black"],
+            "xtick.direction": "out",
+            "ytick.direction": "out",
+            # Lines & markers
+            "lines.linewidth": 2.0,
+            "lines.markersize": 6,
+            # Figure size / DPI
+            "figure.figsize": (10, 5.5),
+            "figure.dpi": 110,
+            "savefig.dpi": 200,
+            "savefig.bbox": "tight",
+        }
+    )
+
 
 def benchmark_overbooking_allowance(units_total: int) -> int:
     """Business rule: how many overbookings does the benchmark permit?
@@ -79,6 +159,48 @@ from .paths import configs_dir  # noqa: E402  (kept local to this section)
 ROOM_TYPE_CAPACITY_FILE = "room_type_capacity.yaml"
 
 
+def _normalize_room_type_label(value: str | None) -> str:
+    """Canonicalise room-type labels so matching ignores case, spacing and separators."""
+    if value is None:
+        return ""
+    text = str(value).strip().lower()
+    text = text.replace("&", " and ")
+    text = re.sub(r"\b(with|mit)\b", " ", text)
+    text = text.replace("balkon", "balcony")
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def resolve_room_type_capacity(
+    capacities: dict[str, dict[str, int]],
+    property_name: str | None,
+    room_type: str | None,
+) -> int | None:
+    """Resolve a room-type capacity by exact match or a normalized alias match."""
+    if not capacities or property_name is None or room_type is None:
+        return None
+
+    target_prop = _normalize_room_type_label(property_name)
+    target_room = _normalize_room_type_label(room_type)
+    if not target_prop or not target_room:
+        return None
+
+    prop_candidates = [
+        prop for prop in capacities if _normalize_room_type_label(prop) == target_prop
+    ]
+    if not prop_candidates:
+        return None
+
+    groups = capacities[prop_candidates[0]]
+    if str(room_type) in groups:
+        return groups[str(room_type)]
+
+    for label, value in groups.items():
+        if _normalize_room_type_label(label) == target_room:
+            return value
+    return None
+
+
 @lru_cache(maxsize=1)
 def load_room_type_capacity() -> dict[str, dict[str, int]]:
     """Load configs/room_type_capacity.yaml -> {property_name: {unitGroup_name: capacity}}.
@@ -93,12 +215,16 @@ def load_room_type_capacity() -> dict[str, dict[str, int]]:
         return {}
     with path.open("r", encoding="utf-8") as fh:
         raw = yaml.safe_load(fh) or {}
-    caps = raw.get("capacities", raw)  # allow either a top-level 'capacities:' or a flat map
+    caps = raw.get(
+        "capacities", raw
+    )  # allow either a top-level 'capacities:' or a flat map
     out: dict[str, dict[str, int]] = {}
     for prop, groups in (caps or {}).items():
         if not isinstance(groups, dict):
             continue
-        clean = {str(g): int(v) for g, v in groups.items() if v is not None and str(v) != ""}
+        clean = {
+            str(g): int(v) for g, v in groups.items() if v is not None and str(v) != ""
+        }
         if clean:
             out[str(prop)] = clean
     return out
@@ -109,7 +235,8 @@ RISK_BUCKETS_FILE = "risk_buckets.yaml"
 # Fallback if the config file is missing — same PLACEHOLDER values, so the column is
 # never silently empty. Replace via configs/risk_buckets.yaml.
 _RISK_BUCKETS_DEFAULT: dict = {
-    "low_max": 0.20, "high_min": 0.50,
+    "low_max": 0.20,
+    "high_min": 0.50,
     "labels": {"low": "Low", "medium": "Medium", "high": "High"},
 }
 
