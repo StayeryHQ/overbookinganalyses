@@ -411,7 +411,8 @@ def _load_clean() -> pd.DataFrame:
 
 
 def retrain(model_name: str, *, mode: str = "refit", asof: str | pd.Timestamp | None = None,
-            persist: bool = True, n_iter: int = 40, seed: int = SEED) -> dict:
+            persist: bool = True, n_iter: int = 40, seed: int = SEED,
+            refresh_eval: bool = False) -> dict:
     """Retrain a model for DEPLOYMENT and report honest walk-forward metrics.
 
     mode="refit"  -> frozen hyperparameters from the model card.
@@ -429,7 +430,8 @@ def retrain(model_name: str, *, mode: str = "refit", asof: str | pd.Timestamp | 
         # person-period fit; dispatch to src.hazard. It always runs its small HP grid,
         # so refit/retune behave the same here.
         from . import hazard as hz
-        return hz.retrain_hazard(asof=asof, persist=persist, seed=seed)
+        return hz.retrain_hazard(asof=asof, persist=persist, seed=seed,
+                                 refresh_eval=refresh_eval)
     num, cat = _family_feature_lists(model_name)
     df = wf.add_outcome_known_date(_load_clean())
     known = pd.to_datetime(df[wf.KNOWN_COL], utc=True, errors="coerce")
@@ -507,6 +509,15 @@ def retrain(model_name: str, *, mode: str = "refit", asof: str | pd.Timestamp | 
         card_path.parent.mkdir(parents=True, exist_ok=True)
         card_path.write_text(json.dumps(card, indent=2))
         result["persisted"] = {"joblib": str(jp), "card": str(card_path)}
+
+    # Keep the Model-Performance page's eval artifact in sync with the new model.
+    if refresh_eval:
+        try:
+            from . import model_eval as _me
+            _me.model_eval(model_name, refresh=True)
+            result["eval_refreshed"] = True
+        except Exception as e:  # noqa: BLE001
+            result["eval_refresh_error"] = str(e)[:120]
     return result
 
 

@@ -51,6 +51,7 @@ HORIZON_DAYS: Final[int] = 14            # project-wide decision horizon (matche
 DEFAULT_N_FOLDS: Final[int] = 6          # matches training.walk_forward_eval's default
 STEP_DAYS: Final[int] = 14
 BASELINE_MIN_N: Final[int] = 100         # min train bookings for a per-property baseline rate
+TRAIN_METRIC_SAMPLE: Final[int] = 30000  # cap for the (diagnostic) train-metric scoring
 
 # Every model the page can evaluate. Names mirror src.scoring.MODEL_REGISTRY.
 EVAL_MODELS: Final[tuple[str, ...]] = ("hazard", "xgboost", "histgb", "logreg")
@@ -134,6 +135,21 @@ def _decision_horizon(rows: pd.DataFrame, horizon_days: int) -> np.ndarray:
     return np.minimum(lead, horizon_days).clip(lower=1).to_numpy(), lead.to_numpy()
 
 
+def _hazard_hp() -> dict | None:
+    """Frozen hazard hyperparameters from the model card (the search space keys only), so
+    per-fold evaluation refits with ONE fit instead of a full RandomizedSearch. None (=>
+    full search) if no card exists yet."""
+    from . import scoring as sc
+    try:
+        hp = dict(sc.load_model_card("hazard").get("hyperparams", {}))
+    except Exception:  # noqa: BLE001
+        return None
+    keys = ("max_depth", "learning_rate", "min_child_weight", "reg_lambda",
+            "subsample", "colsample_bytree")
+    picked = {k: hp[k] for k in keys if k in hp}
+    return picked or None
+
+
 def _hazard_score(hz_mod, hzm, rows: pd.DataFrame, horizon_days: int):
     """(prob, d) for a set of bookings via the survival product at d = min(lead, H)."""
     d, lead = _decision_horizon(rows, horizon_days)
@@ -187,9 +203,15 @@ def _predict_one_model(model_name: str, *, n_folds: int, horizon_days: int,
         te = df.iloc[f.test_idx]
 
         if is_hazard:
-            hzm = hz.fit_hazard(df.iloc[f.train_idx], seed=seed)
+            hzm = hz.fit_hazard(df.iloc[f.train_idx], seed=seed, fixed_hp=_hazard_hp())
             p_te, d_te = _hazard_score(hz, hzm, te, horizon_days)
-            p_tr, _ = _hazard_score(hz, hzm, df.iloc[f.train_idx], horizon_days)
+            # Train-metric (diagnostic only) on a SAMPLE — scoring all train via the survival
+            # product is costly and the overfitting gap doesn't need the full set.
+            tr_rows = df.iloc[f.train_idx]
+            if len(tr_rows) > TRAIN_METRIC_SAMPLE:
+                tr_rows = tr_rows.sample(TRAIN_METRIC_SAMPLE, random_state=seed)
+            p_tr, _ = _hazard_score(hz, hzm, tr_rows, horizon_days)
+            ytr_metric = _target(tr_rows).to_numpy()
         else:
             pipe = build_pipeline(model_name, _card_hp(model_name), num, cat,
                                   calibrate=True, seed=seed)
@@ -197,6 +219,7 @@ def _predict_one_model(model_name: str, *, n_folds: int, horizon_days: int,
             p_te = pipe.predict_proba(X.iloc[f.test_idx])[:, 1]
             p_tr = pipe.predict_proba(X.iloc[f.train_idx])[:, 1]
             d_te, _ = _decision_horizon(te, horizon_days)
+            ytr_metric = ytr
 
         parts.append(pd.DataFrame({
             "fold": int(f.k),
@@ -207,7 +230,7 @@ def _predict_one_model(model_name: str, *, n_folds: int, horizon_days: int,
             "base_global": float(base_global),
             "base_property": np.asarray(base_prop, dtype=float),
         }))
-        mt, mtr = _fold_metrics(yte, p_te), _fold_metrics(ytr, p_tr)
+        mt, mtr = _fold_metrics(yte, p_te), _fold_metrics(ytr_metric, p_tr)
         fold_rows.append({
             "fold": int(f.k),
             "train_auc": mtr["auc"], "test_auc": mt["auc"],

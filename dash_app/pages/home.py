@@ -66,6 +66,10 @@ def layout(**_kwargs):
         _nav_card("bi bi-clipboard-data", "Model Performance",
                   "Fair model comparison vs baseline, calibration and explainability (XAI).",
                   "/model-performance"),
+        _nav_card("bi bi-arrow-repeat", "Update & Retraining",
+                  "Score the next 14 days on demand, refresh history, and retrain models — "
+                  "all in the app.",
+                  "/data-update"),
     ], cols={"base": 1, "sm": 2, "lg": 3}, spacing="md")
 
     return dmc.Stack([hero, dmc.Divider(my="sm"), cards], gap="md")

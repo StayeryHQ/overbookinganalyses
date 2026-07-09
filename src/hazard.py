@@ -194,10 +194,15 @@ def _sample_hp(rng) -> dict:
 
 
 def fit_hazard(clean_resolved: pd.DataFrame, *, val_frac: float = 0.15,
-               n_iter: int = 15, seed: int = SEED) -> dict:
+               n_iter: int = 15, seed: int = SEED, fixed_hp: dict | None = None) -> dict:
     """Fit the hazard model on RESOLVED bookings via a RandomizedSearch (with
     EARLY STOPPING — no fixed tree count) + PER-SNAPSHOT-BAND isotonic calibration,
     both on a temporally held-out (most-recent-by-created) validation slice.
+
+    `fixed_hp` skips the search and fits ONE model with the given hyperparameters (still
+    early-stopped + calibrated). This is the FROZEN-hp path used by leak-free per-fold
+    evaluation / refit (src.model_eval), so a walk-forward doesn't re-tune per fold — the
+    same discipline the static models use via training._card_hp. None => full search.
 
     Returns a dict artifact: {model, iso, iso_bands, num, cat, cat_dtypes, snap,
     axis, hp, val_ap, best_iteration, n_train_pp}. `iso` is the pooled map (kept
@@ -220,8 +225,11 @@ def fit_hazard(clean_resolved: pd.DataFrame, *, val_frac: float = 0.15,
     Xva, yva = pp_va[FEATS], pp_va["y"].to_numpy()
 
     rng = np.random.RandomState(seed)
-    # baseline config first, then n_iter random samples (RandomizedSearch).
-    candidates = [HP_GRID[0]] + [_sample_hp(rng) for _ in range(n_iter)]
+    if fixed_hp is not None:
+        candidates = [fixed_hp]                                    # frozen-hp fast path (1 fit)
+    else:
+        # baseline config first, then n_iter random samples (RandomizedSearch).
+        candidates = [HP_GRID[0]] + [_sample_hp(rng) for _ in range(n_iter)]
     best = None
     for hp in candidates:
         m = XGBClassifier(n_estimators=2000, tree_method="hist", enable_categorical=True,
@@ -309,8 +317,12 @@ def hazard_available() -> bool:
 # =============================================================================
 # Retrain (point-in-time) — fit on all resolved data, persist
 # =============================================================================
-def retrain_hazard(*, asof=None, persist: bool = True, seed: int = SEED) -> dict:
-    """Fit the deployment hazard model on ALL data resolved by `asof` and persist."""
+def retrain_hazard(*, asof=None, persist: bool = True, seed: int = SEED,
+                   refresh_eval: bool = False) -> dict:
+    """Fit the deployment hazard model on ALL data resolved by `asof` and persist.
+
+    `refresh_eval=True` rebuilds the Model-Performance page's eval artifact afterwards
+    (Data/model_eval_hazard.parquet) so the page tracks the freshly deployed model."""
     from . import load_clean_reservations
     clean = wf.add_outcome_known_date(load_clean_reservations())
     known = pd.to_datetime(clean[wf.KNOWN_COL], utc=True, errors="coerce")
@@ -330,6 +342,14 @@ def retrain_hazard(*, asof=None, persist: bool = True, seed: int = SEED) -> dict
         cp.parent.mkdir(parents=True, exist_ok=True)
         cp.write_text(json.dumps(card, indent=2))
         result["persisted"] = {"joblib": jp, "card": str(cp)}
+
+    if refresh_eval:
+        try:
+            from . import model_eval as _me
+            _me.model_eval("hazard", refresh=True)
+            result["eval_refreshed"] = True
+        except Exception as e:  # noqa: BLE001
+            result["eval_refresh_error"] = str(e)[:120]
     return result
 
 
