@@ -126,6 +126,21 @@ def layout(**_kwargs):
 
         controls,
         ui.location_filter(props, "mp-location-filter"),
+
+        dcc.Store(id="mp-eval-version", data=0),
+        dmc.Paper(dmc.Group([
+            dmc.Stack([dmc.Text("Evaluation artifact", size="sm", fw=600),
+                       dmc.Text("Build / refresh the leak-free eval this page reads. Runs in "
+                                "the background — the hazard model takes a few minutes.",
+                                id="mp-rebuild-status", size="xs", c="dimmed")], gap=2),
+            dmc.Group([
+                dmc.Checkbox(id="mp-rebuild-all", label="all models", checked=False),
+                dmc.Button("Rebuild evaluation", id="mp-rebuild-btn", size="sm", variant="filled",
+                           leftSection=html.I(className="bi bi-arrow-clockwise")),
+            ], gap="md", align="center"),
+        ], justify="space-between", align="center", wrap="wrap"),
+            p="md", radius="lg", withBorder=True),
+
         html.Div(id="mp-status"),
         html.Div(id="mp-kpi", children=dmc.Skeleton(height=96, radius="lg")),
 
@@ -242,6 +257,33 @@ def _save_cost(walk, empty, store):
 
 
 # ---------------------------------------------------------------------------
+# In-app rebuild of the eval artifact(s) — background job, no CLI needed
+# ---------------------------------------------------------------------------
+@callback(
+    Output("mp-eval-version", "data"),
+    Output("mp-rebuild-status", "children"),
+    Input("mp-rebuild-btn", "n_clicks"),
+    State("mp-model", "value"),
+    State("mp-rebuild-all", "checked"),
+    State("mp-eval-version", "data"),
+    background=True,
+    running=[(Output("mp-rebuild-btn", "disabled"), True, False)],
+    prevent_initial_call=True,
+)
+def _rebuild_eval(_n, model, do_all, version):
+    from src.model_eval import EVAL_MODELS, model_eval
+    targets = list(EVAL_MODELS) if do_all else [model]
+    done = []
+    for m in targets:
+        try:
+            d = model_eval(m, refresh=True)
+            done.append(f"{m} ✓ ({len(d):,})")
+        except Exception as e:  # noqa: BLE001
+            done.append(f"{m} ✗ {str(e)[:40]}")
+    return (version or 0) + 1, "Rebuilt — " + " · ".join(done)
+
+
+# ---------------------------------------------------------------------------
 # Core metrics: KPI + ROC + PR + reliability (react to model / location / cost)
 # ---------------------------------------------------------------------------
 @callback(
@@ -256,8 +298,9 @@ def _save_cost(walk, empty, store):
     Input("mp-location-filter", "value"),
     Input("mp-cost-walk", "value"),
     Input("mp-cost-empty", "value"),
+    Input("mp-eval-version", "data"),
 )
-def _update_core(model, sel_value, walk, empty):
+def _update_core(model, sel_value, walk, empty, _version):
     props = _sel(sel_value)
     walk = float(walk) if walk not in (None, "") else mp.DEFAULT_WALK
     empty = float(empty) if empty not in (None, "") else mp.DEFAULT_EMPTY
@@ -285,8 +328,9 @@ def _update_core(model, sel_value, walk, empty):
     Output("mp-itercurve", "figure"),
     Input("mp-model", "value"),
     Input("mp-tt-metric", "value"),
+    Input("mp-eval-version", "data"),
 )
-def _update_traintest(model, metric):
+def _update_traintest(model, metric, _version):
     tt = mp.train_test(model)
     try:
         curve = ex.iteration_curve(model)
@@ -302,8 +346,9 @@ def _update_traintest(model, metric):
     Output("mp-importance", "figure"),
     Output("mp-beeswarm", "figure"),
     Input("mp-model", "value"),
+    Input("mp-eval-version", "data"),
 )
-def _update_xai(model):
+def _update_xai(model, _version):
     return pc.fig_importance(ex.importance_from_shap(model)), pc.fig_beeswarm(ex.global_beeswarm(model))
 
 
