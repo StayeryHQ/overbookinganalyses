@@ -20,6 +20,20 @@ uv sync
 gcloud auth application-default login
 ```
 
+### BigQuery credentials (order of precedence)
+
+`src/data_loader.py::get_bigquery_client()` builds the one shared client (plain
+google-cloud-bigquery SDK, no custom REST calls):
+
+1. `GCP_SERVICE_ACCOUNT_JSON_FILE` — path to a service-account key file (recommended
+   for servers/CI; requests the BigQuery + Drive-readonly scopes).
+2. `GOOGLE_APPLICATION_CREDENTIALS` — the standard Google env var, handled the same way.
+3. gcloud ADC (`gcloud auth application-default login`) — local dev; no scopes enforced.
+
+All paths pin the GCP project (`stayery-analytics`), so an ADC login without a default
+project still works. Result downloads use the plain SDK path by default; set
+`BQ_USE_STORAGE_API=1` to opt into the faster BigQuery Storage API where reachable.
+
 That's it. `uv sync` reads `pyproject.toml`, creates `.venv/`, and installs everything pinned in `uv.lock`. Re-run `uv sync` any time pyproject.toml changes.
 
 ---

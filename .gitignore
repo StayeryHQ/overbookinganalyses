@@ -21,3 +21,10 @@ __pycache__/
 Data/*.parquet
 Data/*.joblib
 Data/
+
+documentation
+
+reports/figures
+reports/tables
+
+
