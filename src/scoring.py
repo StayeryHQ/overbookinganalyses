@@ -616,7 +616,10 @@ def score_reservations(
     feat["cancel_proba"]     = proba
     feat["pred_cancel"]      = (proba >= high_thr).astype(int)
     feat["cancel_threshold"] = high_thr
-    feat["risk_bucket"]      = bucketize(proba, low_thr, high_thr)
+    # FIX 2026-07-09: bucketize returns a fresh RangeIndex Series; assigning it to a
+    # frame whose index is NOT 0..n-1 (upcoming rows keep their cache index) aligned on
+    # index and produced ALL-<NA> risk_buckets. Assign positionally via to_numpy().
+    feat["risk_bucket"]      = bucketize(proba, low_thr, high_thr).to_numpy()
     feat["model_used"]       = chosen
     feat["scored_at"]        = pd.Timestamp.utcnow()
 
