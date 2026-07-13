@@ -19,6 +19,7 @@ from dash_app import theme
 from dash_app.backend import data_access as da
 from dash_app.components import panels
 from dash_app.components import ui
+from src import benchmark_overbooking_allowance
 from src import overbooking as ob
 
 dash.register_page(__name__, path="/occupancy", name="Occupancy & Overbooking",
@@ -310,7 +311,10 @@ def _update_recommendation(cost_walk, cost_empty, high_demand, multiplier, prop,
         high_demand_multiplier=float(multiplier or ob.DEFAULT_HIGH_DEMAND_MULTIPLIER),
     )
     summary = ob.summarize_property(reco)
-    return panels.recommendation_card(summary, True, prop)
+    # Old house rule (2 rooms under 50 units, else 4) as a sanity reference.
+    units = da.property_capacity().get(prop)
+    bench = benchmark_overbooking_allowance(units) if units else None
+    return panels.recommendation_card(summary, True, prop, benchmark=bench)
 
 
 # ---------------------------------------------------------------------------

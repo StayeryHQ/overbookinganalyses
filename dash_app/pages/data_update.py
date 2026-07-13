@@ -143,6 +143,9 @@ def layout(**_kwargs):
     stores = html.Div([
         dcc.Store(id="du-info-version", data=0),     # bumped after a retrain -> tiles refresh
         dcc.Store(id="du-scored-version", data=0),   # bumped after fast score -> triggers slow path
+        # One-shot timers: fire once shortly AFTER the page has painted, so the
+        # lazy panels (metrics, artifact warm-up) never block the first render.
+        # 400/900 ms are just "after paint, metrics before warm-up" — not magic.
         dcc.Interval(id="du-metrics-timer", interval=400, n_intervals=0, max_intervals=1),
         dcc.Interval(id="du-warm-timer", interval=900, n_intervals=0, max_intervals=1),
         dcc.Download(id="du-scored-download"),

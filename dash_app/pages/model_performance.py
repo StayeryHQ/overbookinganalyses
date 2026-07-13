@@ -21,15 +21,13 @@ from dash import Input, Output, State, callback, ctx, dcc, html, no_update
 from dash_app.backend import data_access as da
 from dash_app.backend import explain as ex
 from dash_app.backend import model_performance as mp
+from dash_app.backend.model_ops import MODEL_LABELS as _MODEL_LABELS  # one label map
 from dash_app.components import performance_charts as pc
 from dash_app.components import shap_explain as se
 from dash_app.components import ui
 
 dash.register_page(__name__, path="/model-performance", name="Model Performance",
                    order=3, title="STAYERY · Model Performance")
-
-_MODEL_LABELS = {"hazard": "Hazard (survival)", "xgboost": "XGBoost",
-                 "histgb": "HistGB", "logreg": "Logistic Regression"}
 _METRIC_DATA = [{"label": "AUC", "value": "auc"}, {"label": "Brier", "value": "brier"}]
 
 _INFO = {

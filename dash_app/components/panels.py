@@ -21,20 +21,6 @@ from src.utils import resolve_room_type_capacity
 # ---------------------------------------------------------------------------
 # KPI tiles
 # ---------------------------------------------------------------------------
-def _kpi_card(label: str, value, sub: str | None = None) -> dbc.Col:
-    body = [
-        html.Div(label, style=theme.KPI_LABEL_STYLE),
-        html.Div(value, style=theme.KPI_VALUE_STYLE),
-    ]
-    if sub:
-        body.append(
-            html.Div(sub, className="text-muted", style={"fontSize": "0.75rem"})
-        )
-    return dbc.Col(
-        dbc.Card(dbc.CardBody(body), style=theme.CARD_STYLE), md=3, className="mb-2"
-    )
-
-
 def kpi_tiles(
     freshness: dict,
     model_meta: dict,
@@ -350,8 +336,12 @@ _RECO_TOOLTIP = (
 
 
 def recommendation_card(
-    summary: dict | None, costs_ready: bool, property_name: str | None
+    summary: dict | None, costs_ready: bool, property_name: str | None,
+    benchmark: int | None = None,
 ) -> dmc.Card:
+    """The overbooking recommendation for one property. `benchmark` is the old
+    house rule (2 rooms under 50 units, else 4) shown next to the model's number
+    as an instant sanity check for the RM."""
     if not property_name:
         inner = [
             dmc.Text(
@@ -406,6 +396,12 @@ def recommendation_card(
                 size="xs",
             ),
         ]
+        if benchmark is not None:
+            inner.append(dmc.Text(
+                f"House benchmark for comparison: {benchmark} rooms "
+                "(rule of thumb: 2 under 50 units, else 4).",
+                c="dimmed", size="xs",
+            ))
     return dmc.Card(
         [dmc.Text("Recommendation", fw=600, size="sm", mb=6), *inner],
         withBorder=True,

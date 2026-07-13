@@ -31,18 +31,21 @@ def _nav_card(icon: str, title: str, body: str, href: str,
 
 
 def layout(**_kwargs):
-    # Real, non-fabricated facts for the hero pills (property count from the cache).
+    # Property count from the cache; on a cold cache the badge is simply omitted
+    # instead of showing an invented number.
     try:
         from dash_app.backend import data_access as da
-        n_props = len(da.property_list()) or 11
+        n_props = len(da.property_list())
     except Exception:  # noqa: BLE001 — landing page must render even if cache is cold
-        n_props = 11
+        n_props = 0
 
-    pills = dmc.Group([
-        dmc.Badge(f"{n_props} properties", variant="light", color="gray", radius="sm"),
+    badges = ([dmc.Badge(f"{n_props} properties", variant="light", color="gray",
+                         radius="sm")] if n_props else [])
+    badges += [
         dmc.Badge("14-day overbooking horizon", variant="light", color="gray", radius="sm"),
         dmc.Badge("Read-only · no BigQuery writes", variant="light", color="gray", radius="sm"),
-    ], gap="xs", mt="sm")
+    ]
+    pills = dmc.Group(badges, gap="xs", mt="sm")
 
     hero = dmc.Stack([
         dmc.Title("Overbooking & cancellation toolkit", order=2),
