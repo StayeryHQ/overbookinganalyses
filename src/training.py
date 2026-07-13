@@ -1,28 +1,16 @@
 # ---------------------------------------------------------------------------
-# src/training.py
-# App-callable training / retraining for the static cancellation models.
+# Training / retraining for the static cancellation models (logreg, xgboost,
+# histgb). Notebooks and the app's Update page call the SAME functions:
 #
-# Why this module exists
-# ----------------------
-# Fit logic used to live inside the model notebooks, so the dash app could not
-# retrain. This centralises it so both the notebooks (as thin drivers) and the
-# app's "Datenaktualisierung" page call the same functions:
+#   walk_forward_eval(model)      -> honest out-of-time metrics (no leakage)
+#   retrain(model, mode="refit")  -> fit on all resolved data, frozen hyperparams
+#   retrain(model, mode="retune") -> re-search hyperparams first
+#   select_models()               -> which models the app should retrain/serve
 #
-#   walk_forward_eval(model)            -> honest one-step-ahead metrics (no leakage)
-#   retrain(model, mode="refit")        -> fit on ALL resolved data, FROZEN hyperparams
-#   retrain(model, mode="retune")       -> re-search hyperparams, then fit on all data
-#   select_models()                     -> the optimal model(s) the app should retrain
-#
-# Retraining decisions baked in (see the guards section):
-#   * roster fingerprint stored in the card; feature-set changes are detected and
-#     LOGGED (added/removed) - adding a column never errors, it just flows in;
-#   * if the feature set changed and you asked for "refit", we WARN that the frozen
-#     hyperparameters were tuned for the old set and recommend "retune";
-#   * a scoring-time null audit flags any feature that is ~always-blank on upcoming
-#     bookings (the check-in-leakage signature), so a bad un-exclude is loud, not silent.
-#
-# Heavy deps (sklearn / xgboost) are imported LAZILY inside functions so importing
-# this module is cheap and never required just to read the guards.
+# Guards built into retrain(): roster-fingerprint diff (feature changes are
+# logged, refit warns), no-card refits escalate to retune (never deploy an
+# un-tuned fixed-tree model), and scoring_null_audit() catches check-in leakage.
+# Heavy deps (sklearn/xgboost) import lazily inside functions.
 # ---------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -292,16 +280,18 @@ def search_hyperparams(model_name: str, X, y, *, n_iter: int = 40, n_folds: int 
 def walk_forward_eval(model_name: str, *, hp: dict | None = None, n_folds: int = 6,
                       horizon_days: int = 14, step_days: int = 14, scheme: str = "expanding",
                       c_walk: float = sc.COST_WALK, c_empty: float = sc.COST_EMPTY,
-                      seed: int = SEED) -> dict:
-    """Fit the FROZEN-hp pipeline on each DECISION-TIME fold's train, score its test
-    bookings, and return per-fold + aggregate AUC / AP / Brier / cost@analytic-threshold.
+                      seed: int = SEED, collect_predictions: bool = False) -> dict:
+    """Decision-time walk-forward for one static model: fit the frozen-hp pipeline
+    on each fold's train, score its test bookings, return per-fold + aggregate
+    AUC / AP / Brier / cost.
 
-    This is the decision-aligned procedure metric: each booking is graded once, at
-    its decision date S* = max(created, arrival - `horizon_days`) if still open then
-    (src.walkforward.make_folds), trained on ALL bookings resolved before the fold.
-    The deployment model uses all resolved data; its expected performance is this
-    distribution (live-monitored). (Static features are horizon-blind, so this fold
-    just selects which bookings/rows are in each test - incl. short-lead ones.)
+    Cost is measured at each fold's own cost-optimal threshold — i.e. "what would
+    this model cost if operated well". (At the fixed analytic threshold ~0.79 no
+    calibrated model flags anything, so the metric was identical across models.)
+
+    `collect_predictions=True` also returns the pooled out-of-time predictions
+    under "predictions" [fold, y_true, y_prob] — retrain() persists them so the
+    serving thresholds can be derived from real data.
     """
     from sklearn.metrics import roc_auc_score, average_precision_score, brier_score_loss
     num, cat = _family_feature_lists(model_name)
@@ -310,9 +300,8 @@ def walk_forward_eval(model_name: str, *, hp: dict | None = None, n_folds: int =
     folds = wf.make_folds(df, n_folds=n_folds, horizon_days=horizon_days,
                           step_days=step_days, scheme=scheme)
     X, y = df[num + cat], _target(df)
-    t_analytic = sc.analytic_threshold(c_walk, c_empty)
 
-    per_fold = []
+    per_fold, parts = [], []
     for f in folds:
         if f.n_train < 500 or f.n_test < 50 or y.iloc[f.train_idx].nunique() < 2:
             continue
@@ -320,18 +309,25 @@ def walk_forward_eval(model_name: str, *, hp: dict | None = None, n_folds: int =
         pipe.fit(X.iloc[f.train_idx], y.iloc[f.train_idx].values)
         p = pipe.predict_proba(X.iloc[f.test_idx])[:, 1]
         yt = y.iloc[f.test_idx].values
-        cm = sc.cost_at_threshold(yt, p, t_analytic, c_walk, c_empty)
+        t_fold = sc.cost_threshold_from_scores(yt, p, c_walk, c_empty)
+        cm = sc.cost_at_threshold(yt, p, t_fold, c_walk, c_empty)
         per_fold.append({"fold": f.k, "origin": str(pd.Timestamp(f.origin).date()),
                          "n_train": f.n_train, "n_test": f.n_test,
                          "auc": roc_auc_score(yt, p) if len(np.unique(yt)) > 1 else float("nan"),
                          "ap": average_precision_score(yt, p),
                          "brier": brier_score_loss(yt, p),
-                         "cost": cm["total_cost"]})
+                         "cost": cm["total_cost"], "cost_threshold": t_fold})
+        if collect_predictions:
+            parts.append(pd.DataFrame({"fold": f.k, "y_true": yt, "y_prob": p}))
     pf = pd.DataFrame(per_fold)
     agg = {m: {"mean": float(pf[m].mean()), "std": float(pf[m].std())}
            for m in ["auc", "ap", "brier", "cost"]} if len(pf) else {}
-    return {"model": model_name, "scheme": scheme, "n_folds_used": len(pf),
-            "per_fold": per_fold, "aggregate": agg}
+    out = {"model": model_name, "scheme": scheme, "n_folds_used": len(pf),
+           "per_fold": per_fold, "aggregate": agg}
+    if collect_predictions:
+        out["predictions"] = (pd.concat(parts, ignore_index=True) if parts
+                              else pd.DataFrame(columns=["fold", "y_true", "y_prob"]))
+    return out
 
 
 def walk_forward_predict(model_name: str, *, hp: dict | None = None, n_folds: int = 6,
@@ -472,16 +468,20 @@ def retrain(model_name: str, *, mode: str = "refit", asof: str | pd.Timestamp | 
     else:
         hp = _card_hp(model_name)
 
-    # ---- honest forward metrics (procedure) -----------------------------------
-    wf_report = walk_forward_eval(model_name, hp=hp, seed=seed)
+    # ---- honest forward metrics + pooled out-of-time predictions --------------
+    wf_report = walk_forward_eval(model_name, hp=hp, seed=seed, collect_predictions=True)
+    preds = wf_report.pop("predictions", None)   # DataFrame; kept out of the JSON card
 
     # ---- deployment fit on ALL resolved data ----------------------------------
     pipe = build_pipeline(model_name, hp, num, cat, calibrate=True, seed=seed)
     pipe.fit(X[resolved], y[resolved].values)
 
-    # threshold: from the most recent fold's holdout (honest), fall back to analytic
-    pf = wf_report.get("per_fold", [])
-    thr = sc.analytic_threshold()
+    # Decision threshold: cost-optimal on the pooled out-of-time predictions;
+    # analytic Bayes value only when no fold was usable.
+    if preds is not None and len(preds):
+        thr = sc.cost_threshold_from_scores(preds["y_true"], preds["y_prob"])
+    else:
+        thr = sc.analytic_threshold()
     result = {"model": model_name, "mode": mode, "asof": str(asof_ts.date()),
               "n_train_deploy": int(resolved.sum()),
               "feature_change": change, "walk_forward": wf_report,
@@ -492,6 +492,12 @@ def retrain(model_name: str, *, mode: str = "refit", asof: str | pd.Timestamp | 
         jp = data_dir() / reg["joblib"]
         import joblib
         joblib.dump(pipe, jp)
+        # Persist the pooled predictions — scoring.serving_thresholds() reads this
+        # file to derive the real low/high risk-bucket cut points.
+        if preds is not None and len(preds):
+            pred_path = data_dir() / reg["joblib"].replace("_model.joblib",
+                                                           "_predictions.parquet")
+            preds.to_parquet(pred_path, index=False)
         fp = roster_fingerprint()
         card_path = repo_root() / reg["card"]
         card = {}
@@ -508,7 +514,10 @@ def retrain(model_name: str, *, mode: str = "refit", asof: str | pd.Timestamp | 
         })
         card_path.parent.mkdir(parents=True, exist_ok=True)
         card_path.write_text(json.dumps(card, indent=2))
-        result["persisted"] = {"joblib": str(jp), "card": str(card_path)}
+        persisted = {"joblib": str(jp), "card": str(card_path)}
+        if preds is not None and len(preds):
+            persisted["predictions"] = str(pred_path)
+        result["persisted"] = persisted
 
     # Keep the Model-Performance page's eval artifact in sync with the new model.
     if refresh_eval:
