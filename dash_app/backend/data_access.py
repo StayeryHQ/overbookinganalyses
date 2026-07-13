@@ -182,25 +182,15 @@ def in_window(df: pd.DataFrame, properties: list[str] | None = None,
 # ---- Per-arrival-night expected freed rooms (for the overbooking rec) ------
 def per_night_expected_freed(scored_window: pd.DataFrame,
                              hotel_col: str | None = "property_name") -> pd.DataFrame:
-    """Aggregate per-booking cancel probabilities to per-(arrival-night[, hotel])
-    EXPECTED freed rooms. Mirrors src.hazard.per_night_table (inlined to avoid the
-    heavier import): exp = Σp, var = Σp(1-p) (Poisson-binomial), n = bookings.
-    """
+    """Per-(arrival-night[, hotel]) expected freed rooms from the scored window.
+    Thin wrapper over src.hazard.per_night_table — ONE implementation of
+    exp = Σp / var = Σp(1-p), instead of a drifting inline copy."""
     if scored_window.empty or "cancel_proba" not in scored_window.columns:
         cols = ["arrival_date"] + (["hotel"] if hotel_col else []) + ["n", "exp", "var"]
         return pd.DataFrame(columns=cols)
+    from src.hazard import per_night_table
     p = pd.to_numeric(scored_window["cancel_proba"], errors="coerce").fillna(0.0)
-    df = pd.DataFrame({
-        "arrival_date": pd.to_datetime(scored_window["arrival"], utc=True).dt.date,
-        "p": p.to_numpy(),
-    })
-    if hotel_col and hotel_col in scored_window.columns:
-        df["hotel"] = scored_window[hotel_col].to_numpy()
-    df["var"] = df["p"] * (1.0 - df["p"])
-    keys = ["arrival_date"] + (["hotel"] if "hotel" in df.columns else [])
-    return (df.groupby(keys)
-              .agg(n=("p", "size"), exp=("p", "sum"), var=("var", "sum"))
-              .reset_index())
+    return per_night_table(scored_window, p.to_numpy(), hotel_col=hotel_col)
 
 
 # ---- Room-type occupancy over the window (single property) -----------------
@@ -246,22 +236,24 @@ def add_display_columns(df: pd.DataFrame) -> pd.DataFrame:
         out["risk_label"] = [src.risk_label(p) for p in out["cancel_proba"]]
     else:
         out["risk_label"] = ""
-    block = out["blockId"].astype("string").fillna("") if "blockId" in out.columns else ""
-    group = out["groupName"].astype("string").fillna("") if "groupName" in out.columns else ""
-    if isinstance(block, str) and isinstance(group, str):
-        out["is_group"] = False
-    else:
-        out["is_group"] = (block.str.len() > 0) | (group.str.len() > 0)
+
+    def _txt(col: str) -> pd.Series:
+        """Column as string Series, '' for missing values AND missing columns —
+        so a schema drift in ONE of the two group fields can't crash the page."""
+        if col not in out.columns:
+            return pd.Series([""] * len(out), index=out.index, dtype="string")
+        return out[col].astype("string").fillna("")
+
+    out["is_group"] = (_txt("blockId").str.len() > 0) | (_txt("groupName").str.len() > 0)
     return out
 
 
 # ---- Capacity per property (for occupancy %) -------------------------------
 @lru_cache(maxsize=1)
 def _property_code_to_name() -> dict[str, str]:
-    """{property_code -> property_name} from the reservations cache. This is the
-    propertyId<->property_name bridge that was previously missing: the reservations
-    cache carries BOTH property_code (e.g. 'BER_FR') and property_name, and those codes
-    are exactly the performance table's propertyId. Empty dict if columns are absent."""
+    """{property_code -> property_name} from the reservations cache — the bridge
+    between the performance table's propertyId (e.g. 'BER_FR') and the
+    property_name used everywhere else. Empty dict if the columns are absent."""
     df = _reservations_cached()
     if df.empty or not {"property_code", "property_name"} <= set(df.columns):
         return {}
@@ -312,18 +304,18 @@ def property_capacity() -> dict[str, int]:
 def empty_room_cost_prefill() -> tuple[dict[str, float], str]:
     """({property_name: value}, source_label) to PRE-FILL the empty-room cost.
 
-    Primary intent is ADR from property_performance, but that needs the (still open)
-    propertyId->name mapping AND the perf cache. Until then we fall back to a real,
-    visible proxy: the average gross-per-night per property from the reservations
-    cache (keyed by property_name, always available). The source label is surfaced in
-    the UI so the RM knows exactly what the pre-filled number represents.
+    Preferred source: the property's real average daily rate (ADR) from the
+    performance table, keyed to property_name via the reservations cache's
+    property_code. Fallback: average gross-per-night from reservations. The
+    source label is shown in the UI so the RM knows what the number means.
     """
-    # (Primary) ADR path — inert until the propertyId->name mapping exists.
-    adr = src.average_room_rate_by_property()  # keyed by propertyId; no name mapping yet
-    if adr:
-        # No mapping to property_name available -> cannot key by name; skip for now.
-        pass
-    # (Fallback proxy) average gross per night per property_name from reservations.
+    adr = src.average_room_rate_by_property()      # {propertyId: adr, last 90 days}
+    code2name = _property_code_to_name()
+    if adr and code2name:
+        by_name = {code2name[c]: v for c, v in adr.items() if c in code2name}
+        if by_name:
+            return by_name, "avg. daily rate (ADR, last 90 days)"
+    # Fallback proxy: average gross per night per property_name from reservations.
     res = _reservations_cached()
     if res.empty or "property_name" not in res.columns:
         return {}, "unavailable"

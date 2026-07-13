@@ -1,23 +1,15 @@
 # dash_app/backend/model_ops.py
-# Business-logic / read layer for the "Update & Retraining" page. Everything the page needs
-# lives here as separable, testable functions so the callbacks only ORCHESTRATE — the actual
-# data pull / scoring / retraining logic is importable and runnable WITHOUT Dash (that is the
-# prerequisite for the later, un-attended automation the brief asks for).
-#
-# Nothing here is a re-implementation:
-#   * BigQuery access  -> src.data_loader   (windowed fast path + full slow refresh)
-#   * scoring          -> src.scoring       (the one cancel_proba adapter, all 4 models)
-#   * retraining       -> src.training.retrain / src.hazard.retrain_hazard (dispatched)
-#   * model registry   -> src.scoring.MODEL_REGISTRY
-#   * cost params      -> the shared global cost-store (read via backend.model_performance)
-#
-# No BigQuery is ever triggered by simply rendering the page: model_status() only reads the
-# model card (a tiny JSON), so the tiles paint instantly (progressive-loading requirement).
+# Logic/read layer for the "Update & Retraining" page. Callbacks only orchestrate;
+# everything here is importable and runnable WITHOUT Dash (the prerequisite for
+# unattended automation later). Nothing is re-implemented: BigQuery access lives in
+# src.data_loader, scoring in src.scoring, retraining in src.training/src.hazard,
+# cost params in the shared cost-store. Rendering the page never touches BigQuery —
+# model_status() only reads the tiny model-card JSON, so the tiles paint instantly.
 
 from __future__ import annotations
 
+import logging
 import time
-from datetime import datetime, timezone
 from typing import Callable
 
 import pandas as pd
@@ -26,6 +18,8 @@ import src
 from src import data_loader as dl
 from src import scoring as sc
 from src import training as tr
+
+logger = logging.getLogger(__name__)
 
 # A progress reporter: report(message, fraction in [0, 1]). The page adapts this to Dash's
 # set_progress; the logic functions stay decoupled from the exact progress components.
@@ -239,7 +233,9 @@ def fast_score_next_14d(model_name: str | None = None, *, walk: float | None = N
                 "scored_at": _fmt_ts(pd.Timestamp.utcnow()), "elapsed_s": round(time.perf_counter() - t0, 1),
                 "window_days": days, "empty": True}
 
-    threshold = sc.analytic_threshold(walk, empty) if (walk and empty) else None
+    # `is not None`: a cost of 0 € is a legitimate input, not "unset".
+    threshold = (sc.analytic_threshold(walk, empty)
+                 if walk is not None and empty is not None else None)
     progress(f"Scoring {len(df):,} bookings with '{model_label(chosen)}'…", 0.55)
     scored = sc.score_reservations(df, model_name=chosen, threshold=threshold,
                                    save_as="scored_upcoming.parquet")
@@ -323,8 +319,8 @@ def run_retrain(model_name: str, *, retune: bool = False, asof: str | None = Non
         ex.compute_global_shap(model_name, refresh=True)
         if model_name in ("xgboost", "histgb"):
             ex.iteration_curve(model_name, refresh=True)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as e:  # noqa: BLE001 — never fail the retrain over explanations
+        logger.warning("post-retrain SHAP rebuild failed for %s: %s", model_name, e)
 
     progress("Reading back the updated model card…", 0.9)
     status = model_status(model_name)
