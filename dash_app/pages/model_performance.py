@@ -20,6 +20,8 @@ from dash import Input, Output, State, callback, ctx, dcc, html, no_update
 
 from dash_app.backend import data_access as da
 from dash_app.backend import explain as ex
+from dash_app.backend import jobs
+from dash_app.backend import model_ops as mo
 from dash_app.backend import model_performance as mp
 from dash_app.backend.model_ops import MODEL_LABELS as _MODEL_LABELS  # one label map
 from dash_app.components import performance_charts as pc
@@ -126,10 +128,14 @@ def layout(**_kwargs):
         ui.location_filter(props, "mp-location-filter"),
 
         dcc.Store(id="mp-eval-version", data=0),
+        dcc.Store(id="mp-jobs-seen", data={}),
+        # Poller for the shared 'artifacts' job — progress survives page changes.
+        dcc.Interval(id="mp-poll", interval=1500, n_intervals=0),
         dmc.Paper(dmc.Group([
             dmc.Stack([dmc.Text("Evaluation artifact", size="sm", fw=600),
-                       dmc.Text("Build / refresh the leak-free eval this page reads. Runs in "
-                                "the background — the hazard model takes a few minutes.",
+                       dmc.Text("Build / refresh the leak-free eval this page reads. Runs as a "
+                                "background job (hazard takes minutes) and keeps running if "
+                                "you switch pages.",
                                 id="mp-rebuild-status", size="xs", c="dimmed")], gap=2),
             dmc.Group([
                 dmc.Checkbox(id="mp-rebuild-all", label="all models", checked=False),
@@ -191,15 +197,15 @@ def _status_alert(model: str):
     st = mp.eval_status(model)
     if not st["available"]:
         return dmc.Alert(
-            dmc.Text(f"No evaluation artifact for '{model}' yet. Run "
-                     f"`python main.py eval --model {model}` (once, offline) to populate the "
-                     "charts below.", size="sm"),
+            dmc.Text(f"No evaluation artifact for '{model}' yet — click 'Rebuild evaluation' "
+                     "above. The job runs in the background and survives page changes.",
+                     size="sm"),
             title="Evaluation not built", color="yellow", variant="light",
             icon=html.I(className="bi bi-exclamation-triangle"), radius="md")
     if not ex.shap_available(model):
         return dmc.Alert(
-            dmc.Text(f"Metrics are ready. SHAP/importance for '{model}' not built yet — run "
-                     f"`python main.py explain --model {model}` to fill the SHAP charts.",
+            dmc.Text(f"Metrics are ready. SHAP/importance for '{model}' is not built yet — "
+                     "use 'Build all (eval + SHAP)' on the Update & Retraining page.",
                      size="sm"),
             title="SHAP not built", color="blue", variant="light",
             icon=html.I(className="bi bi-info-circle"), radius="md", withCloseButton=True)
@@ -255,30 +261,55 @@ def _save_cost(walk, empty, store):
 
 
 # ---------------------------------------------------------------------------
-# In-app rebuild of the eval artifact(s) — background job, no CLI needed
+# In-app rebuild of the eval artifact(s) — file-backed job (survives page changes)
 # ---------------------------------------------------------------------------
 @callback(
-    Output("mp-eval-version", "data"),
-    Output("mp-rebuild-status", "children"),
+    Output("mp-rebuild-status", "children", allow_duplicate=True),
     Input("mp-rebuild-btn", "n_clicks"),
     State("mp-model", "value"),
     State("mp-rebuild-all", "checked"),
-    State("mp-eval-version", "data"),
-    background=True,
-    running=[(Output("mp-rebuild-btn", "disabled"), True, False)],
     prevent_initial_call=True,
 )
-def _rebuild_eval(_n, model, do_all, version):
-    from src.model_eval import EVAL_MODELS, model_eval
-    targets = list(EVAL_MODELS) if do_all else [model]
-    done = []
-    for m in targets:
-        try:
-            d = model_eval(m, refresh=True)
-            done.append(f"{m} ✓ ({len(d):,})")
-        except Exception as e:  # noqa: BLE001
-            done.append(f"{m} ✗ {str(e)[:40]}")
-    return (version or 0) + 1, "Rebuilt — " + " · ".join(done)
+def _start_rebuild(_n, model, do_all):
+    started = jobs.start("artifacts", mo.rebuild_eval_job, model, bool(do_all))
+    return ("Rebuild started…" if started
+            else "An artifact job is already running — see progress below.")
+
+
+@callback(
+    Output("mp-rebuild-status", "children"),
+    Output("mp-rebuild-btn", "disabled"),
+    Output("mp-eval-version", "data"),
+    Output("mp-jobs-seen", "data"),
+    Input("mp-poll", "n_intervals"),
+    State("mp-jobs-seen", "data"),
+    State("mp-eval-version", "data"),
+)
+def _poll_rebuild(_n, seen, version):
+    seen = dict(seen or {})
+    st = jobs.read("artifacts")
+    status = st.get("status", "idle")
+    if status == "running":
+        pct = int(float(st.get("progress", 0)) * 100)
+        return (f"⏳ {pct}% — {st.get('message', '')} (keeps running across pages)",
+                True, no_update, no_update)
+    fin = st.get("finished")
+    bump = no_update
+    if fin and seen.get("artifacts") != fin:
+        seen["artifacts"] = fin
+        if status == "done":
+            bump = (version or 0) + 1        # re-read the fresh artifacts once
+    if status == "error":
+        return "✗ " + str(st.get("error", "failed")), False, bump, seen
+    if status == "done":
+        res = st.get("result") or {}
+        parts = res.get("rebuilt") or res.get("built_eval") or []
+        errs = res.get("errors") or []
+        txt = ("Rebuilt: " + ", ".join(parts) if parts else "Nothing to rebuild.")
+        if errs:
+            txt += " — errors: " + "; ".join(errs)
+        return txt, False, bump, seen
+    return no_update, False, bump, seen
 
 
 # ---------------------------------------------------------------------------

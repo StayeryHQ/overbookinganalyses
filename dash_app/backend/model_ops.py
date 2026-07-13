@@ -15,7 +15,6 @@ from typing import Callable
 import pandas as pd
 
 import src
-from src import data_loader as dl
 from src import scoring as sc
 from src import training as tr
 
@@ -53,13 +52,9 @@ def model_label(name: str) -> str:
 # Small helpers
 # =============================================================================
 def _fmt_ts(value) -> str | None:
-    """'Jul 03, 2026, 20:26' from an ISO string / datetime; None if unparseable."""
-    if value in (None, ""):
-        return None
-    ts = pd.to_datetime(value, utc=True, errors="coerce")
-    if pd.isna(ts):
-        return None
-    return ts.strftime("%b %d, %Y, %H:%M")
+    """LOCAL-time display string ('Jul 13, 2026, 14:30 CEST') — one formatter
+    for the whole app (src.fmt_ts_local); storage stays UTC."""
+    return src.fmt_ts_local(value)
 
 
 def _days_since(value) -> int | None:
@@ -205,93 +200,67 @@ def cadence_hint(model_name: str) -> dict:
 
 
 # =============================================================================
-# FAST PATH — pull the next 14 days from BigQuery + score immediately
+# THE data update — one strict BigQuery pull per table + immediate scoring
 # =============================================================================
-def fast_score_next_14d(model_name: str | None = None, *, walk: float | None = None,
-                        empty: float | None = None, days: int = WINDOW_DAYS,
-                        progress: Progress = _noop) -> dict:
-    """Time-critical path: pull ONLY bookings arriving in the next `days` days from BigQuery
-    (small), score them with the chosen model via the shared adapter, and write the canonical
-    Data/scored_upcoming.parquet (the same file the Occupancy page reads). Returns a summary.
+def update_all(progress: Progress = _noop, model_name: str | None = None,
+               walk: float | None = None, empty: float | None = None,
+               days: int = WINDOW_DAYS) -> dict:
+    """Job entry point for the Update button (signature: progress first, so
+    jobs.start can inject its reporter). Delegates to src.scoring.refresh_and_score
+    — ONE BigQuery query per table, then scoring; NO silent cache fallback, a
+    BigQuery failure raises and the job status shows it loudly.
 
-    `walk`/`empty` come from the shared cost-store; when given, the decision threshold is the
-    analytic cost-optimal point for those costs, so buckets reflect the same costs as the
-    other pages. `progress(msg, frac)` drives the page's progress bar.
+    `walk`/`empty` (cost-store): when both are set, pred_cancel uses the analytic
+    cost threshold for those costs. 0 € is a legitimate value, not "unset".
     """
     t0 = time.perf_counter()
-    chosen = sc.resolve_model(model_name)     # validates registry + on-disk artifact
-    progress(f"Pulling next {days} days of arrivals from BigQuery…", 0.15)
-
-    df = dl.load_upcoming_window(days=days, force_refresh=True, quiet=True)
-    # Never score an already-cancelled booking (defensive; the data layer filters again too).
-    if "status" in df.columns:
-        df = df[df["status"].astype("string") != "Canceled"].copy()
-
-    if df.empty:
-        progress("No upcoming arrivals in the window.", 1.0)
-        return {"rows": 0, "high": 0, "uncertain": 0, "low": 0, "model_used": chosen,
-                "scored_at": _fmt_ts(pd.Timestamp.utcnow()), "elapsed_s": round(time.perf_counter() - t0, 1),
-                "window_days": days, "empty": True}
-
-    # `is not None`: a cost of 0 € is a legitimate input, not "unset".
     threshold = (sc.analytic_threshold(walk, empty)
                  if walk is not None and empty is not None else None)
-    progress(f"Scoring {len(df):,} bookings with '{model_label(chosen)}'…", 0.55)
-    scored = sc.score_reservations(df, model_name=chosen, threshold=threshold,
-                                   save_as="scored_upcoming.parquet")
+    res = sc.refresh_and_score(model_name, days=days, threshold=threshold,
+                               progress=progress)
 
-    progress("Writing scored results…", 0.9)
-    # Let the Occupancy data layer see the fresh reservations rows on its next read.
-    try:
-        from dash_app.backend import data_access as da
-        da._reservations_cached.cache_clear()
-    except Exception:  # noqa: BLE001
-        pass
-
-    rb = scored.get("risk_bucket")
-    out = {
-        "rows": int(len(scored)),
-        "high": int((rb == "high").sum()) if rb is not None else 0,
-        "uncertain": int((rb == "uncertain").sum()) if rb is not None else 0,
-        "low": int((rb == "low").sum()) if rb is not None else 0,
-        "model_used": chosen,
-        "threshold": float(threshold) if threshold is not None else None,
-        "scored_at": _fmt_ts(pd.Timestamp.utcnow()),
-        "elapsed_s": round(time.perf_counter() - t0, 1),
-        "window_days": days,
-        "empty": False,
-    }
-    progress("Done.", 1.0)
-    return out
-
-
-# =============================================================================
-# SLOW PATH — refresh the full history needed for the historical cancel rate
-# =============================================================================
-def slow_refresh_history(progress: Progress = _noop) -> dict:
-    """Non-time-critical background refresh: re-pull the FULL reservations table and the
-    property_performance_daily table (the data the historical cancellation rate is built on),
-    rebuild their parquet caches, and clear the derived in-memory caches. Does NOT re-score —
-    the fast path already scored the 14-day window (no redundant pull/score)."""
-    t0 = time.perf_counter()
-    progress("Refreshing full reservations history from BigQuery…", 0.2)
-    resv = dl.load_reservations(force_refresh=True, quiet=True)
-
-    progress("Refreshing property performance (occupancy + counts)…", 0.7)
-    perf = dl.load_property_performance(force_refresh=True, quiet=True)
-
-    progress("Rebuilding derived caches…", 0.95)
+    # Let the page backends see the fresh parquets on their next read.
     try:
         from dash_app.backend import data_access as da
         for fn in ("_reservations_cached", "_capacity_from_perf", "_property_code_to_name"):
             getattr(da, fn).cache_clear()
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as e:  # noqa: BLE001
+        logger.warning("cache clear after update failed: %s", e)
 
+    res["elapsed_s"] = round(time.perf_counter() - t0, 1)
+    res["finished"] = _fmt_ts(res.get("finished_utc"))
+    res["data_as_of"] = _fmt_ts(res.get("data_max_created"))
+    res["model_label"] = model_label(res.get("model_used", ""))
+    return res
+
+
+# =============================================================================
+# Job wrappers — thin adapters with the (progress, *args) signature jobs.start
+# expects. Keep ALL logic in the functions they call.
+# =============================================================================
+def retrain_job(progress: Progress, model_name: str, retune: bool = False) -> dict:
+    return run_retrain(model_name, retune=retune, progress=progress)
+
+
+def artifacts_job(progress: Progress, include_shap: bool = False) -> dict:
+    """Build MISSING Model-Performance artifacts (eval; optionally SHAP)."""
+    return ensure_all_eval(progress=progress, include_shap=include_shap)
+
+
+def rebuild_eval_job(progress: Progress, model_name: str, all_models: bool = False) -> dict:
+    """Force-rebuild the eval artifact(s) — the XAI page's 'Rebuild evaluation'."""
+    from src import model_eval as me
+    targets = list(me.EVAL_MODELS) if all_models else [model_name]
+    done, errors = [], []
+    for i, m in enumerate(targets):
+        progress(f"Rebuilding evaluation · {model_label(m)}…", i / max(len(targets), 1))
+        try:
+            d = me.model_eval(m, refresh=True)
+            done.append(f"{m} ({len(d):,} rows)")
+        except Exception as e:  # noqa: BLE001 — collect, keep going, report loudly
+            errors.append(f"{m}: {str(e)[:120]}")
     progress("Done.", 1.0)
-    return {"reservations_rows": int(len(resv)), "perf_rows": int(len(perf)),
-            "refreshed_at": _fmt_ts(pd.Timestamp.utcnow()),
-            "elapsed_s": round(time.perf_counter() - t0, 1)}
+    return {"rebuilt": done, "errors": errors}
 
 
 # =============================================================================
@@ -400,7 +369,7 @@ def scored_overview(limit: int = 1000) -> dict:
     df = da.load_scored()
     if df.empty:
         return {"n": 0, "rows": [], "scored_at": None, "model_used": None,
-                "high": 0, "uncertain": 0, "low": 0}
+                "high": 0, "medium": 0, "low": 0}
     d = df.sort_values("cancel_proba", ascending=False)
     rb = d.get("risk_bucket")
     rows = []
@@ -417,11 +386,25 @@ def scored_overview(limit: int = 1000) -> dict:
     model_used = d["model_used"].iloc[0] if "model_used" in d.columns and len(d) else None
     return {"n": int(len(df)), "rows": rows, "scored_at": scored_at, "model_used": model_used,
             "high": int((rb == "high").sum()) if rb is not None else 0,
-            "uncertain": int((rb == "uncertain").sum()) if rb is not None else 0,
+            "medium": int((rb == "medium").sum()) if rb is not None else 0,
             "low": int((rb == "low").sum()) if rb is not None else 0}
 
 
-def scored_export_frame() -> pd.DataFrame:
-    """The full scored set for download (directly retrievable scores)."""
+# Columns of the COMPACT export — what a revenue manager actually reads. The full
+# export (all ~100 engineered columns) stays available for analysts.
+_EXPORT_COLUMNS: tuple[str, ...] = (
+    "property_name", "arrival", "departure", "los_nights", "channelCode",
+    "ratePlan_name", "unitGroup_name", "totalGrossAmount_amount",
+    "cancel_proba", "risk_bucket", "pred_cancel", "model_used", "scored_at",
+)
+
+
+def scored_export_frame(slim: bool = True) -> pd.DataFrame:
+    """The scored set for download. `slim=True` (default) keeps only the columns
+    a revenue manager reads; `slim=False` exports everything incl. features."""
     from dash_app.backend import data_access as da
-    return da.load_scored()
+    df = da.load_scored()
+    if df.empty or not slim:
+        return df
+    cols = [c for c in _EXPORT_COLUMNS if c in df.columns]
+    return df[cols].sort_values("cancel_proba", ascending=False)
