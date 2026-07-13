@@ -3,7 +3,7 @@
 #
 #   1. Querying BigQuery (`stayery-analytics.reporting.reservations` and performance analytics),
 #      excluding PII columns at SQL level (`SELECT * EXCEPT(...)`)
-#   2. `strip_pii` as a safety net 
+#   2. `strip_pii` as a safety net
 #   3. Coercing dtypes
 #   4. Persisting a PII-free parquet cache so notebooks are fast
 #   5. Schema-drift warnings.
@@ -36,8 +36,29 @@ logger = logging.getLogger(__name__)
 # Storage endpoint is blocked in some environments and the failed round-trip costs time and
 # produces confusing errors. Set BQ_USE_STORAGE_API=1 to enable the faster Storage download
 # when you know the host is reachable; on ANY failure it still degrades to the plain download.
-_USE_BQ_STORAGE: Final[bool] = os.environ.get("BQ_USE_STORAGE_API", "0").strip().lower() \
-    in ("1", "true", "yes", "on")
+_USE_BQ_STORAGE: Final[bool] = os.environ.get(
+    "BQ_USE_STORAGE_API", "0"
+).strip().lower() in ("1", "true", "yes", "on")
+# Background refreshes should not hang forever if BigQuery is slow or blocked. The page uses
+# this timeout to fail fast and fall back to the local cache instead of leaving the UI in a
+# permanent loading state.
+DEFAULT_BQ_QUERY_TIMEOUT_SECONDS: Final[int] = 90
+
+
+def _get_bq_query_timeout_seconds() -> int:
+    """Read a runtime override for the BigQuery query timeout, defaulting to 90s."""
+    raw = os.environ.get(
+        "BQ_QUERY_TIMEOUT_SECONDS", str(DEFAULT_BQ_QUERY_TIMEOUT_SECONDS)
+    ).strip()
+    try:
+        return int(raw) if raw else DEFAULT_BQ_QUERY_TIMEOUT_SECONDS
+    except ValueError:
+        logger.warning(
+            "invalid BQ_QUERY_TIMEOUT_SECONDS=%r; using default %ds",
+            raw,
+            DEFAULT_BQ_QUERY_TIMEOUT_SECONDS,
+        )
+        return DEFAULT_BQ_QUERY_TIMEOUT_SECONDS
 
 
 def _download_df(query_job) -> pd.DataFrame:
@@ -63,7 +84,7 @@ def _download_df(query_job) -> pd.DataFrame:
 
 BQ_PROJECT: Final[str] = "stayery-analytics"
 BQ_DATASET: Final[str] = "reporting"
-BQ_TABLE:   Final[str] = "reservations"
+BQ_TABLE: Final[str] = "reservations"
 
 # ---- BigQuery client (the ONE construction point) ---------------------------
 # Scopes are requested only for SERVICE-ACCOUNT key files. SAs are not subject to
@@ -96,45 +117,70 @@ def get_bigquery_client():
         key_file = os.environ.get(env)
         if key_file and Path(key_file).exists():
             creds = service_account.Credentials.from_service_account_file(
-                key_file, scopes=list(_BQ_SCOPES))
-            return bigquery.Client(credentials=creds,
-                                   project=creds.project_id or BQ_PROJECT)
+                key_file, scopes=list(_BQ_SCOPES)
+            )
+            return bigquery.Client(
+                credentials=creds, project=creds.project_id or BQ_PROJECT
+            )
 
     # ADC (local gcloud login): no scopes enforced, project pinned explicitly.
     return bigquery.Client(project=BQ_PROJECT)
 
+
 # Two cache files: raw (after PII strip + dtype clean) and post-cleaning
 # (produced by 00_data_audit.ipynb).
-RAW_CACHE_FILE:   Final[str] = "reservations_raw_no_pii.parquet"
+RAW_CACHE_FILE: Final[str] = "reservations_raw_no_pii.parquet"
 CLEAN_CACHE_FILE: Final[str] = "reservations_clean.parquet"
 
 # ---- Dtype hints ----------------------------------------------------------
 INT_COLUMNS: Final[tuple[str, ...]] = (
-    "adults", "guest_id", "is_first_res", "is_last_res",
+    "adults",
+    "guest_id",
+    "is_first_res",
+    "is_last_res",
 )
 DATETIME_COLUMNS: Final[tuple[str, ...]] = (
-    "arrival", "departure", "created", "modified",
+    "arrival",
+    "departure",
+    "created",
+    "modified",
 )
 BOOL_COLUMNS: Final[tuple[str, ...]] = (
-    "ratePlan_isSubjectToCityTax", "paymentAccount_isVirtual",
-    "paymentAccount_isActive",     "allFoliosHaveInvoice",
-    "hasCityTax",                  "company_canCheckOutOnAr",
+    "ratePlan_isSubjectToCityTax",
+    "paymentAccount_isVirtual",
+    "paymentAccount_isActive",
+    "allFoliosHaveInvoice",
+    "hasCityTax",
+    "company_canCheckOutOnAr",
 )
 
 # ---- PII columns ---------------------------------------------------------
 # These columns identify individual guests or carry sensitive payment data.
 # They are excluded at SQL level
 PII_COLUMNS: Final[tuple[str, ...]] = (
-    "primaryGuest_title", "primaryGuest_firstName", "primaryGuest_middleInitial",
-    "primaryGuest_lastName", "primaryGuest_gender", "primaryGuest_birthDate",
-    "primaryGuest_email", "primaryGuest_phone",
-    "primaryGuest_address_addressLine1", "primaryGuest_address_postalCode",
+    "primaryGuest_title",
+    "primaryGuest_firstName",
+    "primaryGuest_middleInitial",
+    "primaryGuest_lastName",
+    "primaryGuest_gender",
+    "primaryGuest_birthDate",
+    "primaryGuest_email",
+    "primaryGuest_phone",
+    "primaryGuest_address_addressLine1",
+    "primaryGuest_address_postalCode",
     "primaryGuest_address_city",
-    "additionalGuests_title", "additionalGuests_firstName", "additionalGuests_lastName",
-    "paymentAccount_accountNumber", "paymentAccount_accountHolder",
-    "paymentAccount_expiryMonth",   "paymentAccount_expiryYear",
+    "additionalGuests_title",
+    "additionalGuests_firstName",
+    "additionalGuests_lastName",
+    "paymentAccount_accountNumber",
+    "paymentAccount_accountHolder",
+    "paymentAccount_expiryMonth",
+    "paymentAccount_expiryYear",
     "paymentAccount_payerEmail",
-    "booker_firstName", "booker_lastName", "booker_email", "booker_phone",
+    "booker_firstName",
+    "booker_lastName",
+    "booker_email",
+    "booker_phone",
     "booker_comment",
     "guestComment",
     "primaryGuest_company_taxId",
@@ -145,6 +191,7 @@ PII_COLUMNS: Final[tuple[str, ...]] = (
 # =============================================================================
 # Public API
 # =============================================================================
+
 
 def load_reservations(
     force_refresh: bool = False,
@@ -221,6 +268,7 @@ def load_clean_reservations() -> pd.DataFrame:
 # Helpers (also exported - useful in notebooks for ad-hoc transforms)
 # =============================================================================
 
+
 def strip_pii(df: pd.DataFrame) -> pd.DataFrame:
     """Return a copy of `df` with every PII column dropped.
 
@@ -231,7 +279,9 @@ def strip_pii(df: pd.DataFrame) -> pd.DataFrame:
     out = df.drop(columns=list(PII_COLUMNS), errors="ignore")
     n_dropped = n_before - out.shape[1]
     if n_dropped:
-        logger.info(f"PII strip: removed {n_dropped} columns using function - review SQL query")
+        logger.info(
+            f"PII strip: removed {n_dropped} columns using function - review SQL query"
+        )
     return out
 
 
@@ -247,7 +297,7 @@ def clean_dtypes(df: pd.DataFrame) -> pd.DataFrame:
         if col in out.columns:
             try:
                 out[col] = pd.to_datetime(out[col], utc=True, errors="coerce")
-            except Exception as e: 
+            except Exception as e:
                 logger.warning(f"could not parse {col} as datetime: {e}")
 
     for col in INT_COLUMNS:
@@ -258,7 +308,7 @@ def clean_dtypes(df: pd.DataFrame) -> pd.DataFrame:
                 logger.warning(f"could not coerce {col} to Int64: {e}")
 
     truthy = {"true", "True", "TRUE", "1", "yes", "Yes"}
-    falsy  = {"false", "False", "FALSE", "0", "no", "No"}
+    falsy = {"false", "False", "FALSE", "0", "no", "No"}
     for col in BOOL_COLUMNS:
         if col not in out.columns:
             continue
@@ -277,8 +327,10 @@ def clean_dtypes(df: pd.DataFrame) -> pd.DataFrame:
 # Internal
 # =============================================================================
 
-def _reservations_query(client, *, arrival_from=None, arrival_to=None,
-                        limit: int | None = None):
+
+def _reservations_query(
+    client, *, arrival_from=None, arrival_to=None, limit: int | None = None
+):
     """Build (sql, job_config, n_pii) for the reservations table.
 
     ONE shared query builder so the full-history pull (slow path) and the 14-day
@@ -302,10 +354,14 @@ def _reservations_query(client, *, arrival_from=None, arrival_to=None,
     params: list = []
     if arrival_from is not None:
         where.append("arrival >= @arrival_from")
-        params.append(bigquery.ScalarQueryParameter("arrival_from", "TIMESTAMP", arrival_from))
+        params.append(
+            bigquery.ScalarQueryParameter("arrival_from", "TIMESTAMP", arrival_from)
+        )
     if arrival_to is not None:
         where.append("arrival < @arrival_to")
-        params.append(bigquery.ScalarQueryParameter("arrival_to", "TIMESTAMP", arrival_to))
+        params.append(
+            bigquery.ScalarQueryParameter("arrival_to", "TIMESTAMP", arrival_to)
+        )
 
     sql = f"SELECT *{except_clause} FROM `{table_ref}`"
     if where:
@@ -316,8 +372,9 @@ def _reservations_query(client, *, arrival_from=None, arrival_to=None,
     return sql, job_config, len(pii_present)
 
 
-def _query_bigquery(limit: int | None = None, *, arrival_from=None,
-                    arrival_to=None) -> pd.DataFrame:
+def _query_bigquery(
+    limit: int | None = None, *, arrival_from=None, arrival_to=None
+) -> pd.DataFrame:
     """Lazy-import BigQuery so this module is importable without it installed.
 
     With no `arrival_from`/`arrival_to` this is the full-history pull (unchanged behaviour);
@@ -335,28 +392,53 @@ def _query_bigquery(limit: int | None = None, *, arrival_from=None,
 
     client = get_bigquery_client()
     sql, job_config, n_pii = _reservations_query(
-        client, arrival_from=arrival_from, arrival_to=arrival_to, limit=limit)
-    scope = "full history" if arrival_from is None and arrival_to is None else "arrival window"
+        client, arrival_from=arrival_from, arrival_to=arrival_to, limit=limit
+    )
+    scope = (
+        "full history"
+        if arrival_from is None and arrival_to is None
+        else "arrival window"
+    )
     logger.info(
         f"running BigQuery query ({scope}; {n_pii} PII columns excluded at SQL level)…"
     )
-    return _download_df(client.query(sql, job_config=job_config))
+
+    timeout_seconds = _get_bq_query_timeout_seconds()
+    job = None
+    try:
+        job = client.query(sql, job_config=job_config)
+        query_job = job.result(timeout=timeout_seconds)
+    except Exception as e:  # noqa: BLE001
+        if job is not None:
+            try:
+                job.cancel()
+            except Exception:  # noqa: BLE001
+                pass
+        raise RuntimeError(
+            f"BigQuery query timed out or failed after {timeout_seconds}s: {e}"
+        ) from e
+
+    return _download_df(query_job)
 
 
 # =============================================================================
 # Fast path — reservations arriving within the next N days (time-critical)
 # =============================================================================
-def upcoming_window_bounds(days: int = 14, today: pd.Timestamp | None = None
-                           ) -> tuple[pd.Timestamp, pd.Timestamp]:
+def upcoming_window_bounds(
+    days: int = 14, today: pd.Timestamp | None = None
+) -> tuple[pd.Timestamp, pd.Timestamp]:
     """[start, end) covering `days` days from `today`, INCLUDING today (UTC midnight).
     Matches the Occupancy page's fixed 14-day forward window (WINDOW_DAYS)."""
     t = today or pd.Timestamp.now("UTC").normalize()
     return t, t + pd.Timedelta(days=days)
 
 
-def load_upcoming_window(days: int = 14, force_refresh: bool = True,
-                         today: pd.Timestamp | None = None,
-                         quiet: bool = False) -> pd.DataFrame:
+def load_upcoming_window(
+    days: int = 14,
+    force_refresh: bool = True,
+    today: pd.Timestamp | None = None,
+    quiet: bool = False,
+) -> pd.DataFrame:
     """FAST PATH: reservations arriving in the next `days` days (incl. today),
     PII-stripped + dtype-cleaned — the small, time-critical set for immediate scoring.
 
@@ -371,16 +453,23 @@ def load_upcoming_window(days: int = 14, force_refresh: bool = True,
 
     if force_refresh:
         try:
-            df = _query_bigquery(arrival_from=start.to_pydatetime(),
-                                 arrival_to=end.to_pydatetime())
+            df = _query_bigquery(
+                arrival_from=start.to_pydatetime(), arrival_to=end.to_pydatetime()
+            )
             df = clean_dtypes(strip_pii(df))
             arr = pd.to_datetime(df["arrival"], utc=True, errors="coerce")
-            df = df[(arr >= start) & (arr < end)].copy()   # defensive re-filter post-coercion
-            logger.info(f"fast-path BigQuery window pull: {len(df):,} rows "
-                        f"(arrival {start.date()}..{end.date()})")
+            df = df[
+                (arr >= start) & (arr < end)
+            ].copy()  # defensive re-filter post-coercion
+            logger.info(
+                f"fast-path BigQuery window pull: {len(df):,} rows "
+                f"(arrival {start.date()}..{end.date()})"
+            )
             return df
         except Exception as e:  # noqa: BLE001 — never break the page; degrade to cache
-            logger.warning(f"fast-path BigQuery window pull failed ({e}); using cache instead")
+            logger.warning(
+                f"fast-path BigQuery window pull failed ({e}); using cache instead"
+            )
 
     df = load_reservations(force_refresh=False, upcoming_only=False, quiet=quiet)
     arr = pd.to_datetime(df["arrival"], utc=True, errors="coerce")
@@ -398,7 +487,7 @@ def _validate_schema(df: pd.DataFrame) -> None:
     expected = {f["name"] for f in schema} - set(PII_COLUMNS)
     actual = set(df.columns)
     missing = expected - actual
-    extra   = actual - expected
+    extra = actual - expected
     if missing:
         logger.warning(
             f"[schema drift] {len(missing)} expected columns MISSING: "
@@ -409,6 +498,7 @@ def _validate_schema(df: pd.DataFrame) -> None:
             f"[schema info] {len(extra)} extra columns present: "
             f"{sorted(extra)[:5]}{'…' if len(extra) > 5 else ''}"
         )
+
 
 # =============================================================================
 # Property performance (occupancy / daily operations) — second BigQuery table
@@ -430,26 +520,43 @@ PROPERTY_PERF_CACHE: Final[str] = "property_performance_daily.parquet"
 
 # Allow-list — the ONLY columns we select from the table (operational + ADR).
 PROP_PERF_COLUMNS: Final[tuple[str, ...]] = (
-    "businessDay", "houseCount", "soldCount", "outOfOrderCount",
-    "arrivalsCount", "departuresCount", "noShowsCount", "cancellationsCount",
-    "occupancyPercentage", "netAdr_amount", "propertyId",
+    "businessDay",
+    "houseCount",
+    "soldCount",
+    "outOfOrderCount",
+    "arrivalsCount",
+    "departuresCount",
+    "noShowsCount",
+    "cancellationsCount",
+    "occupancyPercentage",
+    "netAdr_amount",
+    "propertyId",
 )
 # Remaining revenue columns present in the table but DELIBERATELY excluded
 # (documentation only; never referenced by the query). Keep in sync with the live
 # schema above. NOTE: netAdr_amount is intentionally NOT here — see above.
 PROP_PERF_REVENUE_EXCLUDED: Final[tuple[str, ...]] = (
-    "netUnitRevenue_amount", "netAccommodationRevenue_amount",
-    "netFoodAndBeveragesRevenue_amount", "netOtherRevenue_amount",
+    "netUnitRevenue_amount",
+    "netAccommodationRevenue_amount",
+    "netFoodAndBeveragesRevenue_amount",
+    "netOtherRevenue_amount",
     "revPar_amount",
 )
 # Integer-count columns (nullable Int64 so a missing value never becomes 0/NaN-float).
 _PERF_INT_COLS: Final[tuple[str, ...]] = (
-    "houseCount", "soldCount", "outOfOrderCount", "arrivalsCount",
-    "departuresCount", "noShowsCount", "cancellationsCount",
+    "houseCount",
+    "soldCount",
+    "outOfOrderCount",
+    "arrivalsCount",
+    "departuresCount",
+    "noShowsCount",
+    "cancellationsCount",
 )
 
 
-def load_property_performance(force_refresh: bool = False, quiet: bool = False) -> pd.DataFrame:
+def load_property_performance(
+    force_refresh: bool = False, quiet: bool = False
+) -> pd.DataFrame:
     """Load `reporting.property_performance_daily` (occupancy + ops), dtype-cleaned.
 
     Only the operational columns are selected (revenue ignored). Cached to parquet
@@ -476,15 +583,17 @@ def load_property_performance(force_refresh: bool = False, quiet: bool = False) 
 def _clean_perf_dtypes(df: pd.DataFrame) -> pd.DataFrame:
     """Coerce the property-performance columns to robust dtypes (skip missing)."""
     out = df.copy()
-    if "businessDay" in out.columns:                       # business day -> UTC datetime
-        out["businessDay"] = pd.to_datetime(out["businessDay"], utc=True, errors="coerce")
-    for c in _PERF_INT_COLS:                               # counts -> nullable Int64
+    if "businessDay" in out.columns:  # business day -> UTC datetime
+        out["businessDay"] = pd.to_datetime(
+            out["businessDay"], utc=True, errors="coerce"
+        )
+    for c in _PERF_INT_COLS:  # counts -> nullable Int64
         if c in out.columns:
             out[c] = pd.to_numeric(out[c], errors="coerce").astype("Int64")
-    for c in ("occupancyPercentage", "netAdr_amount"):     # occupancy % + ADR -> float
+    for c in ("occupancyPercentage", "netAdr_amount"):  # occupancy % + ADR -> float
         if c in out.columns:
             out[c] = pd.to_numeric(out[c], errors="coerce")
-    if "propertyId" in out.columns:                        # property code -> string
+    if "propertyId" in out.columns:  # property code -> string
         out["propertyId"] = out["propertyId"].astype("string")
     return out
 
@@ -492,7 +601,7 @@ def _clean_perf_dtypes(df: pd.DataFrame) -> pd.DataFrame:
 def _query_property_performance(limit: int | None = None) -> pd.DataFrame:
     """Query BigQuery for the property-performance allow-list columns only."""
     try:
-        from google.cloud import bigquery  # type: ignore[import-untyped]
+        import google.cloud.bigquery  # noqa: F401
     except ImportError as e:
         raise RuntimeError(
             "google-cloud-bigquery is not installed. Run `uv add google-cloud-bigquery`."
@@ -510,7 +619,23 @@ def _query_property_performance(limit: int | None = None) -> pd.DataFrame:
     if limit is not None:
         sql += f"\nLIMIT {int(limit)}"
     logger.info(f"  selecting {len(cols)} ops columns from {PROPERTY_PERF_TABLE}…")
-    return _download_df(client.query(sql))
+
+    timeout_seconds = _get_bq_query_timeout_seconds()
+    job = None
+    try:
+        job = client.query(sql)
+        query_job = job.result(timeout=timeout_seconds)
+    except Exception as e:  # noqa: BLE001
+        if job is not None:
+            try:
+                job.cancel()
+            except Exception:  # noqa: BLE001
+                pass
+        raise RuntimeError(
+            f"BigQuery property-performance query timed out or failed after {timeout_seconds}s: {e}"
+        ) from e
+
+    return _download_df(query_job)
 
 
 def property_universe(force_refresh: bool = False) -> pd.DataFrame:
@@ -524,7 +649,9 @@ def property_universe(force_refresh: bool = False) -> pd.DataFrame:
     try:
         perf = load_property_performance(force_refresh=force_refresh, quiet=True)
     except Exception as e:  # noqa: BLE001 — no creds / no table / offline
-        logger.warning(f"property_universe: performance table unavailable ({e}); empty universe")
+        logger.warning(
+            f"property_universe: performance table unavailable ({e}); empty universe"
+        )
         return pd.DataFrame(columns=["propertyId", "units"])
     if perf.empty or "propertyId" not in perf.columns:
         return pd.DataFrame(columns=["propertyId", "units"])
@@ -532,13 +659,18 @@ def property_universe(force_refresh: bool = False) -> pd.DataFrame:
     perf = perf.sort_values("businessDay")
     latest = perf.groupby("propertyId", as_index=False).last()
     out = latest[["propertyId"]].copy()
-    out["units"] = (pd.to_numeric(latest.get("houseCount"), errors="coerce")
-                    .fillna(0).astype(int).values)
+    out["units"] = (
+        pd.to_numeric(latest.get("houseCount"), errors="coerce")
+        .fillna(0)
+        .astype(int)
+        .values
+    )
     return out.reset_index(drop=True)
 
 
-def average_room_rate_by_property(force_refresh: bool = False,
-                                  lookback_days: int | None = 90) -> dict[str, float]:
+def average_room_rate_by_property(
+    force_refresh: bool = False, lookback_days: int | None = 90
+) -> dict[str, float]:
     """Mean ADR (`netAdr_amount`) per propertyId — used to PRE-FILL the empty-room
     cost in the Occupancy dashboard.
 
@@ -547,21 +679,28 @@ def average_room_rate_by_property(force_refresh: bool = False,
     performance cache / BigQuery is unavailable or ADR is absent, so callers pre-fill
     nothing rather than guessing.
 
-    NOTE: the key is `propertyId` (the performance table's code), NOT the
-    `property_name` used in reservations. Mapping the two is still open (see
-    audit_findings.md); until a mapping exists the app can only pre-fill when it can
-    resolve that link.
+    NOTE: keyed by `propertyId` (the performance table's code). Map to
+    property_name via the reservations cache's `property_code` column
+    (see dash_app.backend.data_access._property_code_to_name).
     """
     try:
         perf = load_property_performance(force_refresh=force_refresh, quiet=True)
     except Exception as e:  # noqa: BLE001
-        logger.warning(f"average_room_rate_by_property: performance table unavailable ({e})")
+        logger.warning(
+            f"average_room_rate_by_property: performance table unavailable ({e})"
+        )
         return {}
-    if perf.empty or "netAdr_amount" not in perf.columns or "propertyId" not in perf.columns:
+    if (
+        perf.empty
+        or "netAdr_amount" not in perf.columns
+        or "propertyId" not in perf.columns
+    ):
         return {}
     df = perf.dropna(subset=["netAdr_amount"]).copy()
     if lookback_days is not None and "businessDay" in df.columns and not df.empty:
-        cutoff = pd.to_datetime(df["businessDay"], utc=True).max() - pd.Timedelta(days=lookback_days)
+        cutoff = pd.to_datetime(df["businessDay"], utc=True).max() - pd.Timedelta(
+            days=lookback_days
+        )
         df = df[pd.to_datetime(df["businessDay"], utc=True) >= cutoff]
     if df.empty:
         return {}
