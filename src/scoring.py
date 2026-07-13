@@ -1,21 +1,14 @@
 # ---------------------------------------------------------------------------
-# Scoring helpers — apply a trained model to upcoming arrivals.
+# Scoring: apply a trained model to (upcoming) bookings.
 #
-# Why this lives in src/ and not in a notebook:
-#   * It will be run on a schedule (e.g. daily), not interactively.
-#   * It needs to be importable from the dashboards notebook (07) without
-#     re-running a model notebook each time.
+# Public entry points are score_upcoming() / score_reservations(). Both build
+# the roster features, score through the one adapter cancel_proba() (works for
+# the static pipelines AND the hazard model) and bucket each booking into
+# low / uncertain / high risk.
 #
-# What this module does:
-#   * Loads any of the four trained joblib models (01-04) by name.
-#   * Provides `score_upcoming()` which loads upcoming arrivals, applies the
-#     same cleaning bounds + feature engineering each model notebook uses,
-#     scores, and buckets bookings into low / uncertain / high risk.
-#
-# Feature engineering MUST mirror notebooks/00_data_audit.ipynb section 8c
-# (the canonical recipe). It's duplicated here because the upcoming-arrivals
-# scoring needs the same features computed on rows that did NOT go through
-# the cleaning step. If you change a feature in 00, change it here too.
+# Feature engineering must match training: build_features() mirrors notebook 00
+# §3.0, and the feature LISTS always come from Data/feature_roster.json. If you
+# change a feature in 00, mirror it in build_features() and re-run 00.
 # ---------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -55,36 +48,24 @@ def analytic_threshold(c_walk: float = COST_WALK, c_empty: float = COST_EMPTY) -
     return c_walk / (c_walk + c_empty)
 
 
-# ---- Risk bucket fallbacks (used only if val predictions are unavailable) --
-# Normal operation derives the cut points per model from the validation
-# predictions (cost-optimal threshold) via serving_thresholds(); these flat
-# fallbacks only fire when those artifacts are missing.
-LOW_THR:  Final[float] = analytic_threshold()
+# ---- Risk bucket fallbacks --------------------------------------------------
+# serving_thresholds() derives the real cut points per model (high = cost-optimal
+# threshold, low = observed base rate). These constants are only the last-resort
+# fallbacks when neither validation predictions nor the cleaned-data metadata
+# exist: LOW_THR ~ the historical cancel rate, HIGH_THR = the analytic threshold.
+LOW_THR:  Final[float] = 0.20
 HIGH_THR: Final[float] = analytic_threshold()
 
 
 # ---- Model registry -------------------------------------------------------
-# Centralised so notebooks / dashboards / the app refer to models by name, not by
-# path. Each entry has a `kind` so callers can score without knowing the internals:
-#   * kind="static"  -> a plain sklearn Pipeline; probability = predict_proba[:, 1].
-#   * kind="hazard"  -> the discrete-time survival artifact (a dict, see src.hazard);
-#                       probability = survival product, via src.hazard.
-#
-# MVP lineup (2026-07-02): hazard (08) is the STANDARD/default model; xgboost (02)
-# is the FALLBACK static model used when the hazard artifact is missing (and for the
-# static-vs-hazard comparison on the model-performance page later). logreg (01) and
-# histgb (03) are intentionally OUT of the MVP — they may be re-added later. Filenames
-# follow the {NN}_{name}_model.joblib convention each model notebook saves with.
+# Every trainable model by name. `kind` decides how it is scored: "static" =
+# sklearn Pipeline (predict_proba), "hazard" = survival artifact (src.hazard).
+# All four stay registered so retrain()/notebooks can save them; SERVING is a
+# separate decision made by resolve_model(): hazard is the default scorer,
+# xgboost the fallback, logreg/histgb are comparison baselines only.
 DEFAULT_MODEL:  Final[str] = "hazard"    # standard scoring model
 FALLBACK_MODEL: Final[str] = "xgboost"   # used when the hazard artifact is absent
 
-# The registry lists EVERY trainable/persistable model — src.training.retrain() and
-# the model notebooks look a model up here BY NAME to save its joblib + card, so all
-# four must stay registered even though only two are served. SERVING is controlled
-# separately (DEFAULT_MODEL=hazard, FALLBACK_MODEL=xgboost via resolve_model); logreg
-# (01) and histgb (03) are trainable baselines / comparison models, NOT part of the
-# MVP serving lineup. `kind`: static = sklearn Pipeline (predict_proba); hazard =
-# survival artifact (scored via src.hazard).
 MODEL_REGISTRY: Final[dict[str, dict[str, str]]] = {
     "hazard":  {"kind": "hazard", "joblib": "08_hazard_model.joblib",
                 "card": "reports/tables/08_hazard/model_card.json"},
@@ -140,46 +121,54 @@ def load_model_card(name: str) -> dict:
         return json.load(fh)
 
 
-def best_model_by_auc() -> str:
-    """Return the available STATIC model with the highest test AUC.
-
-    Only static models expose the `test_metrics.auc` model-card field, so the hazard
-    model is excluded here by design (it is compared on its own estimand elsewhere).
-    """
-    avail = [n for n in list_available_models() if n in _models_of_kind("static")]
-    if not avail:
-        raise RuntimeError("no static model on disk — need 02_xgboost_model.joblib.")
-    # NOTE: the model cards store the test AUC under the key "auc" (see the
-    # `test_metrics` Series in notebooks 01-03), not "roc_auc".
-    scored = [(name, load_model_card(name)["test_metrics"]["auc"])
-              for name in avail]
-    scored.sort(key=lambda x: x[1], reverse=True)
-    return scored[0][0]
-
-
 # ---- Model selection: AP primary, calibration (Brier) gate ----------------
-# Single source of truth for "which static model do we serve": rank by test AP
-# (right metric at ~18% prevalence), but only among models whose test Brier is
-# within `brier_tol` of the best — so we never ship a sharp-but-miscalibrated
-# ranker, since the probabilities feed the overbooking decision directly.
+# One rule for "which static model is the fallback": rank by walk-forward AP
+# (the right metric at ~20% prevalence), but only among models whose Brier is
+# within `brier_tol` of the best — a sharp but miscalibrated ranker must never
+# feed the overbooking decision. Reads the walk-forward block of the model card
+# (the cards written by retrain() no longer carry `test_metrics`).
 BRIER_TOL: Final[float] = 0.005
 
 
+def _card_walkforward(name: str) -> dict:
+    """{'ap': mean, 'brier': mean} from a model card's walk-forward block.
+    Tolerates both card shapes (aggregate nested or flat). Missing -> Nones."""
+    wf = load_model_card(name).get("walk_forward", {})
+    agg = wf.get("aggregate", wf) if isinstance(wf, dict) else {}
+    out = {}
+    for m in ("ap", "brier"):
+        cell = agg.get(m)
+        out[m] = cell.get("mean") if isinstance(cell, dict) else None
+    return out
+
+
 def best_model(brier_tol: float = BRIER_TOL) -> str:
-    """Highest test AP among STATIC models whose test Brier is within `brier_tol` of
-    best. Static-only: this picks the fallback/comparison static model, not the
-    hazard model (which is the default scorer — see resolve_model)."""
+    """Best available STATIC model: highest walk-forward AP among those whose
+    Brier is within `brier_tol` of the best. The hazard model is excluded on
+    purpose — it is the default scorer and is judged on its own estimand."""
     avail = [n for n in list_available_models() if n in _models_of_kind("static")]
     if not avail:
         raise RuntimeError("no static model on disk — need 02_xgboost_model.joblib.")
-    cards = {name: load_model_card(name)["test_metrics"] for name in avail}
-    briers = [m["brier"] for m in cards.values() if "brier" in m]
+    cards = {}
+    for name in avail:
+        try:
+            m = _card_walkforward(name)
+        except Exception:  # noqa: BLE001 — no card yet
+            continue
+        if m.get("ap") is not None:
+            cards[name] = m
+    if not cards:
+        raise RuntimeError(
+            "no static model card carries walk-forward metrics — retrain first "
+            "(python main.py retrain --model xgboost)."
+        )
+    briers = [m["brier"] for m in cards.values() if m.get("brier") is not None]
+    eligible = list(cards)
     if briers:
         best_brier = min(briers)
         eligible = [n for n, m in cards.items()
-                    if m.get("brier", float("inf")) <= best_brier + brier_tol]
-    else:
-        eligible = avail
+                    if (m.get("brier") if m.get("brier") is not None else float("inf"))
+                    <= best_brier + brier_tol]
     return max(eligible, key=lambda n: cards[n]["ap"])
 
 
@@ -258,7 +247,12 @@ def brier_decomposition(y_true, y_prob, *, n_bins: int = 10) -> dict:
 
 
 def _val_predictions(name: str) -> "pd.DataFrame | None":
-    """Load a model's persisted VALIDATION predictions (y_true, y_prob) or None."""
+    """Out-of-time validation predictions (y_true, y_prob) for a model, or None.
+
+    Reads Data/NN_<name>_predictions.parquet, written by training.retrain() from
+    the pooled walk-forward predictions. Without the file, the threshold helpers
+    fall back to the analytic values.
+    """
     fname = MODEL_REGISTRY[name]["joblib"].replace("_model.joblib", "_predictions.parquet")
     p = data_dir() / fname
     if not p.exists():
@@ -288,31 +282,42 @@ def operating_threshold(name: str, c_walk: float = COST_WALK,
     return cost_optimal_threshold(name, c_walk, c_empty)
 
 
+def _clean_meta_base_rate() -> float | None:
+    """Observed cancel rate from Data/reservations_clean_meta.json, or None."""
+    p = data_dir() / "reservations_clean_meta.json"
+    if not p.exists():
+        return None
+    try:
+        share = json.loads(p.read_text()).get("positive_share")
+        return float(share) if share is not None else None
+    except Exception:  # noqa: BLE001 — unreadable metadata is not worth crashing for
+        return None
+
+
 def serving_thresholds(name: str, c_walk: float = COST_WALK,
                        c_empty: float = COST_EMPTY) -> tuple[float, float]:
-    """(low, high) risk-bucket cut points: high = cost-optimal val threshold,
-    low = validation base rate (below-average-risk display band)."""
+    """(low, high) risk-bucket cut points for a model.
+
+    high = the cost-optimal decision threshold (from persisted validation
+    predictions, else the analytic value). low = the observed base rate
+    (validation predictions -> cleaned-data metadata -> LOW_THR). Everything
+    between "above-average risk" and "act on it" lands in 'uncertain'.
+    """
     high = operating_threshold(name, c_walk, c_empty)
     v = _val_predictions(name)
-    base = float(v["y_true"].mean()) if v is not None else LOW_THR
+    if v is not None:
+        base = float(v["y_true"].mean())
+    else:
+        base = _clean_meta_base_rate() or LOW_THR
     return min(base, high), high
 
 
 # =============================================================================
-# Feature engineering — MUST stay in sync with notebooks 01-04
+# Feature engineering (serving side)
 # =============================================================================
-# These are duplicated verbatim from the model notebooks. Any change in the
-# notebook feature build MUST be mirrored here, otherwise scoring will use
-# a different feature shape than training and quietly produce nonsense.
-
-# --- Feature lists come from the ROSTER, not hardcoded here ----------------
-# Single source of truth: Data/feature_roster.json, written by 00_data_audit
-# §11 and loaded via src.features.load_feature_roster(). Hardcoding the lists
-# here was the exact drift that broke 08 / score_upcoming, so we stopped.
-#
-# Loading is LAZY (inside functions / via module __getattr__) so that
-# `import src` never requires the artifact to exist - it is only read when a
-# scoring function actually runs.
+# Feature LISTS always come from Data/feature_roster.json (written by 00 §11) —
+# a hardcoded copy here is exactly the drift that once broke scoring. Loading is
+# lazy so `import src` works before the artifact exists.
 
 def model_feature_lists() -> tuple[list[str], list[str]]:
     """(numeric, categorical) STATIC features for the trained pipelines,
@@ -327,18 +332,6 @@ def dynamic_features() -> list[str]:
     `build_features`; consumed by the hazard model (08), surfaced for the dashboard."""
     from .features import load_feature_roster
     return list(load_feature_roster().get("dynamic_numeric", []))
-
-
-# Backward-compat: expose NUMERIC_FEATURES / CATEGORICAL_FEATURES / ALL_FEATURES
-# / DYNAMIC_FEATURES as lazily-resolved module attributes (PEP 562), so existing
-# `from src.scoring import NUMERIC_FEATURES` keeps working WITHOUT reading the
-# JSON at import time.
-def __getattr__(name: str):
-    if name in ("NUMERIC_FEATURES", "CATEGORICAL_FEATURES", "ALL_FEATURES", "DYNAMIC_FEATURES"):
-        num, cat = model_feature_lists()
-        return {"NUMERIC_FEATURES": num, "CATEGORICAL_FEATURES": cat,
-                "ALL_FEATURES": num + cat, "DYNAMIC_FEATURES": dynamic_features()}[name]
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _to_str_nz(s: pd.Series | None, index: pd.Index) -> pd.Series:
@@ -417,12 +410,9 @@ def build_features(df: pd.DataFrame, today: pd.Timestamp | None = None) -> pd.Da
         | (_to_str_nz(out.get("childrenAges"), out.index).str.len() > 0)
     ).astype("Int64")
 
-    # ratePlan_category — parity-safe: reproduce 00's FITTED vocabulary via the
-    # persisted map (00 §3.0.d builds the buckets + collapses rare<50 -> "other"
-    # on TRAIN, and §11 persists the resulting normalized-name -> category map).
-    # Serving only normalizes the raw name the same way and looks it up; any name
-    # not seen in training maps to "other" (the catch-all bucket). This avoids
-    # recomputing the rare-collapse on scoring data (which would be a parity bug).
+    # ratePlan_category: look up the TRAIN-fitted name->category map persisted in
+    # the roster (00 §3.0.d/§11); unseen names -> "other". Recomputing the rare-name
+    # collapse on scoring data would be a train/serve parity bug.
     from .features import load_feature_roster
     _rp_map = load_feature_roster().get("ratePlan_category_map", {})
     _rp_norm = (_to_str_nz(out.get("ratePlan_name"), out.index)
@@ -469,20 +459,20 @@ RiskBucket = Literal["low", "uncertain", "high"]
 
 
 def bucketize(prob: float | np.ndarray,
-              low_thr: float = LOW_THR, high_thr: float = HIGH_THR) -> pd.Series | str:
-    """Map probability → 'low' / 'uncertain' / 'high' bucket.
+              low_thr: float = LOW_THR, high_thr: float = HIGH_THR) -> np.ndarray | str:
+    """Map probability -> 'low' / 'uncertain' / 'high'.
 
-    `low_thr` / `high_thr` default to the module fallbacks but are normally passed
-    in from serving_thresholds() so buckets track the model's tuned operating point.
+    Scalars return a str, arrays a plain numpy array — deliberately NOT an
+    indexed Series: assigning a fresh-index Series to a filtered frame once
+    silently produced all-<NA> buckets. Pass thresholds from serving_thresholds().
     """
     if isinstance(prob, (int, float, np.floating)):
         if prob >= high_thr: return "high"
         if prob >= low_thr:  return "uncertain"
         return "low"
     p = np.asarray(prob)
-    out = np.where(p >= high_thr, "high",
-          np.where(p >= low_thr,  "uncertain", "low"))
-    return pd.Series(out, dtype="string")
+    return np.where(p >= high_thr, "high",
+           np.where(p >= low_thr,  "uncertain", "low"))
 
 
 # ---- Which model do we score with? ----------------------------------------
@@ -616,10 +606,7 @@ def score_reservations(
     feat["cancel_proba"]     = proba
     feat["pred_cancel"]      = (proba >= high_thr).astype(int)
     feat["cancel_threshold"] = high_thr
-    # FIX 2026-07-09: bucketize returns a fresh RangeIndex Series; assigning it to a
-    # frame whose index is NOT 0..n-1 (upcoming rows keep their cache index) aligned on
-    # index and produced ALL-<NA> risk_buckets. Assign positionally via to_numpy().
-    feat["risk_bucket"]      = bucketize(proba, low_thr, high_thr).to_numpy()
+    feat["risk_bucket"]      = bucketize(proba, low_thr, high_thr)  # ndarray -> position-safe
     feat["model_used"]       = chosen
     feat["scored_at"]        = pd.Timestamp.utcnow()
 
