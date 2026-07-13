@@ -11,6 +11,7 @@ dependencies = [
     "pyarrow>=17.0.0",
     "pyyaml>=6.0.3",
     "scikit-learn>=1.8.0",
+    "scipy>=1.11",   # imported directly (overbooking._norm_ppf, HP search)
     "joblib>=1.4.2",
     # BigQuery loader (storage API = much faster than REST fallback)
     "google-cloud-bigquery>=3.25.0",

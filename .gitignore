@@ -26,5 +26,7 @@ documentation
 
 reports/figures
 reports/tables
+reports
 
 
+.dash_cache/

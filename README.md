@@ -77,21 +77,27 @@ uv run python -c "import src; print(src.__all__)"   # smoke-test the package
 ```
 ---
 
-## Why the `python data_loader.py` call failed
-
-Two things, neither of them about your install:
-
-1. **Wrong interpreter.** You ran `/Users/.../uv/python/cpython-3.12.../bin/python`, which is the base Python uv keeps in its cache, *not* the project's `.venv/bin/python`. Pandas (and everything else) is only installed inside `.venv/`, so that bare interpreter sees nothing.
-2. **`src/data_loader.py` is not runnable as a script.** It starts with `from .paths import data_dir`, a *relative* import - Python only allows that when the file is loaded as part of a package (i.e. imported via `from src import load_reservations`). Even with the right Python you'd see `ImportError: attempted relative import with no known parent package`.
-
-Right way to call into the module from the shell:
+## Health checks
 
 ```bash
-uv run python -c "from src import load_reservations; print(load_reservations(limit=5).head())"
+uv run python diagnostics/verify_pipeline.py       # ~28 consistency + leakage checks
+uv run python diagnostics/diagnose_calibration.py  # eval artifact vs notebook reference
 ```
 
-Or use the CLI:
+Run `verify_pipeline.py` from the repo root after any refactor or data refresh — it
+fails loudly (non-zero exit) if the feature roster, leakage guards or walk-forward
+splits drift.
 
-```bash
-uv run python main.py status
-```
+---
+
+## Troubleshooting
+
+- **`ModuleNotFoundError` / "pandas not found":** you're on the wrong interpreter.
+  Always go through `uv run python …` (or activate `.venv` first) — the bare system
+  Python doesn't see the project's dependencies.
+- **`ImportError: attempted relative import`:** files in `src/` are package modules,
+  not scripts. Import them (`from src import load_reservations`) or use the CLI
+  (`uv run python main.py status`) instead of running them directly.
+- **BigQuery errors:** see the credentials section above; the classic failure is a
+  gcloud login without a default project (fixed by `get_bigquery_client`, which pins
+  the project) or a blocked BigQuery-Storage endpoint (default download avoids it).

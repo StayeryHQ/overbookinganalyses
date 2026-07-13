@@ -1,7 +1,7 @@
 """Consistency + leakage verification for the cancellation pipeline.
-Run from repo root: PYTHONPATH=. python3 verify_pipeline.py
+Run FROM THE REPO ROOT: python3 diagnostics/verify_pipeline.py
 Fast checks only (no model fitting). Exits non-zero on any failure."""
-import sys, json, ast, glob
+import sys, json
 import numpy as np, pandas as pd
 sys.path.insert(0, ".")
 
@@ -73,18 +73,20 @@ ok("linear uses log twins, drops raw skewed", logs <= set(ln) and not (raws & se
 ok("tree uses raw skewed, drops log twins", raws <= set(tn) and not (logs & set(tn)))
 
 print("\n=== 8. no stale patterns across model notebooks ===")
+# Known-good exceptions: 'temporal_split' may appear in 00 as an explanatory
+# mention; 'matplotlib' is allowed where SHAP's beeswarm runs (the documented
+# non-Plotly exception, see src/diagnostics.py). Everything else is stale.
+ALLOWED = {"temporal_split": {"00_data_audit"},
+           "matplotlib": {"02_xgboost", "03_histgb", "08_hazard"}}
 stale = {"temporal_split": [], "is_cancelled": [], "matplotlib": [], "seaborn": [],
          "arrival-anchored": [], "t_f1": []}
 for nbf in ["00_data_audit", "01_logreg", "02_xgboost", "03_histgb", "05_model_comparison", "08_hazard"]:
     j = "\n".join("".join(c["source"]) for c in json.load(open(f"notebooks/{nbf}.ipynb"))["cells"])
     for k in stale:
-        if k in j and not (k == "is_cancelled" and "is_cancelled" in nb0 and nbf != "00_data_audit"):
-            # allow explanatory mentions only if prefixed 'no '/removed; here just record raw hits
-            if k in j: stale[k].append(nbf)
+        if k in j:
+            stale[k].append(nbf)
 for k, hits in stale.items():
-    # temporal_split allowed only as an explanatory 'no static ...' mention in 00
-    real = [h for h in hits if not (k == "temporal_split")]
-    ok(f"no stale '{k}' in model notebooks", not hits or (k == "temporal_split" and set(hits) <= {"00_data_audit"}),
+    ok(f"no stale '{k}' in model notebooks", set(hits) <= ALLOWED.get(k, set()),
        f"in={hits}")
 
 print("\n=== 9. KPI: cost-optimal threshold, not F1 ===")
