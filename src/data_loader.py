@@ -104,11 +104,13 @@ def get_bigquery_client():
     Resolution order:
       1. GCP_SERVICE_ACCOUNT_JSON_FILE  — explicit service-account key file
       2. GOOGLE_APPLICATION_CREDENTIALS — the standard Google env var, same handling
-      3. gcloud ADC (`gcloud auth application-default login`) — no scopes enforced
+      3. gcloud ADC (`gcloud auth application-default login`)
 
-    Every path pins `project` (SA: from the key file, else BQ_PROJECT; ADC: BQ_PROJECT),
-    so an ADC login without a default project — the classic
-    'Could not determine project ID' failure — still works.
+    The JOB (billing) project is always pinned to BQ_PROJECT. ADC user credentials
+    additionally carry a QUOTA project: whatever `gcloud auth application-default
+    set-quota-project <p>` stored, overridable via GOOGLE_CLOUD_QUOTA_PROJECT.
+    Missing credentials raise a RuntimeError with the exact commands to fix —
+    never a silent misconfiguration.
     """
     from google.cloud import bigquery  # type: ignore[import-untyped]
     from google.oauth2 import service_account  # type: ignore[import-untyped]
@@ -123,8 +125,58 @@ def get_bigquery_client():
                 credentials=creds, project=creds.project_id or BQ_PROJECT
             )
 
-    # ADC (local gcloud login): no scopes enforced, project pinned explicitly.
-    return bigquery.Client(project=BQ_PROJECT)
+    # ADC (local gcloud login). Load explicitly so a missing login fails with a
+    # fixable message instead of a generic stack trace deep inside the client.
+    import google.auth  # type: ignore[import-untyped]
+    import google.auth.exceptions  # type: ignore[import-untyped]
+
+    try:
+        creds, _ = google.auth.default()
+    except google.auth.exceptions.DefaultCredentialsError as e:
+        raise RuntimeError(
+            "No Google credentials found. Either point GCP_SERVICE_ACCOUNT_JSON_FILE "
+            "at a service-account key file, or log in once:\n"
+            "    gcloud auth application-default login\n"
+            f"    gcloud auth application-default set-quota-project {BQ_PROJECT}"
+        ) from e
+    quota = os.environ.get("GOOGLE_CLOUD_QUOTA_PROJECT")
+    if quota and hasattr(creds, "with_quota_project"):
+        creds = creds.with_quota_project(quota)
+    return bigquery.Client(credentials=creds, project=BQ_PROJECT)
+
+
+def bigquery_healthcheck() -> dict:
+    """Cheap end-to-end probe: build a client, COUNT(*) the reservations table
+    (metadata-only, effectively free). NEVER raises — returns {ok, project,
+    detail}, on failure with an actionable hint. Used by `main.py bqcheck` and
+    the Update page's connection test, so auth problems are visible in seconds
+    instead of surfacing halfway through a refresh."""
+    try:
+        client = get_bigquery_client()
+        sql = f"SELECT COUNT(*) AS n FROM `{BQ_PROJECT}.{BQ_DATASET}.{BQ_TABLE}`"
+        n = int(list(client.query(sql).result(timeout=30))[0][0])
+        return {"ok": True, "project": client.project,
+                "detail": f"connected (project '{client.project}') — "
+                          f"{n:,} rows visible in {BQ_DATASET}.{BQ_TABLE}"}
+    except Exception as e:  # noqa: BLE001 — a health check must never crash the caller
+        msg = str(e)
+        low = msg.lower()
+        if isinstance(e, (ImportError, ModuleNotFoundError)):
+            hint = " → package missing: run `uv sync` (google-cloud-bigquery)."
+        elif "quota" in low or "userproject" in low or "user project" in low:
+            hint = (" → quota-project problem: run `gcloud auth application-default "
+                    f"set-quota-project {BQ_PROJECT}` or export GOOGLE_CLOUD_QUOTA_PROJECT.")
+        elif "default credentials" in low or "no google credentials" in low:
+            hint = " → not logged in: run `gcloud auth application-default login`."
+        elif "403" in msg or "permission" in low or "access denied" in low:
+            hint = (" → the account lacks BigQuery read permission on "
+                    f"'{BQ_PROJECT}' (needs roles/bigquery.jobUser + dataViewer).")
+        elif "timed out" in low or "timeout" in low or "deadline" in low:
+            hint = " → network problem: check VPN/firewall towards bigquery.googleapis.com."
+        else:
+            hint = ""
+        return {"ok": False, "project": None,
+                "detail": f"{type(e).__name__}: {msg[:400]}{hint}"}
 
 
 # Two cache files: raw (after PII strip + dtype clean) and post-cleaning
@@ -328,59 +380,27 @@ def clean_dtypes(df: pd.DataFrame) -> pd.DataFrame:
 # =============================================================================
 
 
-def _reservations_query(
-    client, *, arrival_from=None, arrival_to=None, limit: int | None = None
-):
-    """Build (sql, job_config, n_pii) for the reservations table.
-
-    ONE shared query builder so the full-history pull (slow path) and the 14-day
-    arrival window (fast path) issue the SAME base query with only a different date
-    filter — the "gemeinsame Basis-Query mit unterschiedlichen Datumsfiltern" from the
-    brief, so there is no second query definition to drift. PII is excluded at SQL level.
-
-    NOTE: the `arrival` column TYPE (DATE vs TIMESTAMP) is not recorded in
-    configs/reservations_schema.json — verify against the live schema. We bind TIMESTAMP
-    parameters; callers of the windowed path wrap this in a try/except that falls back to
-    the pandas cache, so a type mismatch degrades gracefully instead of breaking the page.
+def _reservations_query(client, *, limit: int | None = None):
+    """(sql, n_pii) for THE one reservations pull — full history, PII excluded
+    in SQL. There is deliberately no date-windowed variant anymore: the full
+    pull is cheap (~200k rows) and already contains the upcoming bookings, so
+    one query serves history AND scoring (no second query definition to drift).
     """
-    from google.cloud import bigquery  # type: ignore[import-untyped]
-
     table_ref = f"{BQ_PROJECT}.{BQ_DATASET}.{BQ_TABLE}"
     table_cols = {f.name for f in client.get_table(table_ref).schema}
     pii_present = [c for c in PII_COLUMNS if c in table_cols]
     except_clause = f" EXCEPT({', '.join(pii_present)})" if pii_present else ""
 
-    where: list[str] = []
-    params: list = []
-    if arrival_from is not None:
-        where.append("arrival >= @arrival_from")
-        params.append(
-            bigquery.ScalarQueryParameter("arrival_from", "TIMESTAMP", arrival_from)
-        )
-    if arrival_to is not None:
-        where.append("arrival < @arrival_to")
-        params.append(
-            bigquery.ScalarQueryParameter("arrival_to", "TIMESTAMP", arrival_to)
-        )
-
     sql = f"SELECT *{except_clause} FROM `{table_ref}`"
-    if where:
-        sql += "\nWHERE " + " AND ".join(where)
     if limit is not None:
         sql += f"\nLIMIT {int(limit)}"
-    job_config = bigquery.QueryJobConfig(query_parameters=params) if params else None
-    return sql, job_config, len(pii_present)
+    return sql, len(pii_present)
 
 
-def _query_bigquery(
-    limit: int | None = None, *, arrival_from=None, arrival_to=None
-) -> pd.DataFrame:
-    """Lazy-import BigQuery so this module is importable without it installed.
-
-    With no `arrival_from`/`arrival_to` this is the full-history pull (unchanged behaviour);
-    with a window it is the small, date-filtered fast-path query. Both go through the one
-    shared builder above.
-    """
+def _query_bigquery(limit: int | None = None) -> pd.DataFrame:
+    """Run the full-history reservations query. Fails LOUDLY: no cache fallback
+    here — callers that want the cache read it explicitly via load_reservations.
+    BigQuery imports lazily so the module works without the package installed."""
     try:
         from google.cloud import bigquery  # type: ignore[import-untyped]  # noqa: F401
     except ImportError as e:
@@ -391,22 +411,15 @@ def _query_bigquery(
         ) from e
 
     client = get_bigquery_client()
-    sql, job_config, n_pii = _reservations_query(
-        client, arrival_from=arrival_from, arrival_to=arrival_to, limit=limit
-    )
-    scope = (
-        "full history"
-        if arrival_from is None and arrival_to is None
-        else "arrival window"
-    )
+    sql, n_pii = _reservations_query(client, limit=limit)
     logger.info(
-        f"running BigQuery query ({scope}; {n_pii} PII columns excluded at SQL level)…"
+        f"running BigQuery query (full history; {n_pii} PII columns excluded at SQL level)…"
     )
 
     timeout_seconds = _get_bq_query_timeout_seconds()
     job = None
     try:
-        job = client.query(sql, job_config=job_config)
+        job = client.query(sql)
         query_job = job.result(timeout=timeout_seconds)
     except Exception as e:  # noqa: BLE001
         if job is not None:
@@ -419,61 +432,6 @@ def _query_bigquery(
         ) from e
 
     return _download_df(query_job)
-
-
-# =============================================================================
-# Fast path — reservations arriving within the next N days (time-critical)
-# =============================================================================
-def upcoming_window_bounds(
-    days: int = 14, today: pd.Timestamp | None = None
-) -> tuple[pd.Timestamp, pd.Timestamp]:
-    """[start, end) covering `days` days from `today`, INCLUDING today (UTC midnight).
-    Matches the Occupancy page's fixed 14-day forward window (WINDOW_DAYS)."""
-    t = today or pd.Timestamp.now("UTC").normalize()
-    return t, t + pd.Timedelta(days=days)
-
-
-def load_upcoming_window(
-    days: int = 14,
-    force_refresh: bool = True,
-    today: pd.Timestamp | None = None,
-    quiet: bool = False,
-) -> pd.DataFrame:
-    """FAST PATH: reservations arriving in the next `days` days (incl. today),
-    PII-stripped + dtype-cleaned — the small, time-critical set for immediate scoring.
-
-    `force_refresh=True` (default) attempts a DATE-FILTERED BigQuery pull (small = fast);
-    if BigQuery is unavailable OR the arrival filter fails (e.g. an unexpected column type),
-    it falls back to the cached parquet filtered in pandas, so the page never breaks. With
-    `force_refresh=False` it only reads the cache. Same shape as `load_reservations`.
-    """
-    if not quiet:
-        logging.basicConfig(level=logging.INFO, format="%(message)s")
-    start, end = upcoming_window_bounds(days, today=today)
-
-    if force_refresh:
-        try:
-            df = _query_bigquery(
-                arrival_from=start.to_pydatetime(), arrival_to=end.to_pydatetime()
-            )
-            df = clean_dtypes(strip_pii(df))
-            arr = pd.to_datetime(df["arrival"], utc=True, errors="coerce")
-            df = df[
-                (arr >= start) & (arr < end)
-            ].copy()  # defensive re-filter post-coercion
-            logger.info(
-                f"fast-path BigQuery window pull: {len(df):,} rows "
-                f"(arrival {start.date()}..{end.date()})"
-            )
-            return df
-        except Exception as e:  # noqa: BLE001 — never break the page; degrade to cache
-            logger.warning(
-                f"fast-path BigQuery window pull failed ({e}); using cache instead"
-            )
-
-    df = load_reservations(force_refresh=False, upcoming_only=False, quiet=quiet)
-    arr = pd.to_datetime(df["arrival"], utc=True, errors="coerce")
-    return df[(arr >= start) & (arr < end)].copy()
 
 
 def _validate_schema(df: pd.DataFrame) -> None:
