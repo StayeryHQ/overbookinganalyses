@@ -5,8 +5,6 @@
 
 from __future__ import annotations
 
-import dash_bootstrap_components as dbc
-
 from src import load_brand_config
 
 _brand = load_brand_config()
@@ -24,8 +22,8 @@ BLUE = _sup["blue"]
 PINK = _sup["pink"]
 PURPLE = _sup["purple"]
 
-# Risk-bucket -> colour (matches src.scoring bucket names).
-RISK_COLORS = {"low": GREEN, "uncertain": ORANGE, "high": RED}
+# Risk-bucket -> colour (matches src.scoring bucket names = the YAML risk scale).
+RISK_COLORS = {"low": GREEN, "medium": ORANGE, "high": RED}
 
 # Categorical series colours (brand order) for room-type lines etc.
 CATEGORICAL = [YELLOW, BLUE, GREEN, ORANGE, PINK, PURPLE, RED]
@@ -57,9 +55,13 @@ DMC_THEME = {
 }
 
 # ---- Stylesheets -----------------------------------------------------------
-# FLATLY = clean, light Bootstrap theme; brand accents are applied via inline
-# styles so we don't fight the theme. dbc icons for small UI affordances.
-EXTERNAL_STYLESHEETS = [dbc.themes.FLATLY, dbc.icons.BOOTSTRAP]
+# Plain CDN URLs — the dash-bootstrap-components PACKAGE is gone (dmc is the
+# component library), but the two stylesheets stay: FLATLY provides the base
+# CSS/utility classes some layouts use, bootstrap-icons the `bi bi-*` icons.
+EXTERNAL_STYLESHEETS = [
+    "https://cdn.jsdelivr.net/npm/bootswatch@5.3.3/dist/flatly/bootstrap.min.css",
+    "https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css",
+]
 
 # ---- Plotly defaults -------------------------------------------------------
 def brand_figure(fig):

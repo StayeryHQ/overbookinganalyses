@@ -8,13 +8,39 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 import yaml
 
 from .paths import brand_config_path
+
+
+# =============================================================================
+# Timestamps — stored in UTC everywhere, DISPLAYED in local time everywhere.
+# =============================================================================
+def local_timezone():
+    """The machine's local timezone (the app runs on the user's machine)."""
+    return datetime.now().astimezone().tzinfo
+
+
+def fmt_ts_local(value, fmt: str = "%b %d, %Y, %H:%M %Z") -> str | None:
+    """Human-readable timestamp in LOCAL time, e.g. 'Jul 13, 2026, 14:30 CEST'.
+
+    THE one display formatter for the app — never render raw UTC to users.
+    Accepts ISO strings / datetimes / pd.Timestamps; naive input is treated as
+    UTC (that is how everything is stored). Returns None if unparseable, so
+    callers can show 'unavailable' instead of a wrong time.
+    """
+    if value is None or value == "":
+        return None
+    ts = pd.to_datetime(value, utc=True, errors="coerce")
+    if pd.isna(ts):
+        return None
+    return ts.tz_convert(local_timezone()).strftime(fmt)
 
 # =============================================================================
 # Brand config / palette

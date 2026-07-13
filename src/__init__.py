@@ -12,10 +12,12 @@
 
 from __future__ import annotations
 
-# Data loading + PII handling
+# Data loading + PII handling + BigQuery access
 from .data_loader import (
     PII_COLUMNS,
     average_room_rate_by_property,
+    bigquery_healthcheck,
+    get_bigquery_client,
     load_clean_reservations,
     load_property_performance,
     load_reservations,
@@ -55,33 +57,34 @@ from .paths import (
     tables_dir,
 )
 
-# Daily scoring
+# Daily scoring + the combined data update
 from .scoring import (
     DEFAULT_MODEL,
     FALLBACK_MODEL,
-    HIGH_THR,
-    LOW_THR,
     best_model,
     bucketize,
     cancel_proba,
     list_available_models,
     load_model,
     model_feature_lists,
+    refresh_and_score,
     resolve_model,
     score_reservations,
     score_upcoming,
 )
 
-# Styling + brand + locations
+# Styling + brand + locations + local-time display
 from .utils import (
     apply_stayery_style,
     benchmark_overbooking_allowance,
     categorical_palette,
     color,
     diverging_triplet,
+    fmt_ts_local,
     load_brand_config,
     load_risk_buckets,
     load_room_type_capacity,
+    local_timezone,
     risk_label,
 )
 
@@ -89,6 +92,8 @@ __all__ = [
     # data_loader
     "PII_COLUMNS",
     "average_room_rate_by_property",
+    "bigquery_healthcheck",
+    "get_bigquery_client",
     "load_clean_reservations",
     "load_property_performance",
     "load_reservations",
@@ -120,14 +125,13 @@ __all__ = [
     # scoring
     "DEFAULT_MODEL",
     "FALLBACK_MODEL",
-    "HIGH_THR",
-    "LOW_THR",
     "best_model",
     "bucketize",
     "cancel_proba",
     "list_available_models",
     "load_model",
     "model_feature_lists",
+    "refresh_and_score",
     "resolve_model",
     "score_reservations",
     "score_upcoming",
@@ -137,8 +141,10 @@ __all__ = [
     "categorical_palette",
     "color",
     "diverging_triplet",
+    "fmt_ts_local",
     "load_brand_config",
     "load_risk_buckets",
     "load_room_type_capacity",
+    "local_timezone",
     "risk_label",
 ]

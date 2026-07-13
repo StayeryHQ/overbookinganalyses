@@ -19,7 +19,9 @@ from src import scoring as sc
 
 # ---- Constants -------------------------------------------------------------
 WINDOW_DAYS = 14                      # fixed forward-looking window for this page
-DEFAULT_RISK_THRESHOLD = 0.50         # KPI "high-risk bookings" default cut (UI-editable)
+# KPI "high-risk" default = the 'high' threshold of THE one risk scale
+# (configs/risk_buckets.yaml) — same scale as buckets and table labels.
+DEFAULT_RISK_THRESHOLD = float(src.load_risk_buckets().get("high_min", 0.70))
 RAW_CACHE_FILE = "reservations_raw_no_pii.parquet"
 SCORED_CACHE_FILE = "scored_upcoming.parquet"
 CLEAN_META_FILE = "reservations_clean_meta.json"
@@ -44,14 +46,9 @@ def _drop_cancelled(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _fmt_ts(value) -> str | None:
-    """Human-readable timestamp: 'Jul 02, 2026, 14:30' (no milliseconds, no offset).
-    Parses ISO strings / datetimes via pandas. Returns None if unparseable/empty."""
-    if value is None or value == "":
-        return None
-    ts = pd.to_datetime(value, utc=True, errors="coerce")
-    if pd.isna(ts):
-        return None
-    return ts.strftime("%b %d, %Y, %H:%M")
+    """LOCAL-time display string ('Jul 13, 2026, 14:30 CEST') via the one shared
+    formatter src.fmt_ts_local; storage stays UTC. None if unparseable."""
+    return src.fmt_ts_local(value)
 
 
 # ---- Time window -----------------------------------------------------------
@@ -348,40 +345,77 @@ def arrivals_window(scored: pd.DataFrame, properties: list[str] | None = None,
 # ---- Heatmap grid: one row per (property, day) -----------------------------
 def heatmap_grid(properties: list[str] | None = None, threshold: float | None = None,
                  today: pd.Timestamp | None = None) -> pd.DataFrame:
-    """Per (property_name, day) over the 14-day window:
-    occupancy_pct (NaN if capacity unknown), occupied_units, arrivals, departures,
-    pred_cancels (scored arrivals with cancel_proba >= threshold). Cancelled bookings
-    are already excluded (reservations filtered here, scored filtered in load_scored).
+    """Per (property_name, day) over the 14-day window: occupancy_pct (NaN if
+    capacity unknown), occupied_units, arrivals, departures, pred_cancels
+    (scored arrivals with cancel_proba >= threshold).
+
+    Vectorised: groupby counts + a per-property searchsorted for the occupied
+    count (occupied on night d = #(arrivals <= d) − #(departures <= d) among
+    occupying stays), instead of the old pandas-filter-per-cell double loop.
     """
+    import numpy as np
+
     thr = DEFAULT_RISK_THRESHOLD if threshold is None else float(threshold)
     start, end = window_bounds(today)
     days = pd.date_range(start, end - pd.Timedelta(days=1), freq="D", tz="UTC")
     props = properties or property_list()
-
-    res = _drop_cancelled(_reservations_cached())
-    scored = load_scored()
     caps = property_capacity()
 
-    rows = []
-    for prop in props:
-        sub = res[res["property_name"] == prop] if not res.empty else res
-        a = pd.to_datetime(sub["arrival"], utc=True).dt.normalize() if not sub.empty else pd.Series([], dtype="datetime64[ns, UTC]")
-        d = pd.to_datetime(sub["departure"], utc=True).dt.normalize() if not sub.empty else pd.Series([], dtype="datetime64[ns, UTC]")
-        occ_ok = sub["status"].isin(OCCUPYING_STATUSES) if not sub.empty else pd.Series([], dtype=bool)
-        sc_sub = scored[scored["property_name"] == prop] if not scored.empty else scored
-        sc_arr = (pd.to_datetime(sc_sub["arrival"], utc=True).dt.normalize()
-                  if not sc_sub.empty else None)
-        sc_p = (pd.to_numeric(sc_sub["cancel_proba"], errors="coerce")
-                if not sc_sub.empty else None)
-        cap = caps.get(prop)
-        for day in days:
-            arrivals = int((a == day).sum()) if len(a) else 0
-            departures = int((d == day).sum()) if len(d) else 0
-            occupied = int(((a <= day) & (d > day) & occ_ok).sum()) if len(a) else 0
-            occ_pct = (round(occupied / cap * 100, 1) if cap else float("nan"))
-            pred = int(((sc_arr == day) & (sc_p >= thr)).sum()) if sc_arr is not None else 0
-            rows.append({"property_name": prop, "day": day.date().isoformat(),
-                         "occupancy_pct": occ_pct, "occupied_units": occupied,
-                         "capacity": cap, "arrivals": arrivals,
-                         "departures": departures, "pred_cancels": pred})
-    return pd.DataFrame(rows)
+    res = _drop_cancelled(_reservations_cached())
+    if not res.empty:
+        res = res[res["property_name"].isin(props)]
+    scored = load_scored()
+    if not scored.empty and "property_name" in scored.columns:
+        scored = scored[scored["property_name"].isin(props)]
+
+    # Base grid: every (property, day), keeping the given property order.
+    grid = pd.DataFrame([(p, d) for p in props for d in days],
+                        columns=["property_name", "_day"])
+
+    def _daily_count(df: pd.DataFrame, day_values, name: str) -> pd.DataFrame:
+        return (pd.DataFrame({"property_name": df["property_name"].to_numpy(),
+                              "_day": day_values})
+                .groupby(["property_name", "_day"]).size()
+                .rename(name).reset_index())
+
+    parts: list[pd.DataFrame] = []
+    if not res.empty:
+        arr = pd.to_datetime(res["arrival"], utc=True).dt.normalize()
+        dep = pd.to_datetime(res["departure"], utc=True).dt.normalize()
+        parts.append(_daily_count(res, arr.to_numpy(), "arrivals"))
+        parts.append(_daily_count(res, dep.to_numpy(), "departures"))
+
+        occ = res[res["status"].isin(OCCUPYING_STATUSES)]
+        if not occ.empty:
+            a_all = pd.to_datetime(occ["arrival"], utc=True).dt.normalize()
+            d_all = pd.to_datetime(occ["departure"], utc=True).dt.normalize()
+            day_np = days.to_numpy()
+            occ_parts = []
+            for prop, idx in occ.groupby("property_name").groups.items():
+                a = np.sort(a_all.loc[idx].to_numpy())
+                d = np.sort(d_all.loc[idx].to_numpy())
+                occupied = (np.searchsorted(a, day_np, side="right")
+                            - np.searchsorted(d, day_np, side="right"))
+                occ_parts.append(pd.DataFrame({"property_name": prop, "_day": days,
+                                               "occupied_units": occupied}))
+            parts.append(pd.concat(occ_parts, ignore_index=True))
+
+    if not scored.empty and "cancel_proba" in scored.columns:
+        hot = scored[pd.to_numeric(scored["cancel_proba"], errors="coerce") >= thr]
+        if not hot.empty:
+            s_arr = pd.to_datetime(hot["arrival"], utc=True).dt.normalize()
+            parts.append(_daily_count(hot, s_arr.to_numpy(), "pred_cancels"))
+
+    for p in parts:
+        grid = grid.merge(p, on=["property_name", "_day"], how="left")
+    for col in ("arrivals", "departures", "occupied_units", "pred_cancels"):
+        grid[col] = (pd.to_numeric(grid[col], errors="coerce").fillna(0).astype(int)
+                     if col in grid.columns else 0)
+
+    grid["capacity"] = grid["property_name"].map(caps)
+    grid["occupancy_pct"] = np.where(
+        grid["capacity"].notna() & (grid["capacity"] > 0),
+        np.round(grid["occupied_units"] / grid["capacity"] * 100, 1), float("nan"))
+    grid["day"] = grid["_day"].dt.date.astype(str)
+    return grid[["property_name", "day", "occupancy_pct", "occupied_units",
+                 "capacity", "arrivals", "departures", "pred_cancels"]]

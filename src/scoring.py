@@ -4,7 +4,7 @@
 # Public entry points are score_upcoming() / score_reservations(). Both build
 # the roster features, score through the one adapter cancel_proba() (works for
 # the static pipelines AND the hazard model) and bucket each booking into
-# low / uncertain / high risk.
+# low / medium / high risk (thresholds: configs/risk_buckets.yaml).
 #
 # Feature engineering must match training: build_features() mirrors notebook 00
 # §3.0, and the feature LISTS always come from Data/feature_roster.json. If you
@@ -48,13 +48,11 @@ def analytic_threshold(c_walk: float = COST_WALK, c_empty: float = COST_EMPTY) -
     return c_walk / (c_walk + c_empty)
 
 
-# ---- Risk bucket fallbacks --------------------------------------------------
-# serving_thresholds() derives the real cut points per model (high = cost-optimal
-# threshold, low = observed base rate). These constants are only the last-resort
-# fallbacks when neither validation predictions nor the cleaned-data metadata
-# exist: LOW_THR ~ the historical cancel rate, HIGH_THR = the analytic threshold.
-LOW_THR:  Final[float] = 0.20
-HIGH_THR: Final[float] = analytic_threshold()
+# NOTE on thresholds: the app uses exactly TWO kinds and they must not be mixed.
+#   * RISK SCALE  — configs/risk_buckets.yaml (low_max / high_min) drives every
+#     low/medium/high bucket AND label in the UI. One scale, one config file.
+#   * DECISION    — the cost-optimal threshold (operating_threshold) drives only
+#     the yes/no column `pred_cancel` and the cost analyses.
 
 
 # ---- Model registry -------------------------------------------------------
@@ -282,34 +280,6 @@ def operating_threshold(name: str, c_walk: float = COST_WALK,
     return cost_optimal_threshold(name, c_walk, c_empty)
 
 
-def _clean_meta_base_rate() -> float | None:
-    """Observed cancel rate from Data/reservations_clean_meta.json, or None."""
-    p = data_dir() / "reservations_clean_meta.json"
-    if not p.exists():
-        return None
-    try:
-        share = json.loads(p.read_text()).get("positive_share")
-        return float(share) if share is not None else None
-    except Exception:  # noqa: BLE001 — unreadable metadata is not worth crashing for
-        return None
-
-
-def serving_thresholds(name: str, c_walk: float = COST_WALK,
-                       c_empty: float = COST_EMPTY) -> tuple[float, float]:
-    """(low, high) risk-bucket cut points for a model.
-
-    high = the cost-optimal decision threshold (from persisted validation
-    predictions, else the analytic value). low = the observed base rate
-    (validation predictions -> cleaned-data metadata -> LOW_THR). Everything
-    between "above-average risk" and "act on it" lands in 'uncertain'.
-    """
-    high = operating_threshold(name, c_walk, c_empty)
-    v = _val_predictions(name)
-    if v is not None:
-        base = float(v["y_true"].mean())
-    else:
-        base = _clean_meta_base_rate() or LOW_THR
-    return min(base, high), high
 
 
 # =============================================================================
@@ -455,24 +425,30 @@ def apply_scoring_bounds(df: pd.DataFrame) -> pd.DataFrame:
 # Scoring
 # =============================================================================
 
-RiskBucket = Literal["low", "uncertain", "high"]
+RiskBucket = Literal["low", "medium", "high"]
 
 
 def bucketize(prob: float | np.ndarray,
-              low_thr: float = LOW_THR, high_thr: float = HIGH_THR) -> np.ndarray | str:
-    """Map probability -> 'low' / 'uncertain' / 'high'.
+              low_max: float | None = None,
+              high_min: float | None = None) -> np.ndarray | str:
+    """Map probability -> 'low' / 'medium' / 'high' using THE one risk scale
+    from configs/risk_buckets.yaml (the same thresholds behind the UI's
+    Low/Medium/High label — src.utils.risk_label). Override args are for tests.
 
     Scalars return a str, arrays a plain numpy array — deliberately NOT an
     indexed Series: assigning a fresh-index Series to a filtered frame once
-    silently produced all-<NA> buckets. Pass thresholds from serving_thresholds().
+    silently produced all-<NA> buckets.
     """
+    from .utils import load_risk_buckets
+    cfg = load_risk_buckets()
+    lo = float(cfg.get("low_max", 0.20) if low_max is None else low_max)
+    hi = float(cfg.get("high_min", 0.70) if high_min is None else high_min)
     if isinstance(prob, (int, float, np.floating)):
-        if prob >= high_thr: return "high"
-        if prob >= low_thr:  return "uncertain"
+        if prob >= hi: return "high"
+        if prob >= lo: return "medium"
         return "low"
     p = np.asarray(prob)
-    return np.where(p >= high_thr, "high",
-           np.where(p >= low_thr,  "uncertain", "low"))
+    return np.where(p >= hi, "high", np.where(p >= lo, "medium", "low"))
 
 
 # ---- Which model do we score with? ----------------------------------------
@@ -543,7 +519,31 @@ def cancel_proba(model_name: str, feat: pd.DataFrame) -> np.ndarray:
             f"cancel_proba({model_name}): build_features did not produce roster "
             f"features {missing}. build_features must mirror 00_data_audit's engineering."
         )
-    return pipeline.predict_proba(feat[needed])[:, 1]
+    p = pipeline.predict_proba(feat[needed])[:, 1]
+    return _apply_recalibration(model_name, p)
+
+
+def _apply_recalibration(name: str, p: np.ndarray) -> np.ndarray:
+    """Decision-time recalibration for STATIC models, if the artifact exists.
+
+    The pipeline is isotonic-calibrated on the RESOLVED population (base ~20%),
+    but consumed on the DECISION-TIME population ("still open at the decision
+    date", base ~12%) — survivorship selection makes it overpredict there ~2x.
+    training.retrain() fits a second isotonic map on the pooled decision-time
+    walk-forward predictions (Data/NN_<name>_calibration.joblib); applying it
+    here puts the served probabilities on the population they are used for.
+    Monotone map -> ranking is preserved. Without the artifact: raw pass-through.
+    """
+    path = data_dir() / MODEL_REGISTRY[name]["joblib"].replace("_model.joblib",
+                                                               "_calibration.joblib")
+    if not path.exists():
+        return p
+    try:
+        iso = joblib.load(path)
+        return np.asarray(iso.predict(p), dtype=float)
+    except Exception as e:  # noqa: BLE001 — a broken map must not break scoring
+        logger.warning("recalibration map for %s unreadable (%s); serving raw probs", name, e)
+        return p
 
 
 # ---- Public scoring entry point --------------------------------------------
@@ -589,10 +589,11 @@ def score_reservations(
         If given, also write the result to Data/<save_as> as parquet.
     """
     chosen = resolve_model(model_name)
-    low_thr, high_thr = serving_thresholds(chosen)
-    if threshold is not None:                       # manual override from the app
-        high_thr = float(threshold)
-        low_thr = min(low_thr, high_thr)
+    # ONE risk scale: buckets always come from configs/risk_buckets.yaml. The
+    # cost-optimal threshold feeds ONLY the yes/no decision column pred_cancel
+    # (manual `threshold` overrides it, e.g. from a UI slider).
+    decision_thr = (float(threshold) if threshold is not None
+                    else operating_threshold(chosen))
 
     feat = build_features(df, today=today)
     if apply_bounds:
@@ -604,9 +605,9 @@ def score_reservations(
     proba = cancel_proba(chosen, feat)
     feat = feat.copy()
     feat["cancel_proba"]     = proba
-    feat["pred_cancel"]      = (proba >= high_thr).astype(int)
-    feat["cancel_threshold"] = high_thr
-    feat["risk_bucket"]      = bucketize(proba, low_thr, high_thr)  # ndarray -> position-safe
+    feat["pred_cancel"]      = (proba >= decision_thr).astype(int)
+    feat["cancel_threshold"] = decision_thr
+    feat["risk_bucket"]      = bucketize(proba)     # ndarray -> position-safe
     feat["model_used"]       = chosen
     feat["scored_at"]        = pd.Timestamp.utcnow()
 
@@ -640,5 +641,58 @@ def score_upcoming(
         df, model_name=model_name, threshold=threshold,
         save_as="scored_upcoming.parquet" if save else None,
     )
+
+
+def refresh_and_score(model_name: str | None = None, *, days: int = 14,
+                      threshold: float | None = None, progress=None) -> dict:
+    """THE combined data update: one strict BigQuery pull per table, then score
+    the next `days` days from the fresh data.
+
+    Replaces the old fast(window-query)/slow(full-refresh) split — the full pull
+    already contains the upcoming bookings, so ONE query per table serves both
+    the history views and the scoring. There is deliberately NO cache fallback:
+    if BigQuery fails, this raises and the data is explicitly NOT fresh.
+
+    `progress(msg, frac)` is optional (drives job progress bars). Returns a
+    summary incl. `data_max_created` (how fresh the pulled data actually is).
+    """
+    from .data_loader import load_property_performance, load_reservations
+
+    def _p(msg: str, frac: float) -> None:
+        if progress:
+            progress(msg, frac)
+
+    chosen = resolve_model(model_name)
+    _p("BigQuery: pulling full reservations history…", 0.05)
+    resv = load_reservations(force_refresh=True, quiet=True)
+    if resv.empty:
+        raise RuntimeError("BigQuery returned 0 reservations — refusing to overwrite the cache.")
+
+    _p("BigQuery: pulling property performance…", 0.45)
+    perf = load_property_performance(force_refresh=True, quiet=True)
+
+    _p(f"Scoring the next {days} days with '{chosen}'…", 0.60)
+    start = pd.Timestamp.now("UTC").normalize()
+    arr = pd.to_datetime(resv["arrival"], utc=True, errors="coerce")
+    window = resv[(arr >= start) & (arr < start + pd.Timedelta(days=days))].copy()
+    if "status" in window.columns:
+        window = window[window["status"].astype("string") != "Canceled"].copy()
+    scored = score_reservations(window, model_name=chosen, threshold=threshold,
+                                save_as="scored_upcoming.parquet")
+
+    _p("Done.", 1.0)
+    created = pd.to_datetime(resv.get("created"), utc=True, errors="coerce")
+    rb = scored.get("risk_bucket")
+    return {
+        "model_used": chosen,
+        "reservations_rows": int(len(resv)),
+        "perf_rows": int(len(perf)),
+        "scored_rows": int(len(scored)),
+        "buckets": ({b: int((rb == b).sum()) for b in ("high", "medium", "low")}
+                    if rb is not None else {"high": 0, "medium": 0, "low": 0}),
+        "threshold": float(threshold) if threshold is not None else None,
+        "data_max_created": str(created.max()) if created.notna().any() else None,
+        "finished_utc": pd.Timestamp.utcnow().isoformat(),
+    }
 
 
