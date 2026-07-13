@@ -96,7 +96,7 @@ def add_country_region(
 # right group. The roster's `excluded` audit map is derived from this dict.
 FEATURE_EXCLUSIONS: Final[dict[str, list[str]]] = {
     "target or split metadata (never a feature)": [
-        "status", "is_cancelled",
+        "status", "is_cancelled", "is_canceled_by_arrival",
         "is_temporal_test", "is_temporal_val", "temporal_split",
         "cancel_days_before_arrival", "outcome_known_date",
     ],

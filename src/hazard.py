@@ -82,7 +82,7 @@ def add_event_columns(clean: pd.DataFrame) -> pd.DataFrame:
     arr = pd.to_datetime(out["arrival"], utc=True, errors="coerce")
     cre = pd.to_datetime(out["created"], utc=True, errors="coerce")
     out["lead"] = (arr - cre) / pd.Timedelta(days=1)
-    status = pd.to_numeric(out["status"], errors="coerce").fillna(0).astype(int)
+    status = wf.target_series(out)
     cdba = pd.to_numeric(out.get("cancel_days_before_arrival"), errors="coerce")
     # Event = pre-arrival OR same-day cancel (cdba >= 0), matching 00's target.
     # Clip to a tiny positive so an exactly-on-arrival cancel (cdba == 0) lands in
@@ -452,7 +452,7 @@ def walk_forward_eval_hazard(*, n_folds: int = 6, horizon_days: int = 14, step_d
         teb[AXIS] = np.minimum(teb["lead"], horizon_days).clip(lower=1)
         p_haz = survival_cancel_proba(teb, hazard_fn(hz), hz["num"], hz["cat"],
                                       hz["cat_dtypes"], snaps=hz.get("snap"))
-        y = (pd.to_numeric(teb["status"], errors="coerce").fillna(0).astype(int).to_numpy() == 1)
+        y = (wf.target_series(teb).to_numpy() == 1)
         row = {"fold": f.k, "S": str(S.date()), "n_test": int(len(te)),
                "auc_haz": roc_auc_score(y, p_haz) if len(set(y)) > 1 else float("nan"),
                "ap_haz": average_precision_score(y, p_haz),
@@ -558,7 +558,7 @@ def _wf_hazard_folds(n_folds, horizon_days, step_days, seed):
         te[AXIS] = np.minimum(te["lead"], horizon_days).clip(lower=1)     # decision horizon d
         te["p"] = survival_cancel_proba(te, hazard_fn(hz), hz["num"], hz["cat"],
                                         hz["cat_dtypes"], snaps=hz.get("snap"))
-        te["y"] = (pd.to_numeric(te["status"], errors="coerce").fillna(0).astype(int).to_numpy() == 1).astype(int)
+        te["y"] = (wf.target_series(te).to_numpy() == 1).astype(int)
         yield f, te
 
 

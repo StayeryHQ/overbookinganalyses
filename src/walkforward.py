@@ -50,6 +50,21 @@ CANCEL_DAYS: Final[str] = "cancel_days_before_arrival"
 CANCEL_TIME: Final[str] = "cancellationTime"
 KNOWN_COL: Final[str] = "outcome_known_date"
 
+# Target column, by preference. `is_canceled_by_arrival` is the readable alias
+# notebook 00 writes alongside the historically-named `status` (which is a STRING
+# in the raw cache but the encoded 0/1 target in the clean parquet — the
+# project's most common stumbling block, hence the alias).
+TARGET_CANDIDATES: Final[tuple[str, ...]] = ("is_canceled_by_arrival", "is_cancelled", "status")
+
+
+def target_series(df: pd.DataFrame) -> pd.Series:
+    """The 0/1 cancel-by-arrival target from CLEAN data, whatever it is called.
+    THE one target accessor — training, hazard and eval all use it."""
+    for c in TARGET_CANDIDATES:
+        if c in df.columns:
+            return pd.to_numeric(df[c], errors="coerce").fillna(0).astype(int)
+    raise KeyError(f"no target column found (looked for {TARGET_CANDIDATES})")
+
 
 # =============================================================================
 # 1. The point-in-time primitive: when did each booking's label become known?
