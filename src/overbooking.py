@@ -1,33 +1,20 @@
 # ---------------------------------------------------------------------------
-# src/overbooking.py
-# Cost-optimal overbooking allowance from the model's per-booking cancel
-# probabilities + the Revenue Manager's cost parameters.
+# Cost-optimal overbooking allowance — the classic NEWSVENDOR problem, per
+# arrival night and property.
 #
-# The decision is a classic NEWSVENDOR / critical-fractile problem, per arrival
-# night, for one property:
+#   X = rooms freed by cancellations that night. With per-booking cancel
+#   probabilities p_i (independence assumed): mean mu = Σ p_i, variance
+#   sigma² = Σ p_i(1-p_i) — Poisson-binomial, Normal approximation is fine at
+#   these counts. Choose the allowance b (rooms sold above capacity):
+#     X > b -> rooms sit empty,  cost COST_EMPTY each ("underage" Cu)
+#     X < b -> guests get walked, cost COST_WALK each ("overage"  Co)
+#   Optimum: smallest b with P(X <= b) >= cr, where cr = Cu / (Cu + Co).
+#   Normal approx: b* = mu + z·sigma, z = Phi^-1(cr); round, floor at 0.
 #
-#   * Let X = number of bookings that free up (cancel at/before arrival) for a
-#     given arrival night. Under independence, X is Poisson-binomial with
-#         mean  mu    = Σ p_i            (expected freed rooms)
-#         var   sigma^2 = Σ p_i(1 - p_i) (see src.hazard.per_night_table)
-#     We use the Normal approximation X ~ N(mu, sigma^2) (fine for the room counts
-#     per night here; the app also surfaces the raw mu so the RM sees the basis).
-#   * We choose an overbooking allowance b (rooms sold ABOVE physical capacity).
-#       - If X > b  -> we under-overbooked: (X - b) rooms sit empty. Cost per room
-#         = COST_EMPTY  (the "underage" cost Cu).
-#       - If X < b  -> we over-overbooked: (b - X) guests get walked. Cost per
-#         guest = COST_WALK (the "overage" cost Co).
-#   * Newsvendor optimum: pick the smallest b with P(X <= b) >= critical ratio
-#         cr = Cu / (Cu + Co) = COST_EMPTY / (COST_EMPTY + COST_WALK)
-#     Normal approx: b* = mu + z * sigma,  z = Phi^-1(cr),  then round, floor at 0.
-#
-# Because walking a guest is normally MUCH more expensive than an empty room,
-# cr is small, z is negative, and b* < mu -> the tool recommends overbooking
-# CONSERVATIVELY (well below the expected number of cancellations). The
-# "high-demand period" toggle scales COST_WALK up by a configurable multiplier,
-# which pushes b* down further (walk even more cautiously when rooms are scarce).
-#
-# This module is pure numpy/pandas + math and is unit-testable without the model.
+# Walking costs far more than an empty room, so cr is small, z negative and b*
+# sits WELL BELOW the expected cancellations — deliberately conservative. The
+# high-demand toggle scales COST_WALK up, pushing b* down further.
+# Pure numpy/math — unit-testable without the models.
 # ---------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -43,38 +30,12 @@ import pandas as pd
 DEFAULT_HIGH_DEMAND_MULTIPLIER: Final[float] = 1.5
 
 
-# ---------------------------------------------------------------------------
-# Inverse standard-normal CDF (Phi^-1). Uses scipy when present (it is, via
-# scikit-learn), else Peter Acklam's rational approximation so this module never
-# hard-depends on scipy.
-# ---------------------------------------------------------------------------
 def _norm_ppf(q: float) -> float:
+    """Inverse standard-normal CDF (Phi^-1), clamped away from 0/1.
+    scipy is always installed (scikit-learn depends on it), so no fallback."""
+    from scipy.special import ndtri
     q = min(max(float(q), 1e-9), 1 - 1e-9)
-    try:
-        from scipy.special import ndtri  # type: ignore
-        return float(ndtri(q))
-    except Exception:  # noqa: BLE001 — scipy missing: fall back to Acklam (1985)
-        a = [-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02,
-             1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00]
-        b = [-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02,
-             6.680131188771972e+01, -1.328068155288572e+01]
-        c = [-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00,
-             -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00]
-        d = [7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00,
-             3.754408661907416e+00]
-        plow, phigh = 0.02425, 1 - 0.02425
-        if q < plow:
-            t = math.sqrt(-2 * math.log(q))
-            return (((((c[0]*t+c[1])*t+c[2])*t+c[3])*t+c[4])*t+c[5]) / \
-                   ((((d[0]*t+d[1])*t+d[2])*t+d[3])*t+1)
-        if q > phigh:
-            t = math.sqrt(-2 * math.log(1 - q))
-            return -(((((c[0]*t+c[1])*t+c[2])*t+c[3])*t+c[4])*t+c[5]) / \
-                    ((((d[0]*t+d[1])*t+d[2])*t+d[3])*t+1)
-        t = q - 0.5
-        r = t * t
-        return (((((a[0]*r+a[1])*r+a[2])*r+a[3])*r+a[4])*r+a[5]) * t / \
-               (((((b[0]*r+b[1])*r+b[2])*r+b[3])*r+b[4])*r+1)
+    return float(ndtri(q))
 
 
 def critical_ratio(cost_empty: float, cost_walk: float) -> float:

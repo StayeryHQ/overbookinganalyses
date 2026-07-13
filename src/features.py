@@ -1,19 +1,12 @@
 # ---------------------------------------------------------------------------
-# Shared feature engineering that must be identical in training and serving.
+# Shared feature engineering — identical in training and serving.
 #
-# Two responsibilities only:
-#   1. Stateless transforms that train AND serve must apply identically
-#      (`country_to_region` / `add_country_region`).
-#   2. A *generator* + *loader* for the feature roster.
+# Two jobs: (1) stateless transforms both sides apply the same way
+# (country -> region), (2) generator + loader for the feature roster.
 #
-# The decision decision about which columns are model features is made
-#   at the end of `notebooks/00_data_audit.ipynb`, based on the full audit, and
-#   persisted to `Data/feature_roster.json`. Every notebook and the scoring
-#   module load that artifact via `load_feature_roster()`
-#
-#   The exclusion taxonomy (`FEATURE_EXCLUSIONS`) below is the SINGLE source of
-#   truth for which columns are NOT model features and why; `model_feature_roster`
-#   reads it. 00 just calls the generator — it no longer carries its own blocklist.
+# WHICH columns are model features is decided once, at the end of notebook 00,
+# and persisted to Data/feature_roster.json — everything loads that artifact.
+# FEATURE_EXCLUSIONS below is the single list of what is NOT a feature and why.
 # ---------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -29,12 +22,9 @@ import pandas as pd
 COUNTRY_CODE_COL: Final[str] = "primaryGuest_address_countryCode"
 REGION_COL:       Final[str] = "guest_country_region"
 
-# Taxonomy ------------------------------------------------------------------
-# DACH kept as explicit single-country levels. GB is a large, behaviourally
-# distinct market post-Brexit (higher cancel than DACH). Everything else in the
-# EU/EEA collapses to EU_other. Long tail (incl. US and all overseas) to
-# RoW; missing/blank codes to Unknown. (Region is built for DIAGNOSTICS only -
-# it is excluded from the model roster, see module docstring.)
+# Region taxonomy: DE/AT/CH explicit, GB separate (distinct market, cancels more
+# than DACH), rest of EU/EEA -> EU_other, everything else -> RoW, blank -> Unknown.
+# Diagnostics only — the region column is excluded from the model roster.
 
 DACH: Final[frozenset[str]] = frozenset({"DE", "AT", "CH"})
 EU_EEA: Final[frozenset[str]] = frozenset({
@@ -101,11 +91,9 @@ def add_country_region(
 # ---------------------------------------------------------------------------
 # Roster GENERATOR (used by 00 to write Data/feature_roster.json)
 # ---------------------------------------------------------------------------
-# FEATURE_EXCLUSIONS is the ONE place that says which clean-parquet columns are
-# NOT model features, grouped by REASON. `reason -> [columns]`. Everything else
-# in the cleaned frame becomes a feature automatically (blocklist logic), so a
-# newly-kept column must be added to the right group here to stay out.
-# The roster's `excluded` audit map is derived from this — no second list to drift.
+# Blocklist logic: every clean-parquet column becomes a model feature UNLESS it
+# is listed here, grouped by reason. To keep a new column out, add it to the
+# right group. The roster's `excluded` audit map is derived from this dict.
 FEATURE_EXCLUSIONS: Final[dict[str, list[str]]] = {
     "target or split metadata (never a feature)": [
         "status", "is_cancelled",
@@ -140,10 +128,6 @@ FEATURE_EXCLUSIONS: Final[dict[str, list[str]]] = {
 def excluded_columns() -> dict[str, str]:
     """Flatten FEATURE_EXCLUSIONS to `{column: reason}` — the roster audit trail."""
     return {col: reason for reason, cols in FEATURE_EXCLUSIONS.items() for col in cols}
-
-
-# Backwards-compatible flat view (older call sites import this name).
-NON_FEATURE_COLS: Final[frozenset[str]] = frozenset(excluded_columns())
 
 
 def model_feature_roster(df: pd.DataFrame, *, non_features=None, exclude=(), max_card: int = 100):
