@@ -27,6 +27,6 @@ documentation
 reports/figures
 reports/tables
 reports
-
+!reports/tables/**/model_card.json
 
 .dash_cache/
