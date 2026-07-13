@@ -25,14 +25,20 @@ gcloud auth application-default login
 `src/data_loader.py::get_bigquery_client()` builds the one shared client (plain
 google-cloud-bigquery SDK, no custom REST calls):
 
-1. `GCP_SERVICE_ACCOUNT_JSON_FILE` — path to a service-account key file (recommended
-   for servers/CI; requests the BigQuery + Drive-readonly scopes).
+1. `GCP_SERVICE_ACCOUNT_JSON_FILE` — path to a service-account key file.
 2. `GOOGLE_APPLICATION_CREDENTIALS` — the standard Google env var, handled the same way.
-3. gcloud ADC (`gcloud auth application-default login`) — local dev; no scopes enforced.
+3. gcloud ADC (`gcloud auth application-default login`) — local dev.
 
-All paths pin the GCP project (`stayery-analytics`), so an ADC login without a default
-project still works. Result downloads use the plain SDK path by default; set
-`BQ_USE_STORAGE_API=1` to opt into the faster BigQuery Storage API where reachable.
+**Job project ≠ data project.** Queries reference the fully-qualified
+`stayery-analytics.reporting.*` tables, so your account only needs *read* access
+there (`roles/bigquery.dataViewer`). The query **jobs** run in your OWN project
+(the ADC default/quota project, or `BQ_BILLING_PROJECT`), where you need job-creation
+rights. Never point the job project at `stayery-analytics` unless you actually have
+`serviceusage.services.use` there — the resulting 403 is the classic failure.
+
+Diagnose everything with `uv run python main.py bqcheck` (or the "Test connection"
+button on the Update page). Downloads use the plain SDK path by default; set
+`BQ_USE_STORAGE_API=1` to opt into the faster Storage API where reachable.
 
 That's it. `uv sync` reads `pyproject.toml`, creates `.venv/`, and installs everything pinned in `uv.lock`. Re-run `uv sync` any time pyproject.toml changes.
 

@@ -87,30 +87,32 @@ BQ_DATASET: Final[str] = "reporting"
 BQ_TABLE: Final[str] = "reservations"
 
 # ---- BigQuery client (the ONE construction point) ---------------------------
-# Scopes are requested only for SERVICE-ACCOUNT key files. SAs are not subject to
-# the user-consent block, so the extra Drive scope lets them read Drive/Sheet-backed
-# external tables too (none in this project today — harmless and future-proof).
-# The local gcloud ADC path enforces NO scopes; it uses whatever was granted at login.
+# THE key insight (learned the hard way): the JOB project and the DATA project
+# are different things. Queries reference fully-qualified tables
+# (`stayery-analytics.reporting.…`), so reading only needs dataViewer THERE —
+# but the query JOB runs in the client's own project, where the caller needs
+# job-creation rights. Pinning the job project to the data project caused
+# `403 … serviceusage.services.use` for user accounts. So, like the sibling
+# project where this "just works": let ADC decide the job project.
 _BQ_SCOPES: Final[tuple[str, ...]] = (
     "https://www.googleapis.com/auth/bigquery",
-    "https://www.googleapis.com/auth/drive.readonly",
+    # add "https://www.googleapis.com/auth/drive.readonly" only if a
+    # Drive/Sheet-backed external table ever joins this project (none today).
 )
 
 
 def get_bigquery_client():
     """Build a BigQuery client from the first available credential source.
 
-    Plain google-cloud-bigquery SDK — no custom REST calls, no Storage API needed.
-    Resolution order:
+    Plain google-cloud-bigquery SDK. Resolution order:
       1. GCP_SERVICE_ACCOUNT_JSON_FILE  — explicit service-account key file
       2. GOOGLE_APPLICATION_CREDENTIALS — the standard Google env var, same handling
       3. gcloud ADC (`gcloud auth application-default login`)
 
-    The JOB (billing) project is always pinned to BQ_PROJECT. ADC user credentials
-    additionally carry a QUOTA project: whatever `gcloud auth application-default
-    set-quota-project <p>` stored, overridable via GOOGLE_CLOUD_QUOTA_PROJECT.
-    Missing credentials raise a RuntimeError with the exact commands to fix —
-    never a silent misconfiguration.
+    The JOB project (where queries run + are billed) is NOT the data project:
+    SA keys use their own project, ADC uses its default/quota project —
+    overridable via BQ_BILLING_PROJECT. Reading the `stayery-analytics` tables
+    only needs dataViewer there; the SQL is fully qualified.
     """
     from google.cloud import bigquery  # type: ignore[import-untyped]
     from google.oauth2 import service_account  # type: ignore[import-untyped]
@@ -121,28 +123,37 @@ def get_bigquery_client():
             creds = service_account.Credentials.from_service_account_file(
                 key_file, scopes=list(_BQ_SCOPES)
             )
-            return bigquery.Client(
-                credentials=creds, project=creds.project_id or BQ_PROJECT
-            )
+            return bigquery.Client(credentials=creds, project=creds.project_id)
 
-    # ADC (local gcloud login). Load explicitly so a missing login fails with a
+    # ADC (local gcloud login). Loaded explicitly so a missing login fails with a
     # fixable message instead of a generic stack trace deep inside the client.
     import google.auth  # type: ignore[import-untyped]
     import google.auth.exceptions  # type: ignore[import-untyped]
 
     try:
-        creds, _ = google.auth.default()
+        creds, adc_project = google.auth.default()
     except google.auth.exceptions.DefaultCredentialsError as e:
         raise RuntimeError(
             "No Google credentials found. Either point GCP_SERVICE_ACCOUNT_JSON_FILE "
             "at a service-account key file, or log in once:\n"
-            "    gcloud auth application-default login\n"
-            f"    gcloud auth application-default set-quota-project {BQ_PROJECT}"
+            "    gcloud auth application-default login"
         ) from e
+
     quota = os.environ.get("GOOGLE_CLOUD_QUOTA_PROJECT")
     if quota and hasattr(creds, "with_quota_project"):
         creds = creds.with_quota_project(quota)
-    return bigquery.Client(credentials=creds, project=BQ_PROJECT)
+    # Job project: explicit override > quota project > the ADC's own project.
+    job_project = os.environ.get("BQ_BILLING_PROJECT") or quota or adc_project
+    if job_project:
+        return bigquery.Client(credentials=creds, project=job_project)
+    # ADC without any project: tell the user exactly how to give it one.
+    raise RuntimeError(
+        "Your gcloud login carries no default project for BigQuery jobs. Fix with ONE of:\n"
+        "    gcloud auth application-default set-quota-project <your-project>\n"
+        "    export BQ_BILLING_PROJECT=<your-project>\n"
+        "(a project where you may create BigQuery jobs — usually your own, NOT "
+        f"necessarily {BQ_PROJECT})"
+    )
 
 
 def bigquery_healthcheck() -> dict:
@@ -163,14 +174,16 @@ def bigquery_healthcheck() -> dict:
         low = msg.lower()
         if isinstance(e, (ImportError, ModuleNotFoundError)):
             hint = " → package missing: run `uv sync` (google-cloud-bigquery)."
-        elif "quota" in low or "userproject" in low or "user project" in low:
-            hint = (" → quota-project problem: run `gcloud auth application-default "
-                    f"set-quota-project {BQ_PROJECT}` or export GOOGLE_CLOUD_QUOTA_PROJECT.")
+        elif "serviceusage" in low or "to use project" in low or "quota" in low:
+            hint = (" → the query JOB is trying to run in a project where you may not "
+                    "create jobs. Jobs do NOT need to run in the data project — point "
+                    "them at your own: `gcloud auth application-default set-quota-project "
+                    "<your-project>` or `export BQ_BILLING_PROJECT=<your-project>`.")
         elif "default credentials" in low or "no google credentials" in low:
             hint = " → not logged in: run `gcloud auth application-default login`."
         elif "403" in msg or "permission" in low or "access denied" in low:
-            hint = (" → the account lacks BigQuery read permission on "
-                    f"'{BQ_PROJECT}' (needs roles/bigquery.jobUser + dataViewer).")
+            hint = (" → the account lacks read permission on the data in "
+                    f"'{BQ_PROJECT}' (needs roles/bigquery.dataViewer there).")
         elif "timed out" in low or "timeout" in low or "deadline" in low:
             hint = " → network problem: check VPN/firewall towards bigquery.googleapis.com."
         else:
