@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import dash_bootstrap_components as dbc
 import dash_mantine_components as dmc
 import numpy as np
 import pandas as pd
@@ -292,14 +291,13 @@ def cost_panel(active_property_options: list[dict]) -> dmc.Card:
             ),
             dmc.SimpleGrid(
                 [
-                    # dbc.Switch kept: its value lives on `value` (dmc.Switch uses `checked`),
-                    # and the cost callbacks read/write `value` — a pure-design port must not
-                    # change that contract.
-                    dbc.Switch(
+                    # dmc.Switch: state lives on `checked` — the occupancy cost
+                    # callbacks read/write that property.
+                    dmc.Switch(
                         id="cost-high-demand",
                         label="High-demand period",
-                        value=False,
-                        class_name="mt-4",
+                        checked=False,
+                        mt="md",
                     ),
                     dmc.NumberInput(
                         id="cost-multiplier",
@@ -314,6 +312,9 @@ def cost_panel(active_property_options: list[dict]) -> dmc.Card:
                 mt="sm",
             ),
             dmc.Text(id="cost-empty-help", c="dimmed", mt="xs", size="xs"),
+            dmc.Text("Saved per property and ISO week — a new week starts with fresh "
+                     "values (empty-room cost pre-filled again).",
+                     c="dimmed", mt=2, size="xs"),
         ],
         withBorder=True,
         radius="lg",

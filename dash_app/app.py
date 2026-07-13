@@ -14,7 +14,6 @@ from __future__ import annotations
 import os
 
 import dash
-import dash_bootstrap_components as dbc
 import dash_mantine_components as dmc
 from dash import Dash, _dash_renderer, dcc, html, page_container
 
@@ -56,12 +55,9 @@ server = app.server
 
 
 def _navbar() -> html.Header:
-    """Top navigation, auto-built from the page registry (ordered). Styled in
-    assets/brand.css: white bar, yellow accent + Topol wordmark, underlined active link.
-    dbc.NavLink is kept for its built-in active-route detection (adds `.active`)."""
-    pages = sorted(dash.page_registry.values(), key=lambda p: p.get("order", 99))
-    links = [dbc.NavLink(p["name"], href=p["relative_path"], active="exact",
-                         className="stayery-navlink") for p in pages]
+    """Top navigation shell. The links live in an id'd container and are rendered
+    by the callback below, which reads dcc.Location — that is how the active link
+    gets its `.active` class now that dbc.NavLink is gone (styling: brand.css)."""
     brand = html.A(
         html.Div([
             html.Span(className="stayery-accent"),
@@ -70,25 +66,33 @@ def _navbar() -> html.Header:
         ], className="stayery-brand-inner"),
         href="/", className="stayery-brand")
     return html.Header(
-        html.Div([brand, html.Nav(links, className="stayery-nav")],
+        html.Div([brand, html.Nav(id="stayery-nav", className="stayery-nav")],
                  className="stayery-header-inner"),
         className="stayery-header")
 
 
+@dash.callback(dash.Output("stayery-nav", "children"), dash.Input("app-url", "pathname"))
+def _nav_links(pathname):
+    """Re-render the nav links on every route change; the current page gets
+    `.active` (underline, see brand.css)."""
+    pages = sorted(dash.page_registry.values(), key=lambda p: p.get("order", 99))
+    return [dcc.Link(p["name"], href=p["relative_path"],
+                     className="stayery-navlink"
+                     + (" active" if pathname == p["relative_path"] else ""))
+            for p in pages]
+
+
 # The layout MUST contain dash.page_container for Pages to render. It is wrapped in a
-# dmc.MantineProvider so dash-mantine-components (used from the Cancellation History
-# page onward) get their theme context. The provider is ADDITIVE: dbc components on the
-# existing Occupancy page render unchanged inside it. forceColorScheme="light" keeps the
-# brand's white canvas regardless of the viewer's OS dark-mode preference.
-# The overbooking COST parameter is a single shared source of truth across pages
-# (Occupancy cost sandbox, Model-Performance cost-optimal threshold, future Retraining
-# page). It lives here in the GLOBAL layout — one dcc.Store instance, persisted in the
-# browser (storage_type="local") — so no page keeps its own copy. Pages read/write it by
-# id ("cost-store"); its schema is owned by the Occupancy page's cost callbacks.
+# dmc.MantineProvider so dash-mantine-components get their theme context;
+# forceColorScheme="light" keeps the brand's white canvas regardless of OS dark mode.
+# The overbooking COST parameter lives here as ONE global dcc.Store persisted in the
+# browser (storage_type="local") — no page keeps its own copy; the Occupancy page's
+# cost callbacks own its schema.
 app.layout = dmc.MantineProvider(
-    dbc.Container(
-        [dcc.Store(id="cost-store", storage_type="local"), _navbar(), page_container],
-        fluid=True, style={"maxWidth": "1500px"}),
+    html.Div(
+        [dcc.Location(id="app-url"),
+         dcc.Store(id="cost-store", storage_type="local"), _navbar(), page_container],
+        style={"maxWidth": "1500px", "margin": "0 auto", "padding": "0 12px"}),
     theme=DMC_THEME,
     forceColorScheme="light",
 )

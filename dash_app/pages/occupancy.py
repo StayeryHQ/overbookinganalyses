@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import dash
 import dash_ag_grid as dag
-import dash_bootstrap_components as dbc
 import dash_mantine_components as dmc
 import pandas as pd
 from dash import Input, Output, State, callback, ctx, dcc, html, no_update
@@ -126,7 +125,7 @@ def layout(**_kwargs):
         header,
         stores,
         controls,
-        dbc.Alert(id="occ-scored-warning", color="warning", is_open=False, class_name="py-2"),
+        html.Div(id="occ-scored-warning"),
 
         # 1) KPI tiles (filled by callback; skeleton until then)
         html.Div(id="occ-kpi-row", children=dmc.Skeleton(height=110, radius="lg")),
@@ -196,7 +195,6 @@ def _sync_active_property(selected, selection, current):
     Output("occ-heatmap", "figure"),
     Output("occ-pernight-store", "data"),
     Output("occ-scored-warning", "children"),
-    Output("occ-scored-warning", "is_open"),
     Input("occ-property-filter", "value"),
     Input("occ-risk-threshold", "value"),
     Input("occ-scored-version", "data"),
@@ -212,9 +210,12 @@ def _update_main(selected, threshold, _version):
 
     if scored.empty:
         kpis = panels.kpi_tiles(freshness, mm, None, thr)
-        warn = ("No scored bookings yet. Click 'Refresh scores' to run the model on the "
-                "cached reservations (no BigQuery query is triggered).")
-        return kpis, grid_fig, None, warn, True
+        warn = dmc.Alert(
+            "No scored bookings yet. Click 'Refresh scores' to run the model on the "
+            "cached reservations (no BigQuery query is triggered).",
+            color="yellow", variant="light", radius="md",
+            icon=html.I(className="bi bi-exclamation-triangle"))
+        return kpis, grid_fig, None, warn
 
     win = da.in_window(scored, props)
     high_risk = int((pd.to_numeric(win["cancel_proba"], errors="coerce") >= thr).sum()) \
@@ -224,7 +225,7 @@ def _update_main(selected, threshold, _version):
     pernight = da.per_night_expected_freed(win, hotel_col="property_name")
     if not pernight.empty:
         pernight = pernight.assign(arrival_date=pernight["arrival_date"].astype(str))
-    return kpis, grid_fig, pernight.to_dict("records"), "", False
+    return kpis, grid_fig, pernight.to_dict("records"), None
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +283,7 @@ def _update_side_panel(selected_rows):
     Output("occ-reco", "children"),
     Input("cost-walk", "value"),
     Input("cost-empty", "value"),
-    Input("cost-high-demand", "value"),
+    Input("cost-high-demand", "checked"),
     Input("cost-multiplier", "value"),
     Input("cost-active-property", "value"),
     Input("occ-pernight-store", "data"),
@@ -352,7 +353,7 @@ def _update_roomtype(selected, _version):
 @callback(
     Output("cost-walk", "value"),
     Output("cost-empty", "value"),
-    Output("cost-high-demand", "value"),
+    Output("cost-high-demand", "checked"),
     Output("cost-multiplier", "value"),
     Output("cost-empty-help", "children"),
     Input("cost-active-property", "value"),
@@ -383,7 +384,7 @@ def _load_cost_params(prop, store):
     Output("cost-store", "data", allow_duplicate=True),
     Input("cost-walk", "value"),
     Input("cost-empty", "value"),
-    Input("cost-high-demand", "value"),
+    Input("cost-high-demand", "checked"),
     Input("cost-multiplier", "value"),
     State("cost-active-property", "value"),
     State("cost-store", "data"),
