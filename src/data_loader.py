@@ -94,66 +94,98 @@ BQ_TABLE: Final[str] = "reservations"
 # job-creation rights. Pinning the job project to the data project caused
 # `403 … serviceusage.services.use` for user accounts. So, like the sibling
 # project where this "just works": let ADC decide the job project.
+# Mirrors the sibling project 1:1, so the SAME service-account key / ADC file
+# behaves identically in both repos (the drive scope is unused here but harmless).
 _BQ_SCOPES: Final[tuple[str, ...]] = (
     "https://www.googleapis.com/auth/bigquery",
-    # add "https://www.googleapis.com/auth/drive.readonly" only if a
-    # Drive/Sheet-backed external table ever joins this project (none today).
+    "https://www.googleapis.com/auth/drive.readonly",
 )
 
 
 def get_bigquery_client():
     """Build a BigQuery client from the first available credential source.
 
-    Plain google-cloud-bigquery SDK. Resolution order:
-      1. GCP_SERVICE_ACCOUNT_JSON_FILE  — explicit service-account key file
-      2. GOOGLE_APPLICATION_CREDENTIALS — the standard Google env var, same handling
-      3. gcloud ADC (`gcloud auth application-default login`)
+    VERBATIM copy of the sibling project's working method:
+      1. GCP_SERVICE_ACCOUNT_JSON_FILE  — service-account key file (client runs
+         in the SA's own project)
+      2. GOOGLE_APPLICATION_CREDENTIALS — same handling
+      3. gcloud ADC — bare Client(), the SDK resolves project/quota exactly like
+         the sibling repo does. NO pinning, NO env juggling on top.
 
-    The JOB project (where queries run + are billed) is NOT the data project:
-    SA keys use their own project, ADC uses its default/quota project —
-    overridable via BQ_BILLING_PROJECT. Reading the `stayery-analytics` tables
-    only needs dataViewer there; the SQL is fully qualified.
+    Job project ≠ data project: queries name the tables fully qualified, so the
+    account only needs read access on `stayery-analytics`; jobs run wherever the
+    credential's own project is. Use `main.py bqcheck` to see the full resolution.
     """
     from google.cloud import bigquery  # type: ignore[import-untyped]
     from google.oauth2 import service_account  # type: ignore[import-untyped]
 
-    for env in ("GCP_SERVICE_ACCOUNT_JSON_FILE", "GOOGLE_APPLICATION_CREDENTIALS"):
-        key_file = os.environ.get(env)
-        if key_file and Path(key_file).exists():
-            creds = service_account.Credentials.from_service_account_file(
-                key_file, scopes=list(_BQ_SCOPES)
-            )
-            return bigquery.Client(credentials=creds, project=creds.project_id)
+    sa_json_file = os.environ.get("GCP_SERVICE_ACCOUNT_JSON_FILE")
+    if sa_json_file and Path(sa_json_file).exists():
+        creds = service_account.Credentials.from_service_account_file(
+            sa_json_file, scopes=list(_BQ_SCOPES)
+        )
+        return bigquery.Client(credentials=creds, project=creds.project_id)
 
-    # ADC (local gcloud login). Loaded explicitly so a missing login fails with a
-    # fixable message instead of a generic stack trace deep inside the client.
-    import google.auth  # type: ignore[import-untyped]
-    import google.auth.exceptions  # type: ignore[import-untyped]
+    sa_file = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    if sa_file and Path(sa_file).exists():
+        creds = service_account.Credentials.from_service_account_file(
+            sa_file, scopes=list(_BQ_SCOPES)
+        )
+        return bigquery.Client(credentials=creds, project=creds.project_id)
 
+    # ADC (local gcloud login): enforce nothing — identical to the sibling repo.
     try:
-        creds, adc_project = google.auth.default()
-    except google.auth.exceptions.DefaultCredentialsError as e:
+        return bigquery.Client()
+    except Exception as e:  # noqa: BLE001 — translate into a fixable message
         raise RuntimeError(
-            "No Google credentials found. Either point GCP_SERVICE_ACCOUNT_JSON_FILE "
-            "at a service-account key file, or log in once:\n"
-            "    gcloud auth application-default login"
+            "BigQuery client could not be built from gcloud ADC "
+            f"({type(e).__name__}: {e}). Either log in:\n"
+            "    gcloud auth application-default login\n"
+            "or point GCP_SERVICE_ACCOUNT_JSON_FILE at the service-account key "
+            "file the sibling project uses. Run `python main.py bqcheck` for the "
+            "full diagnosis."
         ) from e
 
-    quota = os.environ.get("GOOGLE_CLOUD_QUOTA_PROJECT")
-    if quota and hasattr(creds, "with_quota_project"):
-        creds = creds.with_quota_project(quota)
-    # Job project: explicit override > quota project > the ADC's own project.
-    job_project = os.environ.get("BQ_BILLING_PROJECT") or quota or adc_project
-    if job_project:
-        return bigquery.Client(credentials=creds, project=job_project)
-    # ADC without any project: tell the user exactly how to give it one.
-    raise RuntimeError(
-        "Your gcloud login carries no default project for BigQuery jobs. Fix with ONE of:\n"
-        "    gcloud auth application-default set-quota-project <your-project>\n"
-        "    export BQ_BILLING_PROJECT=<your-project>\n"
-        "(a project where you may create BigQuery jobs — usually your own, NOT "
-        f"necessarily {BQ_PROJECT})"
-    )
+
+def bigquery_diagnose() -> list[str]:
+    """Every fact that decides WHERE BigQuery jobs run — one line each, best
+    effort, never raises. This settles 403 mysteries in one glance: which
+    credential source wins, what quota/config project rides along, and which
+    project the client would actually create jobs in."""
+    lines: list[str] = []
+    for env in ("GCP_SERVICE_ACCOUNT_JSON_FILE", "GOOGLE_APPLICATION_CREDENTIALS"):
+        v = os.environ.get(env)
+        note = "" if not v else ("  (file exists)" if Path(v).exists() else "  (FILE MISSING!)")
+        lines.append(f"{env} = {v or '—'}{note}")
+    for env in ("GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_QUOTA_PROJECT"):
+        lines.append(f"{env} = {os.environ.get(env) or '—'}")
+    try:
+        import google.auth  # type: ignore[import-untyped]
+        creds, adc_project = google.auth.default()
+        lines.append(f"ADC credential type  = {type(creds).__name__}")
+        lines.append(f"ADC default project  = {adc_project or '—'}")
+        lines.append(f"ADC quota project    = {getattr(creds, 'quota_project_id', None) or '—'}")
+    except Exception as e:  # noqa: BLE001
+        lines.append(f"ADC = ERROR: {type(e).__name__}: {str(e)[:200]}")
+    try:
+        import subprocess
+        p = subprocess.run(["gcloud", "config", "get-value", "project"],
+                           capture_output=True, text=True, timeout=10)
+        lines.append(f"gcloud config project = {p.stdout.strip() or '—'}")
+    except Exception:  # noqa: BLE001
+        lines.append("gcloud config project = (gcloud CLI not available)")
+    try:
+        client = get_bigquery_client()
+        lines.append(f"→ JOB project the client will use = {client.project}")
+        if client.project == BQ_PROJECT:
+            lines.append(
+                f"  ⚠ PROBLEM: jobs would run in the DATA project '{BQ_PROJECT}', where "
+                "this account may not create jobs (the classic 403). Point the quota/"
+                "config project at YOUR OWN project — see hints from bqcheck."
+            )
+    except Exception as e:  # noqa: BLE001
+        lines.append(f"→ client build FAILED: {type(e).__name__}: {str(e)[:200]}")
+    return lines
 
 
 def bigquery_healthcheck() -> dict:

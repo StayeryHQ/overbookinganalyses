@@ -200,11 +200,24 @@ def cmd_update(args: argparse.Namespace) -> int:
 
 
 def cmd_bqcheck(args: argparse.Namespace) -> int:
-    """Probe the BigQuery connection and print an actionable diagnosis."""
+    """Full BigQuery diagnosis: credential resolution facts + a live probe."""
     from src import bigquery_healthcheck
+    from src.data_loader import bigquery_diagnose
 
+    print("--- credential resolution ---")
+    for line in bigquery_diagnose():
+        print(" ", line)
+    print("--- live probe ---")
     res = bigquery_healthcheck()
     print(("OK   " if res["ok"] else "FAIL ") + res["detail"])
+    if not res["ok"]:
+        print("\nMost common fixes:\n"
+              "  1) The sibling project probably uses a service-account key — reuse it:\n"
+              "         export GCP_SERVICE_ACCOUNT_JSON_FILE=/path/to/key.json\n"
+              "  2) Your gcloud quota/config project points at the DATA project. Point it\n"
+              "     at YOUR OWN project (the one the sibling repo runs jobs in):\n"
+              "         gcloud auth application-default set-quota-project <your-project>\n"
+              "         gcloud config set project <your-project>")
     return 0 if res["ok"] else 1
 
 

@@ -31,9 +31,10 @@ google-cloud-bigquery SDK, no custom REST calls):
 
 **Job project ≠ data project.** Queries reference the fully-qualified
 `stayery-analytics.reporting.*` tables, so your account only needs *read* access
-there (`roles/bigquery.dataViewer`). The query **jobs** run in your OWN project
-(the ADC default/quota project, or `BQ_BILLING_PROJECT`), where you need job-creation
-rights. Never point the job project at `stayery-analytics` unless you actually have
+there (`roles/bigquery.dataViewer`). The query **jobs** run in your OWN project —
+whatever the credential resolves to (SA key: its project; ADC: the gcloud
+default/quota project, overridable via `GOOGLE_CLOUD_PROJECT`). Never point the
+quota/config project at `stayery-analytics` unless you actually have
 `serviceusage.services.use` there — the resulting 403 is the classic failure.
 
 Diagnose everything with `uv run python main.py bqcheck` (or the "Test connection"
