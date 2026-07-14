@@ -28,7 +28,7 @@ def kpi_tiles(
 ) -> list:
     """Four KPI tiles. Values that aren't backed by real metadata are shown as
     'unavailable' rather than fabricated."""
-    data_ts = freshness.get("reservations") or "never — run `main.py refresh`"
+    data_ts = freshness.get("reservations") or "never - run `main.py refresh`"
 
     m_ts = model_meta.get("retrained_at") or "unavailable"
     m_sub = (
@@ -41,7 +41,7 @@ def kpi_tiles(
     train_val = f"~{n_train:,}" if n_train is not None else "unavailable"
     train_sub = model_meta.get("trained_on_note") or "no training metadata"
 
-    hr_val = "—" if high_risk_count is None else f"{high_risk_count:,}"
+    hr_val = "-" if high_risk_count is None else f"{high_risk_count:,}"
     hr_sub = f"≥ {risk_threshold:.0%} cancel risk · next 14 days · selected"
 
     return ui.kpi_strip(
@@ -174,7 +174,7 @@ def booking_row_data(df_window: pd.DataFrame) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Booking detail side panel (raw record — NO SHAP/XAI, that's Phase 4)
+# Booking detail side panel (raw record - NO SHAP/XAI, that's Phase 4)
 # ---------------------------------------------------------------------------
 # Fields shown in the side panel, in order (only those present are rendered).
 _DETAIL_FIELDS = [
@@ -201,7 +201,7 @@ _DETAIL_FIELDS = [
 
 def _fmt(field: str, value) -> str:
     if value is None or (isinstance(value, float) and pd.isna(value)):
-        return "—"
+        return "-"
     if field == "cancel_proba":
         try:
             return f"{float(value):.0%}"
@@ -209,7 +209,7 @@ def _fmt(field: str, value) -> str:
             return str(value)
     if field in ("arrival", "departure", "created"):
         ts = pd.to_datetime(value, utc=True, errors="coerce")
-        return "—" if pd.isna(ts) else ts.strftime("%Y-%m-%d")
+        return "-" if pd.isna(ts) else ts.strftime("%Y-%m-%d")
     return str(value)
 
 
@@ -291,7 +291,7 @@ def cost_panel(active_property_options: list[dict]) -> dmc.Card:
             ),
             dmc.SimpleGrid(
                 [
-                    # dmc.Switch: state lives on `checked` — the occupancy cost
+                    # dmc.Switch: state lives on `checked` - the occupancy cost
                     # callbacks read/write that property.
                     dmc.Switch(
                         id="cost-high-demand",
@@ -312,7 +312,7 @@ def cost_panel(active_property_options: list[dict]) -> dmc.Card:
                 mt="sm",
             ),
             dmc.Text(id="cost-empty-help", c="dimmed", mt="xs", size="xs"),
-            dmc.Text("Saved per property and ISO week — a new week starts with fresh "
+            dmc.Text("Saved per property and ISO week - a new week starts with fresh "
                      "values (empty-room cost pre-filled again).",
                      c="dimmed", mt=2, size="xs"),
         ],
@@ -617,9 +617,9 @@ def _granular_channel(df: pd.DataFrame) -> pd.Series:
     channel = (
         df["channelCode"].astype("string")
         if "channelCode" in df.columns
-        else pd.Series("—", index=df.index, dtype="string")
+        else pd.Series("-", index=df.index, dtype="string")
     )
-    return source.fillna(channel).fillna("—")
+    return source.fillna(channel).fillna("-")
 
 
 def _rateplan_table(df: pd.DataFrame, top: int = 8) -> "dmc.Table":
@@ -628,7 +628,7 @@ def _rateplan_table(df: pd.DataFrame, top: int = 8) -> "dmc.Table":
     if df is None or df.empty or "ratePlan_name" not in df.columns:
         return dmc.Text("No arrivals", c="dimmed", size="sm")
     names = (
-        df["ratePlan_name"].astype("string").str.strip().replace("", pd.NA).fillna("—")
+        df["ratePlan_name"].astype("string").str.strip().replace("", pd.NA).fillna("-")
     )
     vc = names.value_counts().head(top)
     total = int(names.notna().sum()) or 1
@@ -664,7 +664,7 @@ def composition_row(df: pd.DataFrame, context_label: str) -> list:
     n = 0 if df is None or df.empty else len(df)
     empty = df is None or df.empty
 
-    # 1) business vs leisure — horizontal bar (was a pie)
+    # 1) business vs leisure - horizontal bar (was a pie)
     if empty or "travelPurpose" not in df.columns:
         tp_counts = pd.Series(dtype=int)
     else:
@@ -674,7 +674,7 @@ def composition_row(df: pd.DataFrame, context_label: str) -> list:
         _hbar(tp_counts, "Business vs. leisure", theme.BLUE, left_margin=80)
     )
 
-    # 2) length of stay + 3) lead time — histograms (kept, they read well)
+    # 2) length of stay + 3) lead time - histograms (kept, they read well)
     tile_los = _graph_tile(
         _hist(
             None if empty else df.get("los_nights"),
@@ -692,13 +692,13 @@ def composition_row(df: pd.DataFrame, context_label: str) -> list:
         )
     )
 
-    # 4) rate plan — TABLE (was an unreadable pie)
+    # 4) rate plan - TABLE (was an unreadable pie)
     tile_rate = _tile(
         [dmc.Text("Rate plan (top 8)", fw=600, size="sm", mb=6), _rateplan_table(df)],
         pad="md",
     )
 
-    # 5) channel — granular OTA source as a horizontal bar
+    # 5) channel - granular OTA source as a horizontal bar
     ch_counts = _granular_channel(df).value_counts()
     if len(ch_counts) > 8:
         ch_counts = pd.concat(

@@ -6,7 +6,7 @@
 #
 # Every prop used here was verified against the installed dash-mantine-components 2.8.0
 # (MultiSelect / Skeleton.visible / Tooltip / Card / Paper / SimpleGrid) and Dash 4.3.0
-# (dcc.Loading.custom_spinner) — no signatures are assumed from memory.
+# (dcc.Loading.custom_spinner) - no signatures are assumed from memory.
 
 from __future__ import annotations
 

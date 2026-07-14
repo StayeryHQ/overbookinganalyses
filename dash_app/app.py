@@ -18,13 +18,13 @@ import dash_mantine_components as dmc
 from dash import Dash, _dash_renderer, dcc, html, page_container
 
 # dash-mantine-components 2.x renders against React 18. Dash 4.3.0 already ships
-# React 18 (default 18.3.1); we pin 18.2.0 explicitly — dmc's documented target and
-# part of Dash's bundled set — so dmc renders deterministically. dbc / dash-ag-grid
+# React 18 (default 18.3.1); we pin 18.2.0 explicitly - dmc's documented target and
+# part of Dash's bundled set - so dmc renders deterministically. dbc / dash-ag-grid
 # also support React 18, so this is safe for the existing Occupancy page.
 # NOTE: must run BEFORE the Dash() instance is created.
 _dash_renderer._set_react_version("18.2.0")
 
-from dash_app.theme import BLACK, DMC_THEME, EXTERNAL_STYLESHEETS, YELLOW
+from dash_app.theme import DMC_THEME, EXTERNAL_STYLESHEETS
 
 
 def _background_manager():
@@ -48,7 +48,7 @@ app = Dash(
     background_callback_manager=_background_manager(),
     external_stylesheets=EXTERNAL_STYLESHEETS,
     suppress_callback_exceptions=True,   # callbacks target components on page-scoped layouts
-    title="STAYERY · Overbooking",
+    title="STAYERY · Cancellation Analytics",
 )
 # WSGI server object (gunicorn dash_app.app:server). Exposed early on purpose.
 server = app.server
@@ -56,13 +56,13 @@ server = app.server
 
 def _navbar() -> html.Header:
     """Top navigation shell. The links live in an id'd container and are rendered
-    by the callback below, which reads dcc.Location — that is how the active link
+    by the callback below, which reads dcc.Location - that is how the active link
     gets its `.active` class now that dbc.NavLink is gone (styling: brand.css)."""
     brand = html.A(
         html.Div([
             html.Span(className="stayery-accent"),
             html.Span("STAYERY", className="stayery-wordmark"),
-            html.Span("Overbooking Suite", className="stayery-subbrand"),
+            html.Span("Cancellation Analytics", className="stayery-subbrand"),
         ], className="stayery-brand-inner"),
         href="/", className="stayery-brand")
     return html.Header(
@@ -86,7 +86,7 @@ def _nav_links(pathname):
 # dmc.MantineProvider so dash-mantine-components get their theme context;
 # forceColorScheme="light" keeps the brand's white canvas regardless of OS dark mode.
 # The overbooking COST parameter lives here as ONE global dcc.Store persisted in the
-# browser (storage_type="local") — no page keeps its own copy; the Occupancy page's
+# browser (storage_type="local") - no page keeps its own copy; the Occupancy page's
 # cost callbacks own its schema.
 app.layout = dmc.MantineProvider(
     html.Div(

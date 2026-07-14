@@ -1,5 +1,5 @@
 # dash_app/theme.py
-# Central brand styling for the Dash app — colours, fonts, Plotly defaults.
+# Central brand styling for the Dash app - colours, fonts, Plotly defaults.
 # Pulled from configs/stayery_brand.yaml via src.load_brand_config() so the app and
 # the notebooks stay visually consistent.
 
@@ -55,7 +55,7 @@ DMC_THEME = {
 }
 
 # ---- Stylesheets -----------------------------------------------------------
-# Plain CDN URLs — the dash-bootstrap-components PACKAGE is gone (dmc is the
+# Plain CDN URLs - the dash-bootstrap-components PACKAGE is gone (dmc is the
 # component library), but the two stylesheets stay: FLATLY provides the base
 # CSS/utility classes some layouts use, bootstrap-icons the `bi bi-*` icons.
 EXTERNAL_STYLESHEETS = [

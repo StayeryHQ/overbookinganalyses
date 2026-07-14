@@ -1,7 +1,7 @@
 # dash_app/components/shap_explain.py
 # Reusable single-booking SHAP explanation unit (spec 4.8): "booking + model in, SHAP plot
 # out." Built as ONE component with two sizes so the SAME logic is used full-size on the
-# Model-Performance page AND mini in the Overbooking page's booking sidebar later — no
+# Model-Performance page AND mini in the Overbooking page's booking sidebar later - no
 # duplicate explanation logic on the Overbooking side.
 #
 # The heavy lifting (model-agnostic SHAP over the scalar adapter) lives in

@@ -1,5 +1,5 @@
 # dash_app/pages/occupancy.py
-# MAIN PAGE — Occupancy & Overbooking. Fixed 14-day forward window; property filter
+# MAIN PAGE - Occupancy & Overbooking. Fixed 14-day forward window; property filter
 # only (no date filter). Layout top→bottom: KPI tiles → heatmap → composition charts
 # → booking table → cost panel → room-type sub-view. Shell + KPIs render immediately
 # from the local cache; scoring runs in a BACKGROUND callback. Already-cancelled
@@ -21,7 +21,7 @@ from dash_app.components import ui
 from src import benchmark_overbooking_allowance
 from src import overbooking as ob
 
-dash.register_page(__name__, path="/occupancy", name="Occupancy & Overbooking",
+dash.register_page(__name__, path="/occupancy", name="Occupancy & Predictions",
                    order=1, title="STAYERY · Occupancy")
 
 
@@ -47,8 +47,8 @@ def layout(**_kwargs):
 
     header = dmc.Group([
         dmc.Group([
-            dmc.Title("Occupancy & overbooking", order=3),
-            dmc.Badge("Next 14 days · live scoring", color="gray", variant="light", radius="sm"),
+            dmc.Title("Occupancy & Predictions", order=3),
+            dmc.Badge("Next 14 days · scoring", color="gray", variant="light", radius="sm"),
         ], gap="sm", align="center"),
         dmc.Text("Click a heatmap tile to drill into one property + day.",
                  size="sm", c="dimmed"),
@@ -257,7 +257,7 @@ def _update_views(selection, selected, _version):
 
 
 # ---------------------------------------------------------------------------
-# Booking detail side panel (raw record — no SHAP/XAI, that's Phase 4)
+# Booking detail side panel (raw record - no SHAP/XAI, that's Phase 4)
 # ---------------------------------------------------------------------------
 @callback(
     Output("occ-side-panel", "children"),
@@ -276,7 +276,7 @@ def _update_side_panel(selected_rows):
 
 
 # ---------------------------------------------------------------------------
-# Overbooking recommendation — follows the active property; if a heatmap DAY is
+# Overbooking recommendation - follows the active property; if a heatmap DAY is
 # selected, the recommendation is for that specific night.
 # ---------------------------------------------------------------------------
 @callback(
@@ -336,7 +336,7 @@ def _update_roomtype(selected, _version):
     caps = load_room_type_capacity().get(prop, {})
     fig = panels.room_type_figure(occ, caps, prop)
     hint = None if caps else dmc.Alert(
-        "No room-type capacities set for this property yet — fill in "
+        "No room-type capacities set for this property yet - fill in "
         "configs/room_type_capacity.yaml to show the dashed capacity lines.",
         color="gray", variant="light", radius="md",
         icon=html.I(className="bi bi-info-circle"))
@@ -373,7 +373,7 @@ def _load_cost_params(prop, store):
     empty_val = prefill.get(prop)
     help_txt = (f"Empty-room cost pre-filled from {source} = {empty_val}. "
                 "Adjust as needed." if empty_val is not None
-                else "No pre-fill available yet — enter the empty-room cost.")
+                else "No pre-fill available yet - enter the empty-room cost.")
     return None, empty_val, False, ob.DEFAULT_HIGH_DEMAND_MULTIPLIER, help_txt
 
 
@@ -415,5 +415,5 @@ def _refresh_scores(_n, version):
     try:
         count = da.refresh_scored()
         return (version or 0) + 1, f"Scored {count:,} bookings."
-    except Exception as e:  # noqa: BLE001 — surface the reason, don't crash
+    except Exception as e:  # noqa: BLE001 - surface the reason, don't crash
         return no_update, f"Refresh failed: {e}"

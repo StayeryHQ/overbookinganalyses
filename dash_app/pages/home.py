@@ -1,4 +1,4 @@
-# dash_app/pages/home.py — landing page: short intro + navigation (dmc design).
+# dash_app/pages/home.py - landing page: short intro + navigation (dmc design).
 from __future__ import annotations
 
 import dash
@@ -36,42 +36,41 @@ def layout(**_kwargs):
     try:
         from dash_app.backend import data_access as da
         n_props = len(da.property_list())
-    except Exception:  # noqa: BLE001 — landing page must render even if cache is cold
+    except Exception:  # noqa: BLE001 - landing page must render even if cache is cold
         n_props = 0
 
     badges = ([dmc.Badge(f"{n_props} properties", variant="light", color="gray",
                          radius="sm")] if n_props else [])
     badges += [
         dmc.Badge("14-day overbooking horizon", variant="light", color="gray", radius="sm"),
-        dmc.Badge("Read-only · no BigQuery writes", variant="light", color="gray", radius="sm"),
+        dmc.Badge("Read-only", variant="light", color="gray", radius="sm"),
     ]
     pills = dmc.Group(badges, gap="xs", mt="sm")
 
     hero = dmc.Stack([
-        dmc.Title("Overbooking & cancellation toolkit", order=2),
+        dmc.Title("Cancellation Analytics", order=2),
         dmc.Text(
-            "Weekly overbooking support for the STAYERY properties. The model predicts "
+            "Weekly ML overbooking scoring. The model predicts "
             "which of the next 14 days' bookings are likely to cancel, so each property "
-            "can be overbooked just enough to offset expected cancellations — without "
+            "can be overbooked just enough to offset expected cancellations without "
             "walking guests.", c="dimmed", size="md", style={"maxWidth": "760px"}),
         pills,
     ], gap="xs")
 
     cards = dmc.SimpleGrid([
-        _nav_card("bi bi-grid-1x2", "Occupancy & Overbooking",
-                  "The main weekly workflow: 14-day occupancy heatmap, risk table, "
+        _nav_card("bi bi-grid-1x2", "Occupancy & Predictions",
+                  "14-day occupancy heatmap, risk table, "
                   "and a cost-optimal overbooking recommendation per property.",
                   "/occupancy"),
-        _nav_card("bi bi-graph-down-arrow", "Cancellation History",
+        _nav_card("bi bi-graph-down-arrow", "Cancellation Dashboard",
                   "Historical cancellation rates by location, channel, stay length and "
-                  "lead time — with a location × month heatmap and drill-down.",
+                  "lead time in an interactive dashboard.",
                   "/cancellation-history"),
         _nav_card("bi bi-clipboard-data", "Model Performance",
-                  "Fair model comparison vs baseline, calibration and explainability (XAI).",
+                  "Model comparison vs baseline, calibration and explainability (XAI).",
                   "/model-performance"),
         _nav_card("bi bi-arrow-repeat", "Update & Retraining",
-                  "Score the next 14 days on demand, refresh history, and retrain models — "
-                  "all in the app.",
+                  "Score the next 14 days on demand, refresh history, and retrain models.",
                   "/data-update"),
     ], cols={"base": 1, "sm": 2, "lg": 3}, spacing="md")
 

@@ -1,10 +1,10 @@
 # dash_app/pages/data_update.py
-# PAGE 5 — Update & Retraining. Three long-running actions, each in ITS OWN card
+# PAGE 5 - Update & Retraining. Three long-running actions, each in ITS OWN card
 # with button, progress bar and result TOGETHER (no more "button on top, bar at
 # the bottom"):
-#   1. Update data & scores — ONE strict BigQuery pull per table + scoring
+#   1. Update data & scores - ONE strict BigQuery pull per table + scoring
 #   2. Retrain (confirm-modal, since it overwrites the serving artifact)
-#   3. Model-Performance artifacts (eval/SHAP) — explicit buttons, no auto-start
+#   3. Model-Performance artifacts (eval/SHAP) - explicit buttons, no auto-start
 #
 # All three run through dash_app.backend.jobs (file-backed threads): a dcc.Interval
 # polls the job files, so progress SURVIVES page changes, a dead worker shows a
@@ -66,15 +66,15 @@ def _tiles(status: dict):
     days_ago = status.get("retrained_days_ago")
     sub_days = f"{days_ago} days ago" if days_ago is not None else None
     return ui.kpi_strip([
-        ui.kpi_card("Model status", status.get("status_label") or "—",
+        ui.kpi_card("Model status", status.get("status_label") or "-",
                     sub=status.get("label"), accent=True,
                     tooltip="Whether this model's artifact is on disk and how it is served."),
         ui.kpi_card("Last retrained", status.get("retrained_at") or "unavailable",
                     sub=sub_days, tooltip="From the model card (shown in your local time)."),
-        ui.kpi_card("Model version", status.get("version") or "—",
-                    sub=f"kind: {status.get('kind') or '—'}",
+        ui.kpi_card("Model version", status.get("version") or "-",
+                    sub=f"kind: {status.get('kind') or '-'}",
                     tooltip="Retrain date + feature-set fingerprint (roster hash)."),
-        ui.kpi_card("Training set", n_train, sub=f"as-of {status.get('asof') or '—'}",
+        ui.kpi_card("Training set", n_train, sub=f"as-of {status.get('asof') or '-'}",
                     tooltip="Static models count bookings; the hazard model counts "
                             "person-period rows (a different unit)."),
     ])
@@ -90,7 +90,7 @@ def _wf_panel(model: str):
     rows = []
     for k, cell in wf.items():
         mean, std = cell.get("mean"), cell.get("std")
-        val = "—" if mean is None else (f"{mean:.4g}" + (f" ± {std:.2g}" if std is not None else ""))
+        val = "-" if mean is None else (f"{mean:.4g}" + (f" ± {std:.2g}" if std is not None else ""))
         rows.append({"param": label.get(k, k), "value": val})
     return _kv_rows(rows)
 
@@ -105,7 +105,7 @@ def _running_note(state: dict) -> str:
     since = src.fmt_ts_local(started * 1_000_000_000) if started else None  # epoch s -> ns
     mins = f" · running {int((time.time() - started) // 60)} min" if started else ""
     return ((f"Started {since}" if since else "Running") + mins
-            + " — keeps running if you switch pages; the bar picks up again here.")
+            + " - keeps running if you switch pages; the bar picks up again here.")
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +156,7 @@ def _artifacts_result(res: dict):
         parts.append("rebuilt: " + ", ".join(res["rebuilt"]))
     errs = res.get("errors") or []
     if errs:
-        return _err_alert(" · ".join(parts) + " — errors: " + "; ".join(errs))
+        return _err_alert(" · ".join(parts) + " - errors: " + "; ".join(errs))
     return dmc.Alert(" · ".join(parts), color="green", variant="light",
                      icon=html.I(className="bi bi-layers"))
 
@@ -204,12 +204,12 @@ def layout(**_kwargs):
         dcc.Store(id="du-jobs-seen", data={}),
         dcc.Store(id="du-kick", data=0),
         # THE page heartbeat: polls Data/jobs/*.json so progress/result render
-        # from server truth — page changes and app restarts included.
+        # from server truth - page changes and app restarts included.
         dcc.Interval(id="du-poll", interval=1200, n_intervals=0),
         dcc.Download(id="du-scored-download"),
     ])
 
-    # 1) DATA UPDATE — button, progress and result together.
+    # 1) DATA UPDATE - button, progress and result together.
     update_card = dmc.Card([
         dmc.Group([
             dmc.Group([dmc.Text("Update data & scores", fw=600, size="sm"),
@@ -236,10 +236,10 @@ def layout(**_kwargs):
         html.Div(id="du-upd-result", className="mt-2"),
     ], withBorder=True, radius="lg", p="md", shadow="xs")
 
-    # 2) Scored set — table + compact/full export.
+    # 2) Scored set - table + compact/full export.
     scored_card = dmc.Card([
         dmc.Group([
-            dmc.Group([dmc.Text("Scored bookings — next 14 days", fw=600, size="sm"),
+            dmc.Group([dmc.Text("Scored bookings - next 14 days", fw=600, size="sm"),
                        ui.info_icon("The current scored set (highest cancel risk first). "
                                     "'CSV (compact)' has the columns a revenue manager reads; "
                                     "'CSV (all columns)' includes every engineered feature.")],
@@ -289,11 +289,11 @@ def layout(**_kwargs):
         html.Div(id="du-metrics"),
     ], withBorder=True, radius="lg", p="md", shadow="xs")
 
-    # 4) RETRAIN — controls, progress and result in ONE card + confirm modal.
+    # 4) RETRAIN - controls, progress and result in ONE card + confirm modal.
     retrain_card = dmc.Card([
         dmc.Group([dmc.Text("Retraining (on demand)", fw=600, size="sm"),
                    ui.info_icon("Refits the selected model on all resolved data and OVERWRITES "
-                                "the serving artifact — hence the confirmation. Cannot be "
+                                "the serving artifact - hence the confirmation. Cannot be "
                                 "cancelled once started; it runs to completion (or error) and "
                                 "survives page changes.")], gap=6),
         dmc.Text("Default keeps the frozen hyperparameters; re-estimating searches them "
@@ -319,13 +319,13 @@ def layout(**_kwargs):
                   ]),
     ], withBorder=True, radius="lg", p="md", shadow="xs")
 
-    # 5) ARTIFACTS — explicit builds only (no auto-start on page load: the hazard
+    # 5) ARTIFACTS - explicit builds only (no auto-start on page load: the hazard
     # eval takes minutes and used to wedge the page).
     artifacts_card = dmc.Card([
         dmc.Group([
             dmc.Group([dmc.Text("Model-Performance artifacts", fw=600, size="sm"),
                        ui.info_icon("The XAI page reads pre-built eval/SHAP artifacts. Build "
-                                    "them here explicitly — nothing starts automatically. The "
+                                    "them here explicitly - nothing starts automatically. The "
                                     "hazard eval takes several minutes; the job keeps running "
                                     "if you leave the page.")], gap=6),
             dmc.Group([
@@ -371,7 +371,7 @@ def _fill_info(model, _version):
 
 
 # ---------------------------------------------------------------------------
-# Job starters (plain, fast callbacks — the poller renders the progress)
+# Job starters (plain, fast callbacks - the poller renders the progress)
 # ---------------------------------------------------------------------------
 @callback(
     Output("du-kick", "data", allow_duplicate=True),
@@ -451,7 +451,7 @@ def _start_art_all(n):
 
 
 # ---------------------------------------------------------------------------
-# THE poller — renders all three jobs from the status files, bumps versions on
+# THE poller - renders all three jobs from the status files, bumps versions on
 # completion, and disables buttons while (conflicting) jobs run.
 # ---------------------------------------------------------------------------
 @callback(
@@ -473,7 +473,7 @@ def _start_art_all(n):
 )
 def _poll(_n, _kick, seen, scored_v, info_v):
     seen = dict(seen or {})
-    u = _job_view("update", "Idle — pulls BigQuery and re-scores on demand.")
+    u = _job_view("update", "Idle - pulls BigQuery and re-scores on demand.")
     r = _job_view("retrain", "Idle.")
     a = _job_view("artifacts", _artifact_idle_text())
 
@@ -507,11 +507,11 @@ def _artifact_idle_text() -> str:
     if not missing:
         return f"All evaluation artifacts present ({len(cov['have'])}/{len(cov['all'])})."
     return ("Missing eval artifacts: " + ", ".join(missing)
-            + " — the XAI page shows empty charts for these until built.")
+            + " - the XAI page shows empty charts for these until built.")
 
 
 # ---------------------------------------------------------------------------
-# BigQuery connection test (synchronous — a COUNT(*) probe, seconds)
+# BigQuery connection test (synchronous - a COUNT(*) probe, seconds)
 # ---------------------------------------------------------------------------
 @callback(
     Output("du-bq-status", "children"),
@@ -536,8 +536,8 @@ def _bq_test(_n):
 def _fill_scored(_v):
     ov = mo.scored_overview()
     if ov["n"] == 0:
-        return [], "No scored set yet — click 'Update data & scores'."
-    summ = (f"{ov['n']:,} bookings · {mo.model_label(ov['model_used']) if ov['model_used'] else '—'} "
+        return [], "No scored set yet - click 'Update data & scores'."
+    summ = (f"{ov['n']:,} bookings · {mo.model_label(ov['model_used']) if ov['model_used'] else '-'} "
             f"· high {ov['high']:,} / medium {ov['medium']:,} / low {ov['low']:,}"
             + (f" · scored {ov['scored_at']}" if ov["scored_at"] else ""))
     return ov["rows"], summ

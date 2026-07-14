@@ -1,5 +1,5 @@
 # dash_app/pages/cancellation_history.py
-# PAGE 3 — Cancellation History (historical, read-only). Everything reads the cleaned
+# PAGE 3 - Cancellation History (historical, read-only). Everything reads the cleaned
 # reservations cache via dash_app.backend.cancellation_history; no live BigQuery, ever.
 # Cancellations are the measured quantity here, so (unlike Occupancy) they are NOT
 # excluded. One global location filter drives every chart; clicking a heatmap cell or a
@@ -38,7 +38,7 @@ _INFO = {
                "Channels with fewer than 200 bookings are omitted.",
     "stay": "Cancellation rate by length of stay. Short = 1–2 nights, Mid = 3–6, "
             "Long = 7+ nights.",
-    "lead": "Cancellation rate by lead time — the gap between when a booking was made "
+    "lead": "Cancellation rate by lead time - the gap between when a booking was made "
             "and the arrival date.",
     "timing": "Of the bookings that cancelled, the cumulative share that had cancelled "
               "by a given number of days before arrival. Shows how late rooms typically "
@@ -65,7 +65,7 @@ def layout(**_kwargs):
             dmc.Badge("Historical · read-only", color="gray", variant="light", radius="sm"),
         ], gap="sm", align="center"),
         dmc.Text("How cancellations behave over time, by channel, stay length and lead "
-                 "time — globally or per location.", size="sm", c="dimmed"),
+                 "time - globally or per location.", size="sm", c="dimmed"),
     ], justify="space-between", align="center", wrap="wrap", mb="xs")
 
     monthly_extra = dmc.SegmentedControl(id="cxl-per-prop", data=_MODE_DATA, value="agg",

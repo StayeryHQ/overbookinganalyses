@@ -1,7 +1,7 @@
 # dash_app/pages/model_performance.py
-# PAGE 4 — XAI & Model Performance. Lets a team member FAIRLY compare the four cancellation
+# PAGE 4 - XAI & Model Performance. Lets a team member FAIRLY compare the four cancellation
 # models against the naive historical-average baseline (same estimand, same rows, same
-# label — see src.model_eval), inspect where each model beats the baseline, and click into
+# label - see src.model_eval), inspect where each model beats the baseline, and click into
 # a single booking's explanation. Read-only: every figure reads the pre-computed eval /
 # SHAP artifacts (Data/model_eval_*.parquet, Data/shap_*.parquet); the heavy compute is
 # pre-warmed offline (`python main.py eval` / `python main.py explain`).
@@ -46,12 +46,12 @@ _INFO = {
           "the constant-baseline F1 at that threshold (here the comparison IS valid).",
     "rel": "Reliability diagram: predicted vs observed cancel frequency. On-diagonal = well "
            "calibrated. The orange diamond is the historical-average baseline (a good sanity "
-           "check — it should sit on the diagonal at the base rate).",
+           "check - it should sit on the diagonal at the base rate).",
     "tt": "Train vs test metric, averaged over the walk-forward folds (± std). A large "
           "train-test gap signals overfitting.",
-    "iter": "Boosting train/validation loss per iteration — only defined for the boosting "
+    "iter": "Boosting train/validation loss per iteration - only defined for the boosting "
             "models (XGBoost, HistGB); other model types show nothing rather than a faked curve.",
-    "imp": "Mean |SHAP| per feature — model-agnostic, on the same P(cancel-by-arrival) scale "
+    "imp": "Mean |SHAP| per feature - model-agnostic, on the same P(cancel-by-arrival) scale "
            "for every model, so importances are comparable across the four.",
     "bee": "SHAP beeswarm: each dot is a booking; colour is the feature value (blue low, red "
            "high). Model-agnostic on the scalar output, so the hazard model is explained on "
@@ -129,7 +129,7 @@ def layout(**_kwargs):
 
         dcc.Store(id="mp-eval-version", data=0),
         dcc.Store(id="mp-jobs-seen", data={}),
-        # Poller for the shared 'artifacts' job — progress survives page changes.
+        # Poller for the shared 'artifacts' job - progress survives page changes.
         dcc.Interval(id="mp-poll", interval=1500, n_intervals=0),
         dmc.Paper(dmc.Group([
             dmc.Stack([dmc.Text("Evaluation artifact", size="sm", fw=600),
@@ -197,14 +197,14 @@ def _status_alert(model: str):
     st = mp.eval_status(model)
     if not st["available"]:
         return dmc.Alert(
-            dmc.Text(f"No evaluation artifact for '{model}' yet — click 'Rebuild evaluation' "
+            dmc.Text(f"No evaluation artifact for '{model}' yet - click 'Rebuild evaluation' "
                      "above. The job runs in the background and survives page changes.",
                      size="sm"),
             title="Evaluation not built", color="yellow", variant="light",
             icon=html.I(className="bi bi-exclamation-triangle"), radius="md")
     if not ex.shap_available(model):
         return dmc.Alert(
-            dmc.Text(f"Metrics are ready. SHAP/importance for '{model}' is not built yet — "
+            dmc.Text(f"Metrics are ready. SHAP/importance for '{model}' is not built yet - "
                      "use 'Build all (eval + SHAP)' on the Update & Retraining page.",
                      size="sm"),
             title="SHAP not built", color="blue", variant="light",
@@ -261,7 +261,7 @@ def _save_cost(walk, empty, store):
 
 
 # ---------------------------------------------------------------------------
-# In-app rebuild of the eval artifact(s) — file-backed job (survives page changes)
+# In-app rebuild of the eval artifact(s) - file-backed job (survives page changes)
 # ---------------------------------------------------------------------------
 @callback(
     Output("mp-rebuild-status", "children", allow_duplicate=True),
@@ -273,7 +273,7 @@ def _save_cost(walk, empty, store):
 def _start_rebuild(_n, model, do_all):
     started = jobs.start("artifacts", mo.rebuild_eval_job, model, bool(do_all))
     return ("Rebuild started…" if started
-            else "An artifact job is already running — see progress below.")
+            else "An artifact job is already running - see progress below.")
 
 
 @callback(
@@ -291,7 +291,7 @@ def _poll_rebuild(_n, seen, version):
     status = st.get("status", "idle")
     if status == "running":
         pct = int(float(st.get("progress", 0)) * 100)
-        return (f"⏳ {pct}% — {st.get('message', '')} (keeps running across pages)",
+        return (f"⏳ {pct}% - {st.get('message', '')} (keeps running across pages)",
                 True, no_update, no_update)
     fin = st.get("finished")
     bump = no_update
@@ -307,7 +307,7 @@ def _poll_rebuild(_n, seen, version):
         errs = res.get("errors") or []
         txt = ("Rebuilt: " + ", ".join(parts) if parts else "Nothing to rebuild.")
         if errs:
-            txt += " — errors: " + "; ".join(errs)
+            txt += " - errors: " + "; ".join(errs)
         return txt, False, bump, seen
     return no_update, False, bump, seen
 
@@ -340,7 +340,7 @@ def _update_core(model, sel_value, walk, empty, _version):
         "No evaluation data for this selection yet.", color="gray", variant="light")
 
     pr = mp.pr_threshold(model, props, walk, empty)
-    thr_txt = f"{pr['t_cost']:.2f}" if pr else "—"
+    thr_txt = f"{pr['t_cost']:.2f}" if pr else "-"
     return (status, kpi,
             pc.fig_roc(mp.roc_global(model, props)),
             pc.fig_roc_by_location(mp.roc_by_location(model, props)),
@@ -432,11 +432,11 @@ def _fill_table(sel_value):
         arr = getattr(r, "arrival", None)
         rows.append({
             "bid": r.bid,
-            "property_name": getattr(r, "property_name", "—"),
+            "property_name": getattr(r, "property_name", "-"),
             "arrival_date": pd.to_datetime(arr, utc=True, errors="coerce").strftime("%Y-%m-%d")
-                            if arr is not None else "—",
+                            if arr is not None else "-",
             "cancel_pct": f"{float(getattr(r, 'cancel_proba', 0)) * 100:.1f}%",
-            "risk_bucket": getattr(r, "risk_bucket", "—"),
+            "risk_bucket": getattr(r, "risk_bucket", "-"),
         })
     return rows
 
