@@ -1,0 +1,52 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info
+dist
+build
+.pytest_cache
+.coverage
+htmlcov
+
+# Virtual environments
+venv
+env
+ENV
+.venv
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Documentation
+README.md
+*.md
+docs
+
+# Development files
+.pre-commit-config.yaml
+.python-version
+
+
+# Data files (if not needed in container)
+data/*
+!data/.gitkeep
+
+# Scripts not needed in runtime
+scripts
+
+# Tests
+tests
+*.test.py
+test_*.py

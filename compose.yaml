@@ -1,0 +1,51 @@
+services:
+  app:
+    hostname: streamlit-revenue
+    image: ghcr.io/stayeryhq/streamlit_revenue:${APP_IMAGE_TAG}
+    networks:
+      - streamlit
+      - traefik-public
+    secrets:
+      - bigquery_secret
+    volumes:
+      - streamlit_data:/app/data
+    environment:
+      - GCP_SERVICE_ACCOUNT_JSON_FILE=/run/secrets/bigquery_secret
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=traefik-public
+      - traefik.constraint-label=traefik-public
+
+      # Service configuration
+      - traefik.http.services.streamlit-revenue.loadbalancer.server.port=8050
+
+      # Router for /ruby-reports path
+      - traefik.http.routers.streamlit-revenue-https.rule=Host(`dev.stayomat.de`) && PathPrefix(`/_carogician`)
+      - traefik.http.routers.streamlit-revenue-https.entrypoints=https
+      - traefik.http.routers.streamlit-revenue-https.tls=true
+      - traefik.http.routers.streamlit-revenue-https.tls.certresolver=le
+
+      # ForwardAuth middleware to check authentication
+      - traefik.http.middlewares.streamlit-auth.forwardauth.address=http://stayomat_web:6000/api/forward-auth/streamlit
+      - traefik.http.middlewares.streamlit-auth.forwardauth.authResponseHeaders=X-User-Id
+      - traefik.http.middlewares.streamlit-auth.forwardauth.trustForwardHeader=true
+      - traefik.http.middlewares.streamlit-auth.forwardauth.authRequestHeaders=Cookie
+
+      # Strip /ruby-reports prefix before forwarding to Streamlit
+      - traefik.http.middlewares.streamlit-stripprefix.stripprefix.prefixes=/_carogician
+
+      # Apply middlewares
+      - traefik.http.routers.streamlit-revenue-https.middlewares=streamlit-auth,streamlit-stripprefix
+
+networks:
+  streamlit:
+    external: true
+  traefik-public:
+    external: true
+
+secrets:
+  bigquery_secret:
+    external: true
+
+volumes:
+  streamlit_data:
