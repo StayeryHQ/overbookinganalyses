@@ -48,11 +48,13 @@ def analytic_threshold(c_walk: float = COST_WALK, c_empty: float = COST_EMPTY) -
     return c_walk / (c_walk + c_empty)
 
 
-# NOTE on thresholds: the app uses exactly TWO kinds and they must not be mixed.
-#   * RISK SCALE  — configs/risk_buckets.yaml (low_max / high_min) drives every
-#     low/medium/high bucket AND label in the UI. One scale, one config file.
-#   * DECISION    — the cost-optimal threshold (operating_threshold) drives only
-#     the yes/no column `pred_cancel` and the cost analyses.
+# NOTE on thresholds: ONE cost-based threshold now drives everything.
+#   * The cost-optimal DECISION threshold (operating_threshold / analytic_threshold,
+#     from the walk/empty costs) drives the yes/no column `pred_cancel` AND the
+#     Low/Medium risk boundary in the UI.
+#   * The fixed High cutoff (src.utils.HIGH_RISK_CUTOFF = 0.85) marks High risk,
+#     always, independent of the threshold.
+# There is no separate low_max/high_min risk scale any more.
 
 
 # ---- Model registry -------------------------------------------------------
@@ -429,26 +431,29 @@ RiskBucket = Literal["low", "medium", "high"]
 
 
 def bucketize(prob: float | np.ndarray,
-              low_max: float | None = None,
-              high_min: float | None = None) -> np.ndarray | str:
-    """Map probability -> 'low' / 'medium' / 'high' using THE one risk scale
-    from configs/risk_buckets.yaml (the same thresholds behind the UI's
-    Low/Medium/High label — src.utils.risk_label). Override args are for tests.
+              threshold: float,
+              high_cut: float | None = None) -> np.ndarray | str:
+    """Map probability -> 'low' / 'medium' / 'high' using THE one cost-based rule
+    (the same rule behind the UI's Low/Medium/High label — src.utils.risk_label_cost):
+        p <  threshold          -> low
+        threshold <= p < high_cut -> medium
+        p >= high_cut           -> high
+    `threshold` is the cost-optimal decision threshold; `high_cut` defaults to the
+    fixed High cutoff (src.utils.HIGH_RISK_CUTOFF = 0.85).
 
     Scalars return a str, arrays a plain numpy array — deliberately NOT an
     indexed Series: assigning a fresh-index Series to a filtered frame once
     silently produced all-<NA> buckets.
     """
-    from .utils import load_risk_buckets
-    cfg = load_risk_buckets()
-    lo = float(cfg.get("low_max", 0.20) if low_max is None else low_max)
-    hi = float(cfg.get("high_min", 0.70) if high_min is None else high_min)
+    from .utils import HIGH_RISK_CUTOFF
+    thr = float(threshold)
+    hi = float(HIGH_RISK_CUTOFF if high_cut is None else high_cut)
     if isinstance(prob, (int, float, np.floating)):
         if prob >= hi: return "high"
-        if prob >= lo: return "medium"
+        if prob >= thr: return "medium"
         return "low"
     p = np.asarray(prob)
-    return np.where(p >= hi, "high", np.where(p >= lo, "medium", "low"))
+    return np.where(p >= hi, "high", np.where(p >= thr, "medium", "low"))
 
 
 # ---- Which model do we score with? ----------------------------------------
@@ -589,9 +594,10 @@ def score_reservations(
         If given, also write the result to Data/<save_as> as parquet.
     """
     chosen = resolve_model(model_name)
-    # ONE risk scale: buckets always come from configs/risk_buckets.yaml. The
-    # cost-optimal threshold feeds ONLY the yes/no decision column pred_cancel
-    # (manual `threshold` overrides it, e.g. from a UI slider).
+    # ONE cost-based rule: the cost-optimal decision threshold drives BOTH the yes/no
+    # column pred_cancel AND the Low/Medium risk boundary; the fixed 0.85 cutoff
+    # (src.utils.HIGH_RISK_CUTOFF) marks High. A manual `threshold` overrides the
+    # cost-optimal value (e.g. from the app's cost inputs).
     decision_thr = (float(threshold) if threshold is not None
                     else operating_threshold(chosen))
 
@@ -607,7 +613,7 @@ def score_reservations(
     feat["cancel_proba"]     = proba
     feat["pred_cancel"]      = (proba >= decision_thr).astype(int)
     feat["cancel_threshold"] = decision_thr
-    feat["risk_bucket"]      = bucketize(proba)     # ndarray -> position-safe
+    feat["risk_bucket"]      = bucketize(proba, decision_thr)  # ndarray -> position-safe
     feat["model_used"]       = chosen
     feat["scored_at"]        = pd.Timestamp.utcnow()
 

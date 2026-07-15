@@ -1,7 +1,7 @@
 # dash_app/pages/occupancy.py
 # MAIN PAGE - Occupancy & Overbooking. Fixed 14-day forward window; property filter
 # only (no date filter). Layout top→bottom: KPI tiles → heatmap → composition charts
-# → booking table → cost panel → room-type sub-view. Shell + KPIs render immediately
+# → booking table → cost panel. Shell + KPIs render immediately
 # from the local cache; scoring runs in a BACKGROUND callback. Already-cancelled
 # bookings are excluded centrally in the data layer. No filter/table interaction ever
 # hits BigQuery.
@@ -16,19 +16,12 @@ from dash import Input, Output, State, callback, ctx, dcc, html, no_update
 
 from dash_app import theme
 from dash_app.backend import data_access as da
+from dash_app.backend import model_performance as mp   # shared global cost-store
 from dash_app.components import panels
 from dash_app.components import ui
-from src import benchmark_overbooking_allowance
-from src import overbooking as ob
 
 dash.register_page(__name__, path="/occupancy", name="Occupancy & Predictions",
                    order=1, title="STAYERY · Occupancy")
-
-
-def _iso_week(today: pd.Timestamp | None = None) -> str:
-    t = today or pd.Timestamp.now("UTC")
-    iso = t.isocalendar()
-    return f"{iso[0]}-W{int(iso[1]):02d}"
 
 
 def _selected_props(value) -> list[str]:
@@ -61,8 +54,6 @@ def layout(**_kwargs):
             leftSection=html.I(className="bi bi-geo-alt"),
             comboboxProps={"withinPortal": True},
             style={"flex": "1 1 320px", "minWidth": "260px"}),
-        dmc.NumberInput(id="occ-risk-threshold", label="High-risk threshold", min=0, max=1,
-                        step=0.05, value=da.DEFAULT_RISK_THRESHOLD, style={"width": "170px"}),
         dmc.Stack([
             dmc.Text("Scores", size="sm", fw=600),
             dmc.Group([
@@ -77,6 +68,8 @@ def layout(**_kwargs):
         dcc.Store(id="occ-scored-version", data=0),
         dcc.Store(id="occ-pernight-store"),
         dcc.Store(id="occ-selection"),                    # {"property":..,"day":..} or None
+        # Fires once on page load so the cost inputs get pre-filled from the shared store.
+        dcc.Interval(id="occ-costs-init", interval=200, n_intervals=0, max_intervals=1),
         # NOTE: "cost-store" now lives in the GLOBAL app.layout (single shared source of
         # truth across pages). Declaring it here too would duplicate the component id.
     ])
@@ -116,15 +109,14 @@ def layout(**_kwargs):
             span={"base": 12, "md": 4}),
     ], gutter="md")
 
-    cost_row = dmc.Grid([
-        dmc.GridCol(panels.cost_panel(prop_opts), span={"base": 12, "md": 6}),
-        dmc.GridCol(html.Div(id="occ-reco"), span={"base": 12, "md": 6}),
-    ], gutter="md")
-
     return dmc.Stack([
         header,
         stores,
         controls,
+
+        # Global overbooking costs + derived cost-optimal threshold (single entry point)
+        panels.cost_controls(),
+
         html.Div(id="occ-scored-warning"),
 
         # 1) KPI tiles (filled by callback; skeleton until then)
@@ -138,12 +130,6 @@ def layout(**_kwargs):
 
         # 4) Booking table (filtered by heatmap selection) + detail side panel
         booking_row,
-
-        # 5) Cost-parameter panel + recommendation
-        cost_row,
-
-        # 6) Room-type sub-view (single property only)
-        html.Div(id="occ-roomtype-section"),
     ], gap="md")
 
 
@@ -157,9 +143,8 @@ def layout(**_kwargs):
     Input("occ-heatmap", "clickData"),
     Input("occ-clear-btn", "n_clicks"),
     Input("occ-property-filter", "value"),
-    Input("occ-risk-threshold", "value"),
 )
-def _selection(click, _clear, _props, _thr):
+def _selection(click, _clear, _props):
     if ctx.triggered_id == "occ-heatmap" and click:
         p = click["points"][0]
         sel = {"property": p["y"], "day": p["x"]}
@@ -168,23 +153,15 @@ def _selection(click, _clear, _props, _thr):
 
 
 # ---------------------------------------------------------------------------
-# Cost panel's active-property selector: follows the heatmap selection, else the
-# property filter.
+# Cost-optimal threshold badge (derived from the global costs; drives everything)
 # ---------------------------------------------------------------------------
 @callback(
-    Output("cost-active-property", "data"),   # dmc.Select uses `data` (was dbc `options`)
-    Output("cost-active-property", "value"),
-    Input("occ-property-filter", "value"),
-    Input("occ-selection", "data"),
-    State("cost-active-property", "value"),
+    Output("occ-thr-badge", "children"),
+    Input("cost-store", "data"),
 )
-def _sync_active_property(selected, selection, current):
-    props = _selected_props(selected) or da.property_list()
-    opts = [{"label": p, "value": p} for p in props]
-    if selection and selection.get("property") in props:
-        return opts, selection["property"]
-    value = current if current in props else (props[0] if props else None)
-    return opts, value
+def _threshold_badge(store):
+    walk, empty, high, mult = mp.read_cost_full(store)
+    return f"{da.cost_optimal_threshold(walk, empty, high, mult):.0%}"
 
 
 # ---------------------------------------------------------------------------
@@ -196,14 +173,15 @@ def _sync_active_property(selected, selection, current):
     Output("occ-pernight-store", "data"),
     Output("occ-scored-warning", "children"),
     Input("occ-property-filter", "value"),
-    Input("occ-risk-threshold", "value"),
+    Input("cost-store", "data"),
     Input("occ-scored-version", "data"),
 )
-def _update_main(selected, threshold, _version):
+def _update_main(selected, cost_store, _version):
     props = _selected_props(selected)
     freshness = da.data_freshness()
     mm = da.model_meta()
-    thr = da.DEFAULT_RISK_THRESHOLD if threshold is None else float(threshold)
+    walk, empty, high, mult = mp.read_cost_full(cost_store)
+    thr = da.cost_optimal_threshold(walk, empty, high, mult)
 
     scored = da.load_scored()
     grid_fig = panels.heatmap_figure(da.heatmap_grid(props or None, thr))
@@ -236,10 +214,13 @@ def _update_main(selected, threshold, _version):
     Output("occ-grid", "rowData"),
     Input("occ-selection", "data"),
     Input("occ-property-filter", "value"),
+    Input("cost-store", "data"),
     Input("occ-scored-version", "data"),
 )
-def _update_views(selection, selected, _version):
-    scored = da.add_display_columns(da.load_scored())
+def _update_views(selection, selected, cost_store, _version):
+    walk, empty, high, mult = mp.read_cost_full(cost_store)
+    thr = da.cost_optimal_threshold(walk, empty, high, mult)
+    scored = da.add_display_columns(da.load_scored(), thr)   # risk labels from the cost threshold
     if scored.empty:
         return panels.composition_row(pd.DataFrame(), "no scored data"), []
 
@@ -275,80 +256,11 @@ def _update_side_panel(selected_rows):
     return panels.side_panel_content(record)
 
 
-# ---------------------------------------------------------------------------
-# Overbooking recommendation - follows the active property; if a heatmap DAY is
-# selected, the recommendation is for that specific night.
-# ---------------------------------------------------------------------------
-@callback(
-    Output("occ-reco", "children"),
-    Input("cost-walk", "value"),
-    Input("cost-empty", "value"),
-    Input("cost-high-demand", "checked"),
-    Input("cost-multiplier", "value"),
-    Input("cost-active-property", "value"),
-    Input("occ-pernight-store", "data"),
-    Input("occ-selection", "data"),
-)
-def _update_recommendation(cost_walk, cost_empty, high_demand, multiplier, prop,
-                           pernight_data, selection):
-    costs_ready = cost_walk is not None and cost_empty is not None
-    if not prop or not pernight_data:
-        return panels.recommendation_card(None, costs_ready, prop)
-
-    pernight = pd.DataFrame(pernight_data)
-    if "hotel" in pernight.columns:
-        pernight = pernight[pernight["hotel"] == prop]
-    # If a specific day is selected for this property, recommend for that night only.
-    if selection and selection.get("property") == prop and "arrival_date" in pernight.columns:
-        pernight = pernight[pernight["arrival_date"] == selection.get("day")]
-    if pernight.empty:
-        return panels.recommendation_card(None, costs_ready, prop)
-    if not costs_ready:
-        return panels.recommendation_card(None, False, prop)
-
-    reco = ob.recommend_from_per_night(
-        pernight, cost_empty=float(cost_empty), cost_walk=float(cost_walk),
-        high_demand=bool(high_demand),
-        high_demand_multiplier=float(multiplier or ob.DEFAULT_HIGH_DEMAND_MULTIPLIER),
-    )
-    summary = ob.summarize_property(reco)
-    # Old house rule (2 rooms under 50 units, else 4) as a sanity reference.
-    units = da.property_capacity().get(prop)
-    bench = benchmark_overbooking_allowance(units) if units else None
-    return panels.recommendation_card(summary, True, prop, benchmark=bench)
-
 
 # ---------------------------------------------------------------------------
-# Room-type occupancy sub-view (single property only)
-# ---------------------------------------------------------------------------
-@callback(
-    Output("occ-roomtype-section", "children"),
-    Input("occ-property-filter", "value"),
-    Input("occ-scored-version", "data"),
-)
-def _update_roomtype(selected, _version):
-    props = _selected_props(selected)
-    if len(props) != 1:                       # visible only for a single property
-        return html.Div()
-    prop = props[0]
-    from src import load_room_type_capacity
-    occ = da.room_type_occupancy(prop)
-    caps = load_room_type_capacity().get(prop, {})
-    fig = panels.room_type_figure(occ, caps, prop)
-    hint = None if caps else dmc.Alert(
-        "No room-type capacities set for this property yet - fill in "
-        "configs/room_type_capacity.yaml to show the dashed capacity lines.",
-        color="gray", variant="light", radius="md",
-        icon=html.I(className="bi bi-info-circle"))
-    return dmc.Card([
-        dmc.Text("Room-type occupancy", fw=600, size="sm", mb=6),
-        dcc.Graph(figure=fig, config={"displayModeBar": False}),
-        hint,
-    ], withBorder=True, radius="lg", p="md")
-
-
-# ---------------------------------------------------------------------------
-# Cost-parameter persistence (per property, per ISO week) + visible pre-fill
+# Global cost persistence (one shared entry) + visible empty-room pre-fill.
+# Loads once on page open from the shared store (so values set on Model Performance
+# show here too); saves on every edit back to the same global key.
 # ---------------------------------------------------------------------------
 @callback(
     Output("cost-walk", "value"),
@@ -356,46 +268,42 @@ def _update_roomtype(selected, _version):
     Output("cost-high-demand", "checked"),
     Output("cost-multiplier", "value"),
     Output("cost-empty-help", "children"),
-    Input("cost-active-property", "value"),
+    Input("occ-costs-init", "n_intervals"),
     State("cost-store", "data"),
 )
-def _load_cost_params(prop, store):
-    store = store or {}
-    key = f"{prop}|{_iso_week()}"
-    if key in store:
-        s = store[key]
-        help_txt = "Loaded your saved values for this property/week."
-        return (s.get("walk"), s.get("empty"), bool(s.get("high", False)),
-                s.get("mult", ob.DEFAULT_HIGH_DEMAND_MULTIPLIER), help_txt)
-    # New property/week: walk cost has no default (RM sets it). Empty-room cost is
-    # PRE-FILLED and shown in the field from the best available source.
-    prefill, source = da.empty_room_cost_prefill()
-    empty_val = prefill.get(prop)
-    help_txt = (f"Empty-room cost pre-filled from {source} = {empty_val}. "
-                "Adjust as needed." if empty_val is not None
-                else "No pre-fill available yet - enter the empty-room cost.")
-    return None, empty_val, False, ob.DEFAULT_HIGH_DEMAND_MULTIPLIER, help_txt
+def _load_cost_params(_tick, store):
+    s = (store or {}).get(mp.GLOBAL_COST_KEY) or {}
+    walk = s.get("walk")          # no default: the RM sets the walk cost
+    empty = s.get("empty")
+    high = bool(s.get("high", False))
+    mult = s.get("mult") or mp.sc_default_multiplier()
+    if empty in (None, ""):
+        # PRE-FILL the empty-room cost from the best available (global) source.
+        empty, source = da.empty_room_cost_prefill_global()
+        help_txt = (f"Empty-room cost pre-filled from {source} = {empty}. Adjust as needed."
+                    if empty is not None
+                    else "No pre-fill available yet - enter the empty-room cost.")
+    else:
+        help_txt = "Costs are global - shared with the Model Performance page."
+    return walk, empty, high, mult, help_txt
 
 
 @callback(
-    # allow_duplicate: the Model-Performance page also writes cost-store (its own global-cost
-    # key). Both target the same shared store; each declares allow_duplicate so registration
-    # is independent of page import order.
+    # allow_duplicate: Model Performance writes the SAME global cost entry; each page
+    # declares allow_duplicate so registration is independent of page import order.
     Output("cost-store", "data", allow_duplicate=True),
     Input("cost-walk", "value"),
     Input("cost-empty", "value"),
     Input("cost-high-demand", "checked"),
     Input("cost-multiplier", "value"),
-    State("cost-active-property", "value"),
     State("cost-store", "data"),
     prevent_initial_call=True,
 )
-def _save_cost_params(walk, empty, high, mult, prop, store):
-    if not prop:
-        return no_update
+def _save_cost_params(walk, empty, high, mult, store):
     store = dict(store or {})
-    store[f"{prop}|{_iso_week()}"] = {"walk": walk, "empty": empty,
-                                      "high": bool(high), "mult": mult}
+    cur = dict(store.get(mp.GLOBAL_COST_KEY) or {})
+    cur.update({"walk": walk, "empty": empty, "high": bool(high), "mult": mult})
+    store[mp.GLOBAL_COST_KEY] = cur
     return store
 
 

@@ -1,8 +1,7 @@
 # dash_app/components/panels.py
 # Pure builder functions for the Occupancy page: KPI tiles, the ag-grid column defs
-# + row data, the booking side panel, the cost-parameter panel, the overbooking
-# recommendation card, and the room-type occupancy figure. Kept separate from the
-# page so occupancy.py holds only layout + callbacks.
+# + row data, the booking side panel, the cost-parameter panel, and the occupancy
+# heatmap. Kept separate from the page so occupancy.py holds only layout + callbacks.
 
 from __future__ import annotations
 
@@ -14,7 +13,7 @@ from dash import dcc, html
 
 from dash_app import theme
 from dash_app.components import ui
-from src.utils import resolve_room_type_capacity
+
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +90,8 @@ def booking_column_defs() -> list[dict]:
                 "function": "(params.value == null ? '' : (params.value*100).toFixed(0) + '%')"
             },
         },
-        # Risk = config-driven Low/Medium/High label (src.risk_label via data layer).
+        # Risk = cost-based Low/Medium/High label (src.risk_label_cost via data layer):
+        # Low < cost threshold <= Medium < 0.85 <= High.
         {
             "headerName": "Risk",
             "field": "risk_label",
@@ -246,221 +246,69 @@ def side_panel_content(record: dict | None) -> list:
 
 
 # ---------------------------------------------------------------------------
-# Cost-parameter panel (static layout; values are set/persisted via callbacks)
+# Global overbooking cost controls (single entry point) + derived threshold.
+# Placed at the TOP of the Occupancy & Predictions page; the same values are
+# shared app-wide via the global cost-store (Model Performance reads/writes them
+# too). Values are set/persisted via callbacks.
 # ---------------------------------------------------------------------------
-def cost_panel(active_property_options: list[dict]) -> dmc.Card:
-    first = active_property_options[0]["value"] if active_property_options else None
-    return dmc.Card(
-        [
-            dmc.Text("Overbooking cost parameters", fw=600, size="sm"),
-            dmc.Text(
-                "Per property, per week. Saved in your browser so they survive a reload.",
-                size="xs",
-                c="dimmed",
-                mb="xs",
-            ),
-            # dmc.Select uses `data` (updated by the _sync_active_property callback).
-            dmc.Select(
-                id="cost-active-property",
-                label="Property",
-                data=active_property_options,
-                value=first,
-                clearable=False,
-                allowDeselect=False,
-            ),
-            dmc.SimpleGrid(
-                [
-                    # No min: negative values allowed (a walk can be net-positive if resold at a
-                    # premium; an empty-room cost can be negative in edge cases).
-                    dmc.NumberInput(
-                        id="cost-walk",
-                        label="Cost of walking a guest",
-                        step=1,
-                        placeholder="set your own",
-                    ),
-                    dmc.NumberInput(
-                        id="cost-empty",
-                        label="Cost of an empty room",
-                        step=1,
-                        placeholder="pre-filled from room revenue",
-                    ),
-                ],
-                cols=2,
-                spacing="sm",
-                mt="sm",
-            ),
-            dmc.SimpleGrid(
-                [
-                    # dmc.Switch: state lives on `checked` - the occupancy cost
-                    # callbacks read/write that property.
-                    dmc.Switch(
-                        id="cost-high-demand",
-                        label="High-demand period",
-                        checked=False,
-                        mt="md",
-                    ),
-                    dmc.NumberInput(
-                        id="cost-multiplier",
-                        label="Walk-cost multiplier",
-                        min=1,
-                        step=0.1,
-                        value=1.5,
-                    ),
-                ],
-                cols=2,
-                spacing="sm",
-                mt="sm",
-            ),
-            dmc.Text(id="cost-empty-help", c="dimmed", mt="xs", size="xs"),
-            dmc.Text("Saved per property and ISO week - a new week starts with fresh "
-                     "values (empty-room cost pre-filled again).",
-                     c="dimmed", mt=2, size="xs"),
-        ],
-        withBorder=True,
-        radius="lg",
-        p="md",
-    )
-
-
-# ---------------------------------------------------------------------------
-# Overbooking recommendation card
-# ---------------------------------------------------------------------------
-_RECO_TOOLTIP = (
-    "The tool treats freed rooms per night as a Poisson-binomial random variable "
-    "(mean = sum of cancel probabilities, i.e. expected cancellations). It then picks "
-    "the overbooking level that minimises expected cost: overbooking too little leaves "
-    "rooms empty (cost of an empty room); overbooking too much means walking guests "
-    "(cost of a walked guest). Because walking is usually far more expensive, the "
-    "recommendation stays below the expected number of cancellations. 'High-demand "
-    "period' raises the walk cost, making the recommendation more conservative."
+_MULT_HELP = (
+    "High-demand period: walking a guest hurts more, so the walk cost is multiplied "
+    "by this factor. That raises the EFFECTIVE walk cost and therefore the cost-optimal "
+    "threshold — the model flags fewer bookings, only the clearest cancellations."
 )
 
 
-def recommendation_card(
-    summary: dict | None, costs_ready: bool, property_name: str | None,
-    benchmark: int | None = None,
-) -> dmc.Card:
-    """The overbooking recommendation for one property. `benchmark` is the old
-    house rule (2 rooms under 50 units, else 4) shown next to the model's number
-    as an instant sanity check for the RM."""
-    if not property_name:
-        inner = [
-            dmc.Text(
-                "Select a property in the cost panel to see its recommendation.",
-                c="dimmed",
-                size="sm",
-            )
-        ]
-    elif not costs_ready:
-        inner = [
-            dmc.Text(
-                "Enter the walk cost (and empty-room cost) to get a recommendation.",
-                c="dimmed",
-                size="sm",
-            )
-        ]
-    elif not summary or summary.get("median_reco") is None:
-        inner = [
-            dmc.Text(
-                "No upcoming bookings for this property in the next 14 days.",
-                c="dimmed",
-                size="sm",
-            )
-        ]
-    else:
-        inner = [
-            dmc.Group(
-                [
-                    dmc.Text(
-                        "Recommended overbooking allowance", c="dimmed", size="sm"
-                    ),
-                    ui.info_icon(_RECO_TOOLTIP),
-                ],
-                gap=6,
-                wrap="nowrap",
-            ),
-            dmc.Text(
-                f"{summary['median_reco']} rooms",
-                c=theme.BLACK,
-                style={
-                    "fontSize": "2.4rem",
-                    "fontWeight": 700,
-                    "lineHeight": 1.1,
-                    "fontFamily": theme.FONT_FAMILY,
-                },
-            ),
-            dmc.Text(
-                f"typical per night · peak night {summary['max_reco']} · "
-                f"avg expected cancellations {summary['mean_exp_freed']:.1f}/night "
-                f"across {summary['nights']} nights",
-                c="dimmed",
-                size="xs",
-            ),
-        ]
-        if benchmark is not None:
-            inner.append(dmc.Text(
-                f"House benchmark for comparison: {benchmark} rooms "
-                "(rule of thumb: 2 under 50 units, else 4).",
-                c="dimmed", size="xs",
-            ))
-    return dmc.Card(
-        [dmc.Text("Recommendation", fw=600, size="sm", mb=6), *inner],
-        withBorder=True,
-        radius="lg",
-        p="md",
-        style={"backgroundColor": "#FFFDF0"},
-    )
+def cost_controls() -> dmc.Paper:
+    """One global set of overbooking costs + the derived cost-optimal threshold.
 
-
-# ---------------------------------------------------------------------------
-# Room-type occupancy figure (single property)
-# ---------------------------------------------------------------------------
-def room_type_figure(
-    occ_df: pd.DataFrame, capacities: dict, property_name: str
-) -> go.Figure:
-    fig = go.Figure()
-    if occ_df.empty:
-        fig.update_layout(title=f"No upcoming occupancy data for {property_name}")
-        return theme.brand_figure(fig)
-    groups = sorted(occ_df["unitGroup"].unique())
-    for i, g in enumerate(groups):
-        col = theme.CATEGORICAL[i % len(theme.CATEGORICAL)]
-        gd = occ_df[occ_df["unitGroup"] == g].sort_values("date")
-        fig.add_trace(
-            go.Scatter(
-                x=gd["date"],
-                y=gd["occupied"],
-                mode="lines+markers",
-                name=str(g),
-                line=dict(color=col, width=2),
-            )
-        )
-        cap = resolve_room_type_capacity(capacities, property_name, str(g))
-        if cap is not None:
-            # dashed capacity reference line in the same colour as the room type
-            fig.add_trace(
-                go.Scatter(
-                    x=[occ_df["date"].min(), occ_df["date"].max()],
-                    y=[cap, cap],
-                    mode="lines",
-                    line=dict(color=col, width=1, dash="dash"),
-                    name=f"{g} capacity",
-                    showlegend=False,
-                    hoverinfo="skip",
-                )
-            )
-    fig.update_layout(
-        title=f"Room-type occupancy · {property_name} · next 14 days",
-        yaxis_title="Occupied units",
-        xaxis_title=None,
-        height=380,
+    Negative values are allowed on both cost inputs (a walk can be net-positive if
+    resold at a premium; an empty-room cost can be negative in edge cases). The
+    threshold badge is filled by a callback and drives the heatmap count, the KPI and
+    the table's Low/Medium boundary. High risk stays fixed at ≥ 85%.
+    """
+    return dmc.Paper(
+        dmc.Stack([
+            dmc.Group([
+                dmc.Text("Overbooking costs", fw=600, size="sm"),
+                dmc.Text("One global setting — shared with Model Performance.",
+                         size="xs", c="dimmed"),
+            ], gap="sm", align="center"),
+            dmc.Group([
+                # No min on the cost inputs: negative values are allowed.
+                dmc.NumberInput(id="cost-walk", label="Cost of walking a guest (€)",
+                                step=1, placeholder="set your own",
+                                style={"width": "185px"}),
+                dmc.NumberInput(id="cost-empty", label="Cost of an empty room (€)",
+                                step=1, placeholder="pre-filled from room revenue",
+                                style={"width": "205px"}),
+                dmc.Switch(id="cost-high-demand", label="High-demand period",
+                           checked=False),
+                dmc.Group([
+                    dmc.NumberInput(id="cost-multiplier", label="Walk-cost multiplier",
+                                    min=1, step=0.1, value=1.5, style={"width": "150px"}),
+                    ui.info_icon(_MULT_HELP),
+                ], gap=4, align="flex-end", wrap="nowrap"),
+                dmc.Stack([
+                    dmc.Group([
+                        dmc.Text("Cost-optimal threshold", size="xs", c="dimmed", fw=600),
+                        ui.info_icon("Derived from the costs above (with the high-demand "
+                                     "multiplier applied). Flags a booking as a likely "
+                                     "cancellation at/above this probability; also the "
+                                     "Low/Medium boundary in the table below."),
+                    ], gap=4, align="center", wrap="nowrap"),
+                    dmc.Text(id="occ-thr-badge", size="lg", fw=700),
+                ], gap=0),
+            ], align="flex-end", gap="md", wrap="wrap"),
+            dmc.Text(id="cost-empty-help", c="dimmed", size="xs"),
+        ], gap="xs"),
+        p="md", radius="lg", withBorder=True,
     )
-    return theme.brand_figure(fig)
 
 
 # ---------------------------------------------------------------------------
 # Heatmap: property (rows) × 14 days (cols). Colour = occupancy %; the other
-# three metrics live in the hover (four numbers per tile is too much text).
+# metrics (occupied, arrivals, departures, expected + over-threshold
+# cancellations) live in the hover — too many numbers to print in each tile.
 # ---------------------------------------------------------------------------
 _OCC_COLORSCALE = [[0.0, "#FFFFFF"], [0.5, theme.YELLOW], [1.0, theme.ORANGE]]
 
@@ -483,6 +331,7 @@ def heatmap_figure(grid: pd.DataFrame) -> go.Figure:
     occ_pct = piv("occupancy_pct")
     occupied = piv("occupied_units")
     arr, dep, pred = piv("arrivals"), piv("departures"), piv("pred_cancels")
+    expc = piv("exp_cancels") if "exp_cancels" in grid.columns else occupied * 0.0
 
     has_pct = bool(np.isfinite(occ_pct.to_numpy(dtype="float64")).any())
     z = (
@@ -491,16 +340,20 @@ def heatmap_figure(grid: pd.DataFrame) -> go.Figure:
         else occupied.to_numpy(dtype="float64")
     )
     unit = "%" if has_pct else " units"
-    # per-cell extra numbers for the hover
+    # per-cell extra numbers for the hover. Predicted cancellations are shown TWO ways:
+    #   * expected (Σ P(cancel) over the night's arrivals) — threshold-independent
+    #   * count over the current COST-BASED threshold (moves with the walk/empty costs)
     cd = np.dstack(
-        [occupied.to_numpy(), arr.to_numpy(), dep.to_numpy(), pred.to_numpy()]
+        [occupied.to_numpy(), arr.to_numpy(), dep.to_numpy(),
+         pred.to_numpy(), expc.to_numpy()]
     )
     hover = (
         "<b>%{y}</b> · %{x}"
         "<br>Occupancy: %{z:.0f}" + unit + "<br>Occupied: %{customdata[0]:.0f}"
         "<br>Arrivals: %{customdata[1]:.0f}"
         "<br>Departures: %{customdata[2]:.0f}"
-        "<br>Pred. cancellations: %{customdata[3]:.0f}"
+        "<br>Expected cancellations (Σp): %{customdata[4]:.1f}"
+        "<br>Above cost threshold: %{customdata[3]:.0f}"
         "<extra></extra>"
     )
     fig = go.Figure(
@@ -529,8 +382,8 @@ def heatmap_figure(grid: pd.DataFrame) -> go.Figure:
     title = (
         "Occupancy heatmap · next 14 days (click a tile to filter below)"
         if has_pct
-        else "Occupancy heatmap · occupied UNITS (set capacities in "
-        "configs/room_type_capacity.yaml to show %) · click a tile to filter"
+        else "Occupancy heatmap · occupied UNITS (room counts unavailable, "
+        "so no % shown) · click a tile to filter"
     )
     fig.update_layout(
         title=title,

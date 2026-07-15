@@ -381,8 +381,9 @@ def _fill_info(model, _version):
     prevent_initial_call=True,
 )
 def _start_update(n, model, cost_store):
-    walk, empty = mp.read_cost_params(cost_store)
-    jobs.start("update", mo.update_all, model, walk, empty)
+    walk, empty, high, mult = mp.read_cost_full(cost_store)
+    eff_walk = src.effective_walk_cost(walk, high, mult)   # apply high-demand multiplier
+    jobs.start("update", mo.update_all, model, eff_walk, empty)
     return n
 
 

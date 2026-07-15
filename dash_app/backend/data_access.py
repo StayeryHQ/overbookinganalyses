@@ -19,9 +19,11 @@ from src import scoring as sc
 
 # ---- Constants -------------------------------------------------------------
 WINDOW_DAYS = 14                      # fixed forward-looking window for this page
-# KPI "high-risk" default = the 'high' threshold of THE one risk scale
-# (configs/risk_buckets.yaml) — same scale as buckets and table labels.
-DEFAULT_RISK_THRESHOLD = float(src.load_risk_buckets().get("high_min", 0.70))
+# Default DECISION threshold when no costs are entered yet: the analytic cost-optimal
+# point for the project's default walk/empty costs. Everything downstream (heatmap
+# count, KPI, table Low/Medium boundary) uses the cost-based threshold instead once
+# costs are set — see cost_optimal_threshold().
+DEFAULT_RISK_THRESHOLD = float(sc.analytic_threshold())
 RAW_CACHE_FILE = "reservations_raw_no_pii.parquet"
 SCORED_CACHE_FILE = "scored_upcoming.parquet"
 CLEAN_META_FILE = "reservations_clean_meta.json"
@@ -190,47 +192,23 @@ def per_night_expected_freed(scored_window: pd.DataFrame,
     return per_night_table(scored_window, p.to_numpy(), hotel_col=hotel_col)
 
 
-# ---- Room-type occupancy over the window (single property) -----------------
-def room_type_occupancy(property_name: str,
-                        today: pd.Timestamp | None = None) -> pd.DataFrame:
-    """Long frame [date, unitGroup, occupied] = # occupying bookings per room type
-    per night over the window, for one property.
-
-    Occupancy counts bookings that OCCUPY the night (status Confirmed/InHouse, not
-    cancelled/no-show/checked-out) and whose stay overlaps the night. Reads the
-    reservations cache only. Empty frame if no cache / no data.
-    """
-    df = _reservations_cached()
-    if df.empty or not {"property_name", "unitGroup_name", "arrival", "departure", "status"} <= set(df.columns):
-        return pd.DataFrame(columns=["date", "unitGroup", "occupied"])
-    start, end = window_bounds(today)
-    sub = df[(df["property_name"] == property_name) & (df["status"].isin(OCCUPYING_STATUSES))].copy()
-    if sub.empty:
-        return pd.DataFrame(columns=["date", "unitGroup", "occupied"])
-    # Keep everything as tz-aware pandas Series (UTC) and compare with pandas — a
-    # tz-aware Series.to_numpy() yields object Timestamps, which breaks numpy compares.
-    arr = pd.to_datetime(sub["arrival"], utc=True).dt.normalize()
-    dep = pd.to_datetime(sub["departure"], utc=True).dt.normalize()
-    ug = sub["unitGroup_name"]
-    nights = pd.date_range(start, end - pd.Timedelta(days=1), freq="D", tz="UTC")
-    records = []
-    for night in nights:
-        occ_mask = (arr <= night) & (dep > night)   # arrived on/before night, departs after
-        if occ_mask.any():
-            for group, cnt in ug[occ_mask].value_counts().items():
-                records.append({"date": night, "unitGroup": group, "occupied": int(cnt)})
-    return pd.DataFrame(records, columns=["date", "unitGroup", "occupied"])
-
-
 # ---- Display enrichment: risk label + group flag ---------------------------
-def add_display_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Add `risk_label` (config-driven Low/Medium/High) and `is_group` (booking is
-    part of a group: blockId or groupName present). No-op on an empty frame."""
+def add_display_columns(df: pd.DataFrame, threshold: float | None = None) -> pd.DataFrame:
+    """Add `risk_label` (cost-based Low/Medium/High) and `is_group` (booking is
+    part of a group: blockId or groupName present). No-op on an empty frame.
+
+    `threshold` is the cost-based decision threshold — it is the Low/Medium boundary;
+    High is the fixed 0.85 cutoff (src.HIGH_RISK_CUTOFF). Defaults to
+    DEFAULT_RISK_THRESHOLD so the column is never blank just because no costs were
+    passed. Recomputed live at display time, so changing the costs re-colours the
+    table without re-scoring.
+    """
     if df.empty:
         return df
     out = df.copy()
+    thr = DEFAULT_RISK_THRESHOLD if threshold is None else float(threshold)
     if "cancel_proba" in out.columns:
-        out["risk_label"] = [src.risk_label(p) for p in out["cancel_proba"]]
+        out["risk_label"] = [src.risk_label_cost(p, thr) for p in out["cancel_proba"]]
     else:
         out["risk_label"] = ""
 
@@ -284,18 +262,37 @@ def _capacity_from_perf() -> dict[str, int]:
 def property_capacity() -> dict[str, int]:
     """Total bookable units per property_name, for the occupancy-% heatmap.
 
-    Primary source is the performance table's houseCount (real room counts), mapped to
-    property_name via the reservations cache's property_code. Falls back to the sum of
-    the hand-maintained room-type capacities in configs/room_type_capacity.yaml (unset
-    today). Returns {} only if neither is available — the heatmap then shows occupied
-    units without a % (never a fabricated %).
+    Single source: the performance table's houseCount (real room counts), mapped to
+    property_name via the reservations cache's property_code. Returns {} if that is
+    unavailable — the heatmap then shows occupied units without a % (never a
+    fabricated %).
     """
-    caps = _capacity_from_perf()
-    if caps:
-        return caps
-    yaml_caps = src.load_room_type_capacity()   # fallback: hand-maintained room types
-    return {prop: int(sum(groups.values())) for prop, groups in yaml_caps.items() if groups}
+    return _capacity_from_perf()
 
+
+# ---- ONE cost-based decision threshold (shared by every view) --------------
+def cost_optimal_threshold(walk: float | None, empty: float | None,
+                           high_demand: bool = False,
+                           multiplier: float | None = None,
+                           model: str | None = None) -> float:
+    """The single cost-optimal DECISION threshold from the entered walk/empty costs.
+
+    Applies the high-demand multiplier to the walk cost first (effective walk cost),
+    then uses the model's cost-minimising validation point (sc.operating_threshold),
+    falling back to the analytic Bayes value if validation predictions are missing.
+    Clamped to [0, 1] so negative or degenerate costs can never produce an
+    out-of-range threshold. This is what drives the heatmap count, the KPI, and the
+    table's Low/Medium boundary.
+    """
+    w = sc.COST_WALK if walk in (None, "") else float(walk)
+    e = sc.COST_EMPTY if empty in (None, "") else float(empty)
+    mult = src.DEFAULT_HIGH_DEMAND_MULTIPLIER if multiplier in (None, "") else float(multiplier)
+    eff_walk = src.effective_walk_cost(w, bool(high_demand), mult)
+    try:
+        thr = sc.operating_threshold(sc.resolve_model(model), eff_walk, e)
+    except Exception:  # noqa: BLE001 — no artifact/validation preds -> analytic Bayes
+        thr = sc.analytic_threshold(eff_walk, e)
+    return float(min(max(thr, 0.0), 1.0))
 
 # ---- Empty-room cost pre-fill (visible in the input) -----------------------
 def empty_room_cost_prefill() -> tuple[dict[str, float], str]:
@@ -328,6 +325,17 @@ def empty_room_cost_prefill() -> tuple[dict[str, float], str]:
     return {str(k): round(float(v), 2) for k, v in means.items()}, "avg. room revenue / night (proxy)"
 
 
+def empty_room_cost_prefill_global() -> tuple[float | None, str]:
+    """One global empty-room cost pre-fill: the average of the per-property values
+    from empty_room_cost_prefill(). None if no source is available (then the RM just
+    enters it). Used because the costs are now a single global setting."""
+    by_name, source = empty_room_cost_prefill()
+    if not by_name:
+        return None, source
+    val = round(float(sum(by_name.values()) / len(by_name)), 2)
+    return val, f"{source}, avg across properties"
+
+
 # ---- Arrivals filtering (for composition charts + table) -------------------
 def arrivals_window(scored: pd.DataFrame, properties: list[str] | None = None,
                     day: str | None = None, today: pd.Timestamp | None = None) -> pd.DataFrame:
@@ -346,8 +354,9 @@ def arrivals_window(scored: pd.DataFrame, properties: list[str] | None = None,
 def heatmap_grid(properties: list[str] | None = None, threshold: float | None = None,
                  today: pd.Timestamp | None = None) -> pd.DataFrame:
     """Per (property_name, day) over the 14-day window: occupancy_pct (NaN if
-    capacity unknown), occupied_units, arrivals, departures, pred_cancels
-    (scored arrivals with cancel_proba >= threshold).
+    capacity unknown), occupied_units, arrivals, departures, exp_cancels
+    (Σ P(cancel) over that night's arrivals — expected cancellations) and
+    pred_cancels (COUNT of scored arrivals with cancel_proba >= the cost threshold).
 
     Vectorised: groupby counts + a per-property searchsorted for the occupied
     count (occupied on night d = #(arrivals <= d) − #(departures <= d) among
@@ -401,7 +410,16 @@ def heatmap_grid(properties: list[str] | None = None, threshold: float | None = 
             parts.append(pd.concat(occ_parts, ignore_index=True))
 
     if not scored.empty and "cancel_proba" in scored.columns:
-        hot = scored[pd.to_numeric(scored["cancel_proba"], errors="coerce") >= thr]
+        cp = pd.to_numeric(scored["cancel_proba"], errors="coerce")
+        s_all = pd.to_datetime(scored["arrival"], utc=True).dt.normalize()
+        # exp_cancels = Σ P(cancel) over the arrivals that night (expected cancellations,
+        # threshold-INDEPENDENT). pred_cancels = COUNT of arrivals over the cost threshold.
+        exp_df = (pd.DataFrame({"property_name": scored["property_name"].to_numpy(),
+                                "_day": s_all.to_numpy(),
+                                "exp_cancels": cp.fillna(0.0).to_numpy()})
+                  .groupby(["property_name", "_day"])["exp_cancels"].sum().reset_index())
+        parts.append(exp_df)
+        hot = scored[cp >= thr]
         if not hot.empty:
             s_arr = pd.to_datetime(hot["arrival"], utc=True).dt.normalize()
             parts.append(_daily_count(hot, s_arr.to_numpy(), "pred_cancels"))
@@ -411,6 +429,8 @@ def heatmap_grid(properties: list[str] | None = None, threshold: float | None = 
     for col in ("arrivals", "departures", "occupied_units", "pred_cancels"):
         grid[col] = (pd.to_numeric(grid[col], errors="coerce").fillna(0).astype(int)
                      if col in grid.columns else 0)
+    grid["exp_cancels"] = (pd.to_numeric(grid["exp_cancels"], errors="coerce").fillna(0.0)
+                           if "exp_cancels" in grid.columns else 0.0)
 
     grid["capacity"] = grid["property_name"].map(caps)
     grid["occupancy_pct"] = np.where(
@@ -418,4 +438,4 @@ def heatmap_grid(properties: list[str] | None = None, threshold: float | None = 
         np.round(grid["occupied_units"] / grid["capacity"] * 100, 1), float("nan"))
     grid["day"] = grid["_day"].dt.date.astype(str)
     return grid[["property_name", "day", "occupancy_pct", "occupied_units",
-                 "capacity", "arrivals", "departures", "pred_cancels"]]
+                 "capacity", "arrivals", "departures", "pred_cancels", "exp_cancels"]]

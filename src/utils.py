@@ -7,7 +7,6 @@
 
 from __future__ import annotations
 
-import re
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
@@ -178,101 +177,38 @@ def benchmark_overbooking_allowance(units_total: int) -> int:
 
 
 # =============================================================================
-# Room-type capacities (for the Occupancy dashboard's room-type sub-view)
+# Risk buckets (booking-table Risk column) — ONE cost-based rule
 # =============================================================================
+# Low / Medium / High are derived from a single COST-BASED decision threshold
+# plus a FIXED high-risk cutoff:
+#     p <  threshold          -> Low
+#     threshold <= p < 0.85   -> Medium
+#     p >= 0.85               -> High   (always, independent of the threshold)
+# `threshold` is the cost-optimal decision threshold (src.scoring); it moves with
+# the walk/empty costs entered in the app. The 0.85 High cutoff is fixed here so
+# there is exactly one place to change it.
 from .paths import configs_dir  # noqa: E402  (kept local to this section)
-
-ROOM_TYPE_CAPACITY_FILE = "room_type_capacity.yaml"
-
-
-def _normalize_room_type_label(value: str | None) -> str:
-    """Canonicalise room-type labels so matching ignores case, spacing and separators."""
-    if value is None:
-        return ""
-    text = str(value).strip().lower()
-    text = text.replace("&", " and ")
-    text = re.sub(r"\b(with|mit)\b", " ", text)
-    text = text.replace("balkon", "balcony")
-    text = re.sub(r"[^a-z0-9]+", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
-
-
-def resolve_room_type_capacity(
-    capacities: dict[str, dict[str, int]],
-    property_name: str | None,
-    room_type: str | None,
-) -> int | None:
-    """Resolve a room-type capacity by exact match or a normalized alias match."""
-    if not capacities or property_name is None or room_type is None:
-        return None
-
-    target_prop = _normalize_room_type_label(property_name)
-    target_room = _normalize_room_type_label(room_type)
-    if not target_prop or not target_room:
-        return None
-
-    prop_candidates = [
-        prop for prop in capacities if _normalize_room_type_label(prop) == target_prop
-    ]
-    if not prop_candidates:
-        return None
-
-    groups = capacities[prop_candidates[0]]
-    if str(room_type) in groups:
-        return groups[str(room_type)]
-
-    for label, value in groups.items():
-        if _normalize_room_type_label(label) == target_room:
-            return value
-    return None
-
-
-@lru_cache(maxsize=1)
-def load_room_type_capacity() -> dict[str, dict[str, int]]:
-    """Load configs/room_type_capacity.yaml -> {property_name: {unitGroup_name: capacity}}.
-
-    This file is HAND-MAINTAINED (real per-room-type capacities aren't in either
-    BigQuery table). Entries whose capacity is still null/blank are dropped, so the
-    room-type view simply omits a capacity reference line for those types instead of
-    drawing a wrong one. Returns {} if the file is missing.
-    """
-    path: Path = configs_dir() / ROOM_TYPE_CAPACITY_FILE
-    if not path.exists():
-        return {}
-    with path.open("r", encoding="utf-8") as fh:
-        raw = yaml.safe_load(fh) or {}
-    caps = raw.get(
-        "capacities", raw
-    )  # allow either a top-level 'capacities:' or a flat map
-    out: dict[str, dict[str, int]] = {}
-    for prop, groups in (caps or {}).items():
-        if not isinstance(groups, dict):
-            continue
-        clean = {
-            str(g): int(v) for g, v in groups.items() if v is not None and str(v) != ""
-        }
-        if clean:
-            out[str(prop)] = clean
-    return out
-
 
 RISK_BUCKETS_FILE = "risk_buckets.yaml"
 
-# Fallback if the config file is missing — same PLACEHOLDER values, so the column is
-# never silently empty. Replace via configs/risk_buckets.yaml.
+# Fixed High-risk cutoff — a booking at/above this cancel probability is ALWAYS
+# High, regardless of the cost-based threshold. Single source of truth.
+HIGH_RISK_CUTOFF: float = 0.85
+
+# Fallback if the config file is missing — so labels are never silently empty.
 _RISK_BUCKETS_DEFAULT: dict = {
-    "low_max": 0.20,
-    "high_min": 0.50,
+    "high_cutoff": HIGH_RISK_CUTOFF,
     "labels": {"low": "Low", "medium": "Medium", "high": "High"},
 }
 
 
 @lru_cache(maxsize=1)
 def load_risk_buckets() -> dict:
-    """Load configs/risk_buckets.yaml -> {low_max, high_min, labels{low,medium,high}}.
+    """Load configs/risk_buckets.yaml -> {high_cutoff, labels{low,medium,high}}.
 
-    These are the (currently PLACEHOLDER) cancel-probability cut points for the
-    booking table's Risk column. Falls back to sane defaults if the file is absent.
+    Only the fixed High cutoff and the display labels live in config now; the
+    Low/Medium boundary is the dynamic cost-based threshold (not a config value).
+    Falls back to sane defaults if the file is absent.
     """
     path: Path = configs_dir() / RISK_BUCKETS_FILE
     if not path.exists():
@@ -280,15 +216,20 @@ def load_risk_buckets() -> dict:
     with path.open("r", encoding="utf-8") as fh:
         cfg = yaml.safe_load(fh) or {}
     out = dict(_RISK_BUCKETS_DEFAULT)
-    out.update({k: cfg[k] for k in ("low_max", "high_min", "labels") if k in cfg})
+    for k in ("high_cutoff", "labels"):
+        if k in cfg:
+            out[k] = cfg[k]
     return out
 
 
-def risk_label(p: float | None, cfg: dict | None = None) -> str:
-    """Map a cancel probability to its bucket LABEL using the config thresholds.
+def risk_label_cost(p: float | None, threshold: float,
+                    high_cut: float = HIGH_RISK_CUTOFF,
+                    labels: dict | None = None) -> str:
+    """Map a cancel probability to Low / Medium / High using the cost-based rule.
 
-    Returns "" for a missing/NaN probability (so the column is blank only when there
-    is genuinely no score, never because the mapping was forgotten).
+    p >= high_cut -> High (always); threshold <= p < high_cut -> Medium; else Low.
+    Returns "" for a missing/NaN probability (blank only when there is genuinely no
+    score). If threshold >= high_cut the Medium band vanishes (High or Low only).
     """
     if p is None:
         return ""
@@ -298,10 +239,9 @@ def risk_label(p: float | None, cfg: dict | None = None) -> str:
         return ""
     if p != p:  # NaN
         return ""
-    cfg = cfg or load_risk_buckets()
-    labels = cfg.get("labels", _RISK_BUCKETS_DEFAULT["labels"])
-    if p < cfg.get("low_max", 0.20):
-        return labels.get("low", "Low")
-    if p < cfg.get("high_min", 0.50):
+    labels = labels or load_risk_buckets().get("labels", _RISK_BUCKETS_DEFAULT["labels"])
+    if p >= float(high_cut):
+        return labels.get("high", "High")
+    if p >= float(threshold):
         return labels.get("medium", "Medium")
-    return labels.get("high", "High")
+    return labels.get("low", "Low")

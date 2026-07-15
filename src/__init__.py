@@ -25,14 +25,10 @@ from .data_loader import (
     strip_pii,
 )
 
-# Overbooking decision (newsvendor / cost-optimal allowance)
+# High-demand walk-cost scaling (feeds the cost-optimal decision threshold)
 from .overbooking import (
     DEFAULT_HIGH_DEMAND_MULTIPLIER,
-    critical_ratio,
     effective_walk_cost,
-    recommend_allowance,
-    recommend_from_per_night,
-    summarize_property,
 )
 
 # Shared feature engineering (train/serve parity)
@@ -75,6 +71,7 @@ from .scoring import (
 
 # Styling + brand + locations + local-time display
 from .utils import (
+    HIGH_RISK_CUTOFF,
     apply_stayery_style,
     benchmark_overbooking_allowance,
     categorical_palette,
@@ -83,9 +80,8 @@ from .utils import (
     fmt_ts_local,
     load_brand_config,
     load_risk_buckets,
-    load_room_type_capacity,
     local_timezone,
-    risk_label,
+    risk_label_cost,
 )
 
 __all__ = [
@@ -99,13 +95,9 @@ __all__ = [
     "load_reservations",
     "property_universe",
     "strip_pii",
-    # overbooking
+    # high-demand walk-cost scaling
     "DEFAULT_HIGH_DEMAND_MULTIPLIER",
-    "critical_ratio",
     "effective_walk_cost",
-    "recommend_allowance",
-    "recommend_from_per_night",
-    "summarize_property",
     # features (train/serve parity)
     "add_country_region",
     "country_to_region",
@@ -136,6 +128,7 @@ __all__ = [
     "score_reservations",
     "score_upcoming",
     # utils
+    "HIGH_RISK_CUTOFF",
     "apply_stayery_style",
     "benchmark_overbooking_allowance",
     "categorical_palette",
@@ -144,7 +137,6 @@ __all__ = [
     "fmt_ts_local",
     "load_brand_config",
     "load_risk_buckets",
-    "load_room_type_capacity",
     "local_timezone",
-    "risk_label",
+    "risk_label_cost",
 ]

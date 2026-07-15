@@ -18,6 +18,7 @@ import dash_mantine_components as dmc
 import pandas as pd
 from dash import Input, Output, State, callback, ctx, dcc, html, no_update
 
+import src
 from dash_app.backend import data_access as da
 from dash_app.backend import explain as ex
 from dash_app.backend import jobs
@@ -85,10 +86,11 @@ def layout(**_kwargs):
         dmc.Select(id="mp-model", label="Model", value=model0,
                    data=[{"label": _MODEL_LABELS[m], "value": m} for m in mp.registered_models()],
                    allowDeselect=False, style={"width": "220px"}),
+        # No min: negative costs allowed. Shared globally with Occupancy & Predictions.
         dmc.NumberInput(id="mp-cost-walk", label="Walk cost (€)", value=mp.DEFAULT_WALK,
-                        min=0, step=10, style={"width": "150px"}),
+                        step=10, style={"width": "150px"}),
         dmc.NumberInput(id="mp-cost-empty", label="Empty-room cost (€)", value=mp.DEFAULT_EMPTY,
-                        min=0, step=10, style={"width": "170px"}),
+                        step=10, style={"width": "170px"}),
         dmc.Stack([dmc.Text("Cost-optimal threshold", size="xs", c="dimmed", fw=600),
                    dmc.Text(id="mp-thr-badge", size="sm", fw=700)], gap=0),
     ], align="flex-end", gap="md", wrap="wrap"), p="md", radius="lg", withBorder=True)
@@ -328,19 +330,23 @@ def _poll_rebuild(_n, seen, version):
     Input("mp-cost-walk", "value"),
     Input("mp-cost-empty", "value"),
     Input("mp-eval-version", "data"),
+    State("cost-store", "data"),
 )
-def _update_core(model, sel_value, walk, empty, _version):
+def _update_core(model, sel_value, walk, empty, _version, cost_store):
     props = _sel(sel_value)
     walk = float(walk) if walk not in (None, "") else mp.DEFAULT_WALK
     empty = float(empty) if empty not in (None, "") else mp.DEFAULT_EMPTY
+    # Apply the shared high-demand multiplier so the threshold matches the app-wide setting.
+    _, _, high, mult = mp.read_cost_full(cost_store)
+    eff_walk = src.effective_walk_cost(walk, high, mult)
 
     status = _status_alert(model)
-    k = mp.kpis(model, props, walk, empty)
+    k = mp.kpis(model, props, eff_walk, empty)
     kpi = ui.kpi_strip(_kpi_cards(k)) if k.get("n") else dmc.Alert(
         "No evaluation data for this selection yet.", color="gray", variant="light")
 
-    pr = mp.pr_threshold(model, props, walk, empty)
-    thr_txt = f"{pr['t_cost']:.2f}" if pr else "-"
+    pr = mp.pr_threshold(model, props, eff_walk, empty)
+    thr_txt = (f"{pr['t_cost']:.0%}" + (" · high-demand" if high else "")) if pr else "-"
     return (status, kpi,
             pc.fig_roc(mp.roc_global(model, props)),
             pc.fig_roc_by_location(mp.roc_by_location(model, props)),
@@ -416,11 +422,15 @@ def _update_pdp(model, feature):
 @callback(
     Output("mp-booking-grid", "rowData"),
     Input("mp-location-filter", "value"),
+    Input("cost-store", "data"),
 )
-def _fill_table(sel_value):
+def _fill_table(sel_value, cost_store):
     df = da.load_scored()
     if df.empty:
         return []
+    # Risk label from the SAME cost-based threshold as everywhere else (live).
+    walk, empty, high, mult = mp.read_cost_full(cost_store)
+    thr = da.cost_optimal_threshold(walk, empty, high, mult)
     df = df.reset_index(drop=True)
     df["bid"] = df.index.astype(str)
     props = _sel(sel_value)
@@ -430,13 +440,14 @@ def _fill_table(sel_value):
     rows = []
     for r in df.itertuples():
         arr = getattr(r, "arrival", None)
+        p = float(getattr(r, "cancel_proba", 0) or 0)
         rows.append({
             "bid": r.bid,
             "property_name": getattr(r, "property_name", "-"),
             "arrival_date": pd.to_datetime(arr, utc=True, errors="coerce").strftime("%Y-%m-%d")
                             if arr is not None else "-",
-            "cancel_pct": f"{float(getattr(r, 'cancel_proba', 0)) * 100:.1f}%",
-            "risk_bucket": getattr(r, "risk_bucket", "-"),
+            "cancel_pct": f"{p * 100:.1f}%",
+            "risk_bucket": src.risk_label_cost(p, thr),
         })
     return rows
 

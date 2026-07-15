@@ -1,14 +1,15 @@
 # =============================================================================
-# Risk-bucket thresholds for the booking table's "Risk" column.
+# Risk-bucket configuration for the booking table's "Risk" column.
 # =============================================================================
-# Maps a predicted cancellation probability p to a label:
-#     p < low_max            -> Low
-#     low_max <= p < high_min -> Medium
-#     p >= high_min          -> High
+# The Low / Medium / High buckets follow ONE cost-based rule:
+#     p <  threshold               -> Low
+#     threshold <= p < high_cutoff -> Medium
+#     p >= high_cutoff             -> High   (always, independent of the threshold)
 #
-# Make sure to replace them with what is needed by the revenue manager
-low_max: 0.20
-high_min: 0.70
+# `threshold` is the cost-optimal DECISION threshold and is NOT a config value —
+# it moves with the walk/empty costs entered in the app (Occupancy & Predictions).
+# Only the fixed High cutoff and the display labels live here.
+high_cutoff: 0.85
 
 labels:
   low: "Low"

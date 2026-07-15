@@ -61,18 +61,37 @@ def location_options(model: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Cost parameters (shared cost-store; page-global default under GLOBAL_COST_KEY)
+# Cost parameters — ONE global entry (GLOBAL_COST_KEY) shared by every page.
+# Occupancy & Predictions is the primary entry point; Model Performance reads and
+# writes the same entry (editable, kept in sync).
 # ---------------------------------------------------------------------------
 def read_cost_params(store: dict | None) -> tuple[float, float]:
-    """(walk, empty) from the shared cost-store's page-global entry, falling back to the
-    project defaults. The store is the single source of truth; this page owns only the
-    GLOBAL_COST_KEY entry (Occupancy owns the per-property/week entries)."""
+    """(walk, empty) from the shared global cost entry, falling back to project
+    defaults. Convenience wrapper over read_cost_full for the 2-tuple callers."""
+    walk, empty, _high, _mult = read_cost_full(store)
+    return walk, empty
+
+
+def read_cost_full(store: dict | None) -> tuple[float, float, bool, float]:
+    """(walk, empty, high_demand, multiplier) from the shared global cost entry.
+
+    The single source of truth for costs across the whole app. Missing pieces fall
+    back to the project defaults (walk/empty) and the default high-demand multiplier.
+    """
     s = (store or {}).get(GLOBAL_COST_KEY) or {}
     walk = s.get("walk")
     empty = s.get("empty")
+    mult = s.get("mult")
     walk = float(walk) if walk not in (None, "") else DEFAULT_WALK
     empty = float(empty) if empty not in (None, "") else DEFAULT_EMPTY
-    return walk, empty
+    mult = float(mult) if mult not in (None, "") else sc_default_multiplier()
+    return walk, empty, bool(s.get("high", False)), mult
+
+
+def sc_default_multiplier() -> float:
+    """Default high-demand walk-cost multiplier (kept in src.overbooking)."""
+    from src import DEFAULT_HIGH_DEMAND_MULTIPLIER
+    return float(DEFAULT_HIGH_DEMAND_MULTIPLIER)
 
 
 # ---------------------------------------------------------------------------
