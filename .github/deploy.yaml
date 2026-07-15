@@ -1,0 +1,101 @@
+name: Create and publish a Docker image
+
+# Configures this workflow to run every time a change is pushed to the branch called `dev`.
+on:
+  push:
+    branches:
+      - "main"
+
+# Defines two custom environment variables for the workflow. These are used for the Container registry domain, and a name for the Docker image that this workflow builds.
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: stayeryhq/streamlit_revenue
+
+# There is a single job in this workflow. It's configured to run on the latest available version of Ubuntu.
+jobs:
+  build-and-push-image:
+    runs-on: ubuntu-latest
+    # Sets the permissions granted to the `GITHUB_TOKEN` for the actions in this job.
+    permissions:
+      contents: read
+      packages: write
+      #
+    outputs:
+      web_image_sha_tag: ${{ steps.web_meta.outputs.version }} # Output the specific SHA tag
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # Uses the `docker/login-action` action to log in to the Container registry registry using the account and password that will publish the packages. Once published, the packages are scoped to the account defined here.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3 # Recommended for BuildKit features
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # This step uses [docker/metadata-action](https://github.com/docker/metadata-action#about) to extract tags and labels that will be applied to the specified image. The `id` "meta" allows the output of this step to be referenced in a subsequent step. The `images` value provides the base name for the tags and labels.
+      - name: Extract metadata (tags, labels) for web Docker
+        id: web_meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,format=long
+            type=ref,event=branch
+      # This step uses the `docker/build-push-action` action to build the image, based on your repository's `Dockerfile`. If the build succeeds, it pushes the image to GitHub Packages.
+      # It uses the `context` parameter to define the build's context as the set of files located in the specified path. For more information, see [Usage](https://github.com/docker/build-push-action#usage) in the README of the `docker/build-push-action` repository.
+      # It uses the `tags` and `labels` parameters to tag and label the image with the output from the "meta" step.
+      - name: Build and push Docker backend image
+        id: push_web
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.web_meta.outputs.tags }}
+          labels: ${{ steps.web_meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ steps.vars.outputs.version }}
+          cache-from: type=gha,scope=web-${{ github.ref_name }}
+          cache-to: type=gha,mode=max,scope=web-${{ github.ref_name }}
+  deploy-image:
+    runs-on: ubuntu-latest
+    needs: build-and-push-image
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+      - name: Log in to the Container registry (for polling action)
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Wait for Docker image to be available
+        uses: int128/wait-for-docker-image-action@v1
+        with:
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-and-push-image.outputs.web_image_sha_tag }} # Use the exact tags from the build step
+          # You can configure timeout and polling intervals
+          timeout-seconds: 300 # Wait up to 5 minutes
+          polling-seconds: 10 # Check every 10 seconds
+      - name: Create deployment env file
+        run: |
+          # Pass the precise SHA tag to your docker-compose file on the VPS
+          cat << EOF > ./deployment.env
+          APP_IMAGE_TAG=${{ needs.build-and-push-image.outputs.web_image_sha_tag }}
+          EOF
+
+      - name: "Docker Stack Deploy"
+        uses: cssnr/stack-deploy-action@v1
+        with:
+          name: streamlit_revenue
+          host: stayomat.de
+          user: luca
+          ssh_key: ${{ secrets.STAYOMAT_SSH_KEY }}
+          registry_host: "ghcr.io"
+          registry_user: ${{ github.actor }}
+          registry_pass: ${{ secrets.GITHUB_TOKEN }}
+          file: ${{ 'compose.yaml' }}
+          env_file: ./deployment.env
