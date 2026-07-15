@@ -11,10 +11,15 @@ services:
       - streamlit_data:/app/data
     environment:
       - GCP_SERVICE_ACCOUNT_JSON_FILE=/run/secrets/bigquery_secret
-      # Public URL prefix the app is served under (Traefik strips this before
-      # forwarding). Only set here so local dev / raw docker runs keep serving
-      # at "/". Must end with a slash - Dash validates this at startup.
-      - DASH_URL_BASE_PATHNAME=/_carogician/
+      # Dash-native env vars for path prefixing behind Traefik.
+      # DASH_ROUTES_PATHNAME_PREFIX stays at "/" because Traefik strips the
+      # public prefix before forwarding. DASH_REQUESTS_PATHNAME_PREFIX tells
+      # Dash to emit asset URLs and dcc.Link hrefs prefixed with the public
+      # path so the browser reaches Traefik at the correct routed endpoint.
+      # These map 1:1 to Dash constructor kwargs and don't collide like
+      # the deprecated DASH_URL_BASE_PATHNAME (which maps to url_base_pathname).
+      - DASH_ROUTES_PATHNAME_PREFIX=/
+      - DASH_REQUESTS_PATHNAME_PREFIX=/_carogician/
     labels:
       - traefik.enable=true
       - traefik.docker.network=traefik-public
