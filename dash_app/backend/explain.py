@@ -263,6 +263,61 @@ def partial_dependence(model: str, feature: str, *, n_rows: int = 120,
 
 
 # ---------------------------------------------------------------------------
+# Cached PDP (built on retrain, read read-only on the predictions page) — so the
+# global explanations are NOT recomputed over many bookings on every rescore.
+# ---------------------------------------------------------------------------
+def pdp_cache_path(model: str):
+    return src.data_dir() / f"pdp_{model}.json"
+
+
+def pdp_available(model: str) -> bool:
+    return pdp_cache_path(model).exists()
+
+
+def compute_all_pdp(model: str, *, refresh: bool = False, ice_sample: int = 30) -> dict:
+    """Pre-compute partial dependence for every explainable feature and cache it to
+    Data/pdp_<model>.json, so the predictions page never recomputes PDP live. Called on
+    retrain (alongside the SHAP rebuild). Returns {feature: {feature, x, pd, ice}}."""
+    import json
+    path = pdp_cache_path(model)
+    if path.exists() and not refresh:
+        try:
+            return json.loads(path.read_text())
+        except Exception:  # noqa: BLE001
+            pass
+    out: dict = {}
+    for feat in explainable_features(model):
+        try:
+            d = partial_dependence(model, feat)
+        except Exception:  # noqa: BLE001 — one bad feature must not sink the whole cache
+            continue
+        if not d:
+            continue
+        ice = d.get("ice")
+        if ice and len(ice) > ice_sample:               # bound the cache size
+            idx = np.linspace(0, len(ice) - 1, ice_sample).astype(int)
+            ice = [ice[i] for i in idx]
+        out[feat] = {"feature": feat, "x": d.get("x"), "pd": d.get("pd"), "ice": ice}
+    try:
+        path.write_text(json.dumps(out))
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+def cached_pdp(model: str, feature: str) -> dict:
+    """One feature's cached PDP (built on retrain). {} if nothing cached yet."""
+    import json
+    path = pdp_cache_path(model)
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text()).get(feature, {})
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+# ---------------------------------------------------------------------------
 # Boosting iteration curve (XGBoost / HistGB only) — best-effort, labelled
 # ---------------------------------------------------------------------------
 def _itercurve_path(model: str):

@@ -91,6 +91,8 @@ def _score_result(res: dict) -> dmc.Alert:
             dmc.Badge(f"Medium: {b.get('medium', 0):,}", color="yellow", variant="light"),
             dmc.Badge(f"Low: {b.get('low', 0):,}", color="green", variant="light"),
         ], gap="xs"),
+        dmc.Text(f"Occupancy refreshed from {res.get('perf_rows', 0):,} property-performance "
+                 "rows (capacity + occupancy).", size="xs", c="dimmed"),
     ], gap=6), color="green", variant="light", icon=html.I(className="bi bi-check-circle"))
 
 
@@ -105,21 +107,13 @@ def _xai_section() -> dmc.Stack:
     return dmc.Stack([
         dmc.Group([
             dmc.Title("XAI · model explanations", order=4),
-            dmc.Badge("current 14-day scored bookings", color="gray", variant="light",
-                      radius="sm"),
+            dmc.Badge("updates on retrain", color="gray", variant="light", radius="sm"),
         ], gap="sm", align="center", mt="sm"),
-        dmc.Paper(dmc.Group([
-            dmc.Stack([
-                dmc.Text("Feature explanations (SHAP)", fw=600, size="sm"),
-                dmc.Text("Global SHAP over the currently scored bookings. Heavy — runs on "
-                         "demand; keeps going if you switch pages.",
-                         id="occ-xai-status", size="xs", c="dimmed"),
-            ], gap=2),
-            dmc.Button("Build explanations", id="occ-xai-btn", size="sm", variant="filled",
-                       leftSection=html.I(className="bi bi-diagram-3")),
-        ], justify="space-between", align="center", wrap="wrap"),
-            p="md", radius="lg", withBorder=True),
-        ui.job_loader("occ-xai"),
+        dmc.Text("Global explanations (feature importance, beeswarm, partial dependence) "
+                 "describe the deployed model and are rebuilt when you retrain it (Update & "
+                 "Retraining) — they are not recomputed on each rescore. Click a booking in "
+                 "the table above for its OWN live SHAP explanation.",
+                 id="occ-xai-status", size="xs", c="dimmed"),
         dmc.SimpleGrid([
             ui.chart_card("Feature importance (mean |SHAP|)", "occ-xai-importance", height=440),
             ui.chart_card("SHAP beeswarm", "occ-xai-beeswarm", height=460),
@@ -166,14 +160,10 @@ def layout(**_kwargs):
         dcc.Store(id="occ-selection"),                    # {"property":..,"day":..} or None
         dcc.Store(id="occ-score-kick", data=0),
         dcc.Store(id="occ-score-seen", data={}),          # de-dupe the "job done" bump
-        dcc.Store(id="occ-xai-kick", data=0),
-        dcc.Store(id="occ-xai-seen", data={}),
-        dcc.Store(id="occ-xai-version", data=0),          # bumped when SHAP finishes
         # Fires once on page load so the cost inputs get pre-filled from the shared store.
         dcc.Interval(id="occ-costs-init", interval=200, n_intervals=0, max_intervals=1),
-        # Heartbeats: poll Data/jobs/*.json so progress survives page changes.
+        # Heartbeat: polls Data/jobs/scoring.json so progress survives page changes.
         dcc.Interval(id="occ-score-poll", interval=1200, n_intervals=0),
-        dcc.Interval(id="occ-xai-poll", interval=1500, n_intervals=0),
         # NOTE: "cost-store" now lives in the GLOBAL app.layout (single shared source of
         # truth across pages). Declaring it here too would duplicate the component id.
     ])
@@ -498,61 +488,6 @@ def _cancelled_alert(what: str) -> dmc.Alert:
 
 
 # ---------------------------------------------------------------------------
-# XAI — global SHAP builds on demand (job runner); per-booking SHAP is live.
-# ---------------------------------------------------------------------------
-@callback(
-    Output("occ-xai-kick", "data"),
-    Input("occ-xai-btn", "n_clicks"),
-    prevent_initial_call=True,
-)
-def _start_xai(n):
-    jobs.start("shap", mo.shap_job, _served_model())
-    return (n or 0)
-
-
-@callback(
-    Output("occ-xai-ring", "sections"),
-    Output("occ-xai-pct", "children"),
-    Output("occ-xai-msg", "children"),
-    Output("occ-xai-wrap", "style"),
-    Output("occ-xai-cancel", "children"),
-    Output("occ-xai-btn", "disabled"),
-    Output("occ-xai-version", "data"),
-    Output("occ-xai-seen", "data"),
-    Input("occ-xai-poll", "n_intervals"),
-    Input("occ-xai-kick", "data"),
-    State("occ-xai-version", "data"),
-    State("occ-xai-seen", "data"),
-)
-def _poll_xai(_n, _kick, version, seen):
-    st = jobs.read("shap")
-    status = st.get("status", "idle")
-    seen = dict(seen or {})
-    if status == "running":
-        sec, pct, msg, wrap = ui.loader_view(float(st.get("progress", 0)) * 100,
-                                             st.get("message", ""), show=True)
-        return sec, pct, msg, wrap, "Cancel", True, no_update, no_update
-    sec, pct, msg, wrap = ui.loader_view(0, "", show=False)
-    fin = st.get("finished")
-    bump = no_update
-    if fin and seen.get("shap") != fin:
-        seen["shap"] = fin
-        if status == "done":
-            bump = (version or 0) + 1
-    return sec, pct, msg, wrap, no_update, False, bump, seen
-
-
-@callback(
-    Output("occ-xai-cancel", "children", allow_duplicate=True),
-    Input("occ-xai-cancel", "n_clicks"),
-    prevent_initial_call=True,
-)
-def _cancel_xai(_n):
-    jobs.cancel("shap")
-    return "Cancelling…"
-
-
-# ---------------------------------------------------------------------------
 # Data-quality note: flag locations with thin training history (<100 bookings) and
 # a stale model (>6 months). Advisory only — scoring still runs.
 # ---------------------------------------------------------------------------
@@ -592,17 +527,24 @@ def _update_data_quality(model, _version):
     Output("occ-xai-pdp-feature", "data"),
     Output("occ-xai-pdp-feature", "value"),
     Output("occ-xai-status", "children"),
-    Input("occ-xai-version", "data"),
+    Input("occ-scored-version", "data"),   # re-read cached artifacts on load / after a rescore
 )
 def _update_xai_global(_version):
+    """Render the model-level explanations from the CACHED artifacts (built on retrain).
+    Never recomputes global SHAP here — that would be heavy and belongs to retraining."""
     model = _served_model()
     imp = pc.fig_importance(ex.importance_from_shap(model))
     bee = pc.fig_beeswarm(ex.global_beeswarm(model))
-    feats = ex.explainable_features(model) if ex.shap_available(model) else []
+    feats = ex.explainable_features(model) if ex.pdp_available(model) else []
     opts = [{"label": f, "value": f} for f in feats]
-    status = (f"Explanations ready for {model} — {len(feats)} features."
-              if ex.shap_available(model)
-              else "No explanations built yet — click 'Build explanations'.")
+    if ex.shap_available(model):
+        status = (f"Global explanations for {model} · {len(feats)} features — rebuilt when you "
+                  "retrain the model (Update & Retraining). Click a booking above for its own "
+                  "live SHAP.")
+    else:
+        status = ("No global explanations built yet — retrain the model (Update & Retraining), "
+                  "or use 'Rebuild evaluation' on the Model Performance page. Per-booking SHAP "
+                  "still works: click a booking in the table above.")
     return imp, bee, opts, (feats[0] if feats else None), status
 
 
@@ -611,10 +553,11 @@ def _update_xai_global(_version):
     Input("occ-xai-pdp-feature", "value"),
 )
 def _update_xai_pdp(feature):
+    # Reads the CACHED partial dependence (built on retrain) — never recomputed here.
     if not feature:
         return pc.fig_pdp({})
     try:
-        return pc.fig_pdp(ex.partial_dependence(_served_model(), feature))
+        return pc.fig_pdp(ex.cached_pdp(_served_model(), feature))
     except Exception:  # noqa: BLE001
         return pc.fig_pdp({})
 

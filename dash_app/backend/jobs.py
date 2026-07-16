@@ -32,16 +32,43 @@ class JobCancelled(Exception):
     """Raised inside a job (via the progress checkpoint) when the user cancels."""
 
 
+def _cancel_path(name: str) -> Path:
+    return _job_path(name).with_suffix(".cancel")
+
+
 def cancel(name: str) -> bool:
     """Request COOPERATIVE cancellation. The job stops at its next progress checkpoint
     and is marked 'cancelled' WITHOUT writing its result — so whatever data existed
     before stays untouched. Threads can't be force-killed, so a step already running
-    (e.g. a model fit) finishes that step before the cancel is noticed."""
-    ev = _CANCEL.get(name)
-    if ev is not None and running(name):
+    (e.g. a model fit or a single SHAP compute) finishes that step before the cancel is
+    noticed.
+
+    Cancellation is FILE-based (Data/jobs/<name>.cancel holds the running job's start
+    timestamp), so it works even when the cancel click and the job thread live in
+    different worker processes — an in-memory Event alone would not cross processes.
+    """
+    st = read(name)
+    if st.get("status") != "running":
+        return False
+    try:
+        _cancel_path(name).write_text(str(st.get("started", "")))
+    except Exception:  # noqa: BLE001
+        pass
+    ev = _CANCEL.get(name)   # also flip the in-process Event for the common single-worker case
+    if ev is not None:
         ev.set()
+    return True
+
+
+def _cancel_requested(name: str, started, ev: "threading.Event | None") -> bool:
+    """True if THIS job (identified by its start timestamp) has been asked to cancel."""
+    if ev is not None and ev.is_set():
         return True
-    return False
+    try:
+        p = _cancel_path(name)
+        return p.exists() and p.read_text().strip() == str(started)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _job_path(name: str) -> Path:
@@ -99,7 +126,7 @@ def start(name: str, fn: Callable, *args, **kwargs) -> bool:
         def progress(msg: str, frac: float) -> None:
             # Cooperative cancel checkpoint: raise BEFORE doing/reporting more work, so
             # the job aborts before it writes anything and the previous data survives.
-            if cancel_ev.is_set():
+            if _cancel_requested(name, state["started"], cancel_ev):
                 raise JobCancelled()
             state["message"] = str(msg)
             state["progress"] = max(0.0, min(1.0, float(frac)))

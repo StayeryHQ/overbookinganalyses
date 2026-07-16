@@ -237,16 +237,15 @@ def update_all(progress: Progress = _noop, model_name: str | None = None,
 def score_window_job(progress: Progress = _noop, model_name: str | None = None,
                      walk: float | None = None, empty: float | None = None,
                      days: int = WINDOW_DAYS) -> dict:
-    """Occupancy 'Run scoring' job: pull ONLY the next `days` days of arrivals from
-    BigQuery (a windowed SQL scan — NOT the full history) and score them.
+    """Occupancy 'Run scoring' job — the 'rescore + refresh the occupancy view' action.
 
-    Hits BigQuery for a 14-day arrival window only, so it is cheap and always fresh;
-    it deliberately does NOT touch the full-history reservations cache (that is the
-    separate 'update historical data' action). Scores through the same src.scoring
-    path as everything else, writes Data/scored_upcoming.parquet, and returns bucket
-    counts for the green result card. Runs via the file-backed jobs runner (survives
-    page changes) — NOT a Dash background callback (which left the old button stuck
-    loading forever). Fails loudly if BigQuery is unavailable — no cache fallback.
+    Two BigQuery pulls, both cheap: the next `days` days of arrivals (a windowed SQL scan,
+    NOT the full history) for scoring, AND the property-performance-daily table so the
+    occupancy heatmap's capacity/occupancy is current. It deliberately does NOT touch the
+    full-history reservations cache (that's the separate 'update historical data' action).
+    Writes Data/scored_upcoming.parquet, refreshes the perf cache, and returns bucket
+    counts for the green card. Runs on the file-backed jobs runner (survives page changes).
+    Fails loudly if BigQuery is unavailable — no cache fallback.
     """
     t0 = time.perf_counter()
     progress(f"BigQuery: pulling the next {days} days of arrivals…", 0.15)
@@ -254,15 +253,20 @@ def score_window_job(progress: Progress = _noop, model_name: str | None = None,
     if "status" in df.columns:
         df = df[df["status"].astype("string") != "Canceled"].copy()
 
+    # Refresh property performance so the occupancy graph (capacity / occupancy %) is current.
+    progress("BigQuery: refreshing property performance (occupancy + capacity)…", 0.40)
+    perf = src.load_property_performance(force_refresh=True, quiet=True)
+
     threshold = (sc.analytic_threshold(walk, empty)
                  if walk is not None and empty is not None else None)
-    progress(f"Scoring {len(df):,} bookings arriving in the next {days} days…", 0.55)
+    progress(f"Scoring {len(df):,} bookings arriving in the next {days} days…", 0.65)
     scored = sc.score_reservations(df, model_name=model_name, threshold=threshold,
                                    save_as="scored_upcoming.parquet")
 
-    try:  # let the page backends see the fresh scored parquet on their next read
+    try:  # let the Occupancy backend see the fresh scored parquet + perf on its next read
         from dash_app.backend import data_access as da
-        da._reservations_cached.cache_clear()
+        for fn in ("_reservations_cached", "_capacity_from_perf", "_property_code_to_name"):
+            getattr(da, fn).cache_clear()
     except Exception as e:  # noqa: BLE001
         logger.warning("cache clear after scoring failed: %s", e)
 
@@ -270,7 +274,7 @@ def score_window_job(progress: Progress = _noop, model_name: str | None = None,
     buckets = ({b: int((rb == b).sum()) for b in ("high", "medium", "low")}
                if rb is not None else {"high": 0, "medium": 0, "low": 0})
     return {"scored_rows": int(len(scored)), "buckets": buckets, "days": int(days),
-            "model_label": model_label(sc.resolve_model(model_name)),
+            "perf_rows": int(len(perf)), "model_label": model_label(sc.resolve_model(model_name)),
             "elapsed_s": round(time.perf_counter() - t0, 1),
             "finished": _fmt_ts(pd.Timestamp.utcnow().isoformat())}
 
@@ -337,22 +341,6 @@ def update_history_job(progress: Progress = _noop) -> dict:
             "finished": _fmt_ts(pd.Timestamp.utcnow().isoformat())}
 
 
-def shap_job(progress: Progress = _noop, model_name: str | None = None) -> dict:
-    """Occupancy XAI 'Build explanations' job: compute global SHAP over the CURRENT
-    14-day scored bookings for the served model (heavy → on demand). The single-booking
-    waterfalls are computed live and need no pre-build.
-    """
-    from dash_app.backend import explain as ex
-    model = model_name or sc.DEFAULT_MODEL
-    progress(f"Computing SHAP over the scored bookings · {model_label(model)}…", 0.2)
-    long = ex.compute_global_shap(model, refresh=True)
-    progress("Done.", 1.0)
-    return {"model": model, "model_label": model_label(model),
-            "n_points": int(len(long)),
-            "features": int(long["feature"].nunique()) if not long.empty else 0,
-            "finished": _fmt_ts(pd.Timestamp.utcnow().isoformat())}
-
-
 # =============================================================================
 # Job wrappers — thin adapters with the (progress, *args) signature jobs.start
 # expects. Keep ALL logic in the functions they call.
@@ -398,16 +386,18 @@ def run_retrain(model_name: str, *, retune: bool = False, asof: str | None = Non
              "evaluation. This can take a while…", 0.05)
     result = tr.retrain(model_name, mode=mode, asof=asof, persist=True, refresh_eval=True)
 
-    # Stage 2/2 — rebuild this model's explanations (SHAP + iteration curve) so the XAI
-    # section reflects the retrained model. Best-effort — never fail the retrain on it.
-    progress("Stage 2/2 · rebuilding explanations (SHAP) for the updated model…", 0.55)
+    # Stage 2/2 — rebuild this model's explanations (SHAP beeswarm/importance, cached PDP,
+    # iteration curve) so the predictions-page XAI reflects the retrained model WITHOUT ever
+    # recomputing over many bookings there. Best-effort — never fail the retrain on it.
+    progress("Stage 2/2 · rebuilding explanations (SHAP + partial dependence)…", 0.55)
     try:
         from dash_app.backend import explain as ex
         ex.compute_global_shap(model_name, refresh=True)
+        ex.compute_all_pdp(model_name, refresh=True)
         if model_name in ("xgboost", "histgb"):
             ex.iteration_curve(model_name, refresh=True)
     except Exception as e:  # noqa: BLE001 — never fail the retrain over explanations
-        logger.warning("post-retrain SHAP rebuild failed for %s: %s", model_name, e)
+        logger.warning("post-retrain explanation rebuild failed for %s: %s", model_name, e)
 
     progress("Reading back the updated model card…", 0.9)
     status = model_status(model_name)
