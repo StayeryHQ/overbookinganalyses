@@ -13,20 +13,17 @@
 from __future__ import annotations
 
 import dash
-import dash_ag_grid as dag
 import dash_mantine_components as dmc
 import pandas as pd
 from dash import Input, Output, State, callback, ctx, dcc, html, no_update
 
 import src
 from dash_app.backend import data_access as da
-from dash_app.backend import explain as ex
+from dash_app.backend import explain as ex          # iteration curve only (XAI moved to Occupancy)
 from dash_app.backend import jobs
 from dash_app.backend import model_ops as mo
 from dash_app.backend import model_performance as mp
-from dash_app.backend.model_ops import MODEL_LABELS as _MODEL_LABELS  # one label map
 from dash_app.components import performance_charts as pc
-from dash_app.components import shap_explain as se
 from dash_app.components import ui
 
 dash.register_page(__name__, path="/model-performance", name="Model Performance",
@@ -68,24 +65,20 @@ def _sel(value) -> list[str] | None:
     return list(value) if value else None
 
 
-def _default_model() -> str:
-    for m in mp.registered_models():
-        if mp.eval_status(m)["available"]:
-            return m
-    return mp.registered_models()[0]
-
-
 # ---------------------------------------------------------------------------
 # Layout (callable => artifact availability re-checked on each navigation)
 # ---------------------------------------------------------------------------
 def layout(**_kwargs):
     props = da.property_list()
-    model0 = _default_model()
+    serving = mo.available_serving_models()
+    model0 = serving[0] if serving else "hazard"
 
     controls = dmc.Paper(dmc.Group([
-        dmc.Select(id="mp-model", label="Model", value=model0,
-                   data=[{"label": _MODEL_LABELS[m], "value": m} for m in mp.registered_models()],
-                   allowDeselect=False, style={"width": "220px"}),
+        # Served models only (hazard / xgboost) — no 4-model comparison. XAI lives on
+        # Occupancy & Predictions now; this page is the served model's training performance.
+        dmc.Select(id="mp-model", label="Served model", value=model0,
+                   data=mo.scoring_model_options(), allowDeselect=False,
+                   style={"width": "220px"}),
         # No min: negative costs allowed. Shared globally with Occupancy & Predictions.
         dmc.NumberInput(id="mp-cost-walk", label="Walk cost (€)", value=mp.DEFAULT_WALK,
                         step=10, style={"width": "150px"}),
@@ -97,33 +90,15 @@ def layout(**_kwargs):
 
     tt_extra = dmc.SegmentedControl(id="mp-tt-metric", data=_METRIC_DATA, value="auc",
                                     size="xs", radius="md")
-    pdp_extra = dmc.Select(id="mp-pdp-feature", data=[], placeholder="feature",
-                           searchable=True, style={"width": "220px"}, size="xs")
-
-    booking_grid = dag.AgGrid(
-        id="mp-booking-grid", rowData=[], getRowId="params.data.bid",
-        columnDefs=[
-            {"field": "bid", "hide": True},
-            {"headerName": "Location", "field": "property_name", "flex": 2},
-            {"headerName": "Arrival", "field": "arrival_date", "flex": 1},
-            {"headerName": "P(cancel)", "field": "cancel_pct", "flex": 1},
-            {"headerName": "Risk", "field": "risk_bucket", "flex": 1},
-        ],
-        defaultColDef={"sortable": True, "filter": True, "resizable": True},
-        columnSize="responsiveSizeToFit", style={"height": "360px"},
-        dashGridOptions={"rowSelection": "single", "animateRows": True})
-
-    drawer = dmc.Drawer(id="mp-drawer", position="right", size="lg", padding="lg", opened=False,
-                        title=dmc.Text("Booking explanation", fw=700), withCloseButton=True,
-                        children=html.Div(id="mp-drawer-body"))
 
     return dmc.Stack([
         dmc.Group([
-            dmc.Group([dmc.Title("Model performance & explainability", order=3),
-                       dmc.Badge("Leak-free · same estimand", color="gray", variant="light",
-                                 radius="sm")], gap="sm", align="center"),
-            dmc.Text("Fair, matched comparison of the four models vs the naive baseline, plus "
-                     "SHAP / PDP explanations.", size="sm", c="dimmed"),
+            dmc.Group([dmc.Title("Model performance", order=3),
+                       dmc.Badge("Leak-free · training walk-forward", color="gray",
+                                 variant="light", radius="sm")], gap="sm", align="center"),
+            dmc.Text("Training/walk-forward performance of the served model. SHAP & PDP "
+                     "explanations live on Occupancy & Predictions (XAI section).",
+                     size="sm", c="dimmed"),
         ], justify="space-between", align="center", wrap="wrap", mb="xs"),
 
         controls,
@@ -164,23 +139,6 @@ def layout(**_kwargs):
                           header_extra=tt_extra),
             ui.chart_card("Iteration curve", "mp-itercurve", info=_INFO["iter"], height=340),
         ], cols={"base": 1, "md": 2}, spacing="md"),
-
-        dmc.SimpleGrid([
-            ui.chart_card("Feature importance (mean |SHAP|)", "mp-importance", info=_INFO["imp"],
-                          height=440),
-            ui.chart_card("SHAP beeswarm", "mp-beeswarm", info=_INFO["bee"], height=460),
-        ], cols={"base": 1, "md": 2}, spacing="md"),
-
-        ui.chart_card("Partial dependence / ICE", "mp-pdp", info=_INFO["pdp"], height=360,
-                      header_extra=pdp_extra),
-
-        dmc.Card([
-            dmc.Group([dmc.Text("Single-booking explanations", fw=600, size="sm"),
-                       ui.info_icon(_INFO["table"])], gap=6),
-            dmc.Space(h=6), booking_grid,
-        ], withBorder=True, radius="lg", p="md", shadow="xs"),
-
-        drawer,
     ], gap="md")
 
 
@@ -372,103 +330,3 @@ def _update_traintest(model, metric, _version):
     except Exception:  # noqa: BLE001
         curve = {}
     return pc.fig_train_test(tt, metric=metric or "auc"), pc.fig_iteration_curve(curve)
-
-
-# ---------------------------------------------------------------------------
-# SHAP importance + beeswarm (cost-independent)
-# ---------------------------------------------------------------------------
-@callback(
-    Output("mp-importance", "figure"),
-    Output("mp-beeswarm", "figure"),
-    Input("mp-model", "value"),
-    Input("mp-eval-version", "data"),
-)
-def _update_xai(model, _version):
-    return pc.fig_importance(ex.importance_from_shap(model)), pc.fig_beeswarm(ex.global_beeswarm(model))
-
-
-# ---------------------------------------------------------------------------
-# PDP: feature options + curve
-# ---------------------------------------------------------------------------
-@callback(
-    Output("mp-pdp-feature", "data"),
-    Output("mp-pdp-feature", "value"),
-    Input("mp-model", "value"),
-)
-def _pdp_options(model):
-    feats = ex.explainable_features(model)
-    if not feats:
-        return [], None
-    return [{"label": f, "value": f} for f in feats], feats[0]
-
-
-@callback(
-    Output("mp-pdp", "figure"),
-    Input("mp-model", "value"),
-    Input("mp-pdp-feature", "value"),
-)
-def _update_pdp(model, feature):
-    if not feature:
-        return pc.fig_pdp({})
-    try:
-        return pc.fig_pdp(ex.partial_dependence(model, feature))
-    except Exception:  # noqa: BLE001
-        return pc.fig_pdp({})
-
-
-# ---------------------------------------------------------------------------
-# Single-booking table + drawer explanation (spec 4.8)
-# ---------------------------------------------------------------------------
-@callback(
-    Output("mp-booking-grid", "rowData"),
-    Input("mp-location-filter", "value"),
-    Input("cost-store", "data"),
-)
-def _fill_table(sel_value, cost_store):
-    df = da.load_scored()
-    if df.empty:
-        return []
-    # Risk label from the SAME cost-based threshold as everywhere else (live).
-    walk, empty, high, mult = mp.read_cost_full(cost_store)
-    thr = da.cost_optimal_threshold(walk, empty, high, mult)
-    df = df.reset_index(drop=True)
-    df["bid"] = df.index.astype(str)
-    props = _sel(sel_value)
-    if props and "property_name" in df.columns:
-        df = df[df["property_name"].isin(props)]
-    df = df.sort_values("cancel_proba", ascending=False).head(200)
-    rows = []
-    for r in df.itertuples():
-        arr = getattr(r, "arrival", None)
-        p = float(getattr(r, "cancel_proba", 0) or 0)
-        rows.append({
-            "bid": r.bid,
-            "property_name": getattr(r, "property_name", "-"),
-            "arrival_date": pd.to_datetime(arr, utc=True, errors="coerce").strftime("%Y-%m-%d")
-                            if arr is not None else "-",
-            "cancel_pct": f"{p * 100:.1f}%",
-            "risk_bucket": src.risk_label_cost(p, thr),
-        })
-    return rows
-
-
-@callback(
-    Output("mp-drawer", "opened"),
-    Output("mp-drawer", "title"),
-    Output("mp-drawer-body", "children"),
-    Input("mp-booking-grid", "cellClicked"),
-    State("mp-model", "value"),
-    prevent_initial_call=True,
-)
-def _explain_booking(cell, model):
-    if not cell:
-        return no_update, no_update, no_update
-    df = da.load_scored().reset_index(drop=True)
-    try:
-        bid = int(cell["rowId"])
-        booking = df.iloc[bid]
-    except Exception:  # noqa: BLE001
-        return no_update, no_update, no_update
-    title = dmc.Text(f"{booking.get('property_name', 'Booking')} · "
-                     f"P(cancel) {float(booking.get('cancel_proba', 0)) * 100:.1f}%", fw=700)
-    return True, title, se.explanation_panel(model, booking, mini=False)
