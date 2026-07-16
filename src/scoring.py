@@ -313,6 +313,14 @@ def _to_str_nz(s: pd.Series | None, index: pd.Index) -> pd.Series:
     return s.astype("string").fillna("")
 
 
+# OTA channel renames (mirror notebook 00 §3.0). Kept next to build_features so the
+# ONE serving/training feature definition owns it.
+_CHANNEL_RENAME: Final[dict[str, str]] = {
+    "BookingCom": "Booking.com",
+    "Expedia Affiliate Network": "Expedia",
+}
+
+
 def build_features(df: pd.DataFrame, today: pd.Timestamp | None = None) -> pd.DataFrame:
     """Build the model features from a raw (PII-stripped) reservations frame.
 
@@ -333,6 +341,19 @@ def build_features(df: pd.DataFrame, today: pd.Timestamp | None = None) -> pd.Da
     does not mutate. Drops nothing — the caller decides whether to drop NaNs.
     """
     out = df.copy()
+
+    # ---- Channel merge (mirror 00 §3.0.a) — fold `source` into ChannelManager rows,
+    # then apply the OTA renames. Serving MUST match training here: otherwise a live
+    # booking arrives as "ChannelManager" (a category the model never saw — training
+    # remapped it to e.g. "Airbnb") and its channel signal is silently dropped.
+    if "channelCode" in out.columns:
+        chan = out["channelCode"].astype("string")
+        if "source" in out.columns:
+            src = out["source"].astype("string")
+            m = (chan == "ChannelManager") & src.notna() & (src.str.len() > 0)
+            chan = chan.mask(m, src)
+        out["channelCode"] = chan.replace(_CHANNEL_RENAME)
+
     arrival   = pd.to_datetime(out["arrival"],   utc=True)
     departure = pd.to_datetime(out["departure"], utc=True)
     created   = pd.to_datetime(out["created"],   utc=True)
@@ -341,7 +362,10 @@ def build_features(df: pd.DataFrame, today: pd.Timestamp | None = None) -> pd.Da
         today = pd.Timestamp.now("UTC").normalize()
 
     # ---- Static features (mirror notebook 00 §3.0) -------------------------
-    out["lead_time_days"]     = ((arrival.dt.normalize() - created.dt.normalize())
+    # lead_time_days is the FRACTIONAL day gap (00 §3.0.b), clipped at 0 — NOT rounded
+    # to whole days. Training and serving must use the identical formula, or the model
+    # sees systematically different lead values than it learnt on.
+    out["lead_time_days"]     = ((arrival - created)
                                   / pd.Timedelta(days=1)).clip(lower=0)
     out["los_nights"]         = ((departure.dt.normalize() - arrival.dt.normalize())
                                   / pd.Timedelta(days=1))

@@ -362,17 +362,100 @@ def load_reservations_upcoming_window(days: int = 14, quiet: bool = False) -> pd
 
 
 def load_clean_reservations() -> pd.DataFrame:
-    """Load the cleaned parquet produced by 00_data_audit.ipynb.
+    """Load the cleaned parquet. Rebuilt programmatically by build_clean_reservations()
+    (the CH 'update history' action) or by notebook 00.
 
     Raises FileNotFoundError with a helpful message if the file doesn't exist.
     """
     p = data_dir() / CLEAN_CACHE_FILE
     if not p.exists():
         raise FileNotFoundError(
-            f"{p} not found. Run notebooks/00_data_audit.ipynb first to "
-            f"produce the cleaned dataset."
+            f"{p} not found. Rebuild it (Cancellation History → update) or run "
+            f"notebooks/00_data_audit.ipynb."
         )
     return pd.read_parquet(p)
+
+
+# --- Clean/label pipeline (programmatic equivalent of notebook 00) -----------
+# Mirrors 00 §2.6/§3.0/§4.x/§7. Feature engineering REUSES src.scoring.build_features —
+# the SAME function used at serving — so training and serving cannot drift.
+ARRIVAL_FLOOR: Final[pd.Timestamp] = pd.Timestamp("2022-08-01", tz="UTC")
+GRACE_DAYS: Final[int] = 2                     # today - GRACE_DAYS = arrival cutoff
+RESOLVED_STATUSES: Final[frozenset] = frozenset({"Canceled", "CheckedOut", "InHouse", "NoShow"})
+
+# Final clean schema (order + dtype) — matches Data/reservations_clean.parquet.
+_CLEAN_DTYPES: Final[dict] = {
+    "status": "int8", "property_name": "object", "ratePlan_isSubjectToCityTax": "boolean",
+    "unitGroup_name": "object", "channelCode": "string", "guaranteeType": "object",
+    "cancellationFee_name": "object", "arrival": "datetime64[us, UTC]",
+    "created": "datetime64[us, UTC]", "lead_time_days": "float64", "los_nights": "Int64",
+    "gross_amount": "float64", "gross_per_night": "Float64", "ratePlan_category": "string",
+    "has_group": "Int64", "diff_gross_cancellation_fee": "float64", "adults_n": "Int64",
+    "has_promo": "Int64", "has_corporate_code": "Int64", "has_children": "Int64",
+    "arrival_dow": "Int64", "arrival_month": "Int64", "is_weekend_arrival": "Int64",
+    "stay_bucket": "string", "log_gross_amount": "float64", "los_nights_log": "Float64",
+    "lead_time_days_log": "float64", "gross_per_night_log": "Float64",
+    "diff_gross_cancellation_fee_log": "float64", "cancel_days_before_arrival": "float64",
+    "is_canceled_by_arrival": "int8", "outcome_known_date": "datetime64[ns, UTC]",
+}
+
+
+def build_clean_reservations(raw: pd.DataFrame) -> pd.DataFrame:
+    """Raw PII-free reservations -> the cleaned/labelled training frame (same schema as
+    Data/reservations_clean.parquet). Programmatic equivalent of notebook 00's cleaning.
+
+    Validated to reproduce the clean cache's feature columns + target exactly. Feature
+    engineering reuses src.scoring.build_features (the serving function), so there is ONE
+    definition — training and serving cannot drift.
+    """
+    from .scoring import build_features
+    from . import walkforward as wf
+
+    df = raw.copy()
+    arr = pd.to_datetime(df["arrival"], utc=True, errors="coerce")
+    dep = pd.to_datetime(df["departure"], utc=True, errors="coerce")
+    cre0 = pd.to_datetime(df["created"], utc=True, errors="coerce")
+    ct = pd.to_datetime(df.get("cancellationTime"), utc=True, errors="coerce")
+
+    # §2.6 arrival window — RUN_TIMESTAMP anchored on the data (reproducible), not wall-clock.
+    cutoff = cre0.max().normalize() - pd.Timedelta(days=GRACE_DAYS)
+    # §4.2 negative-lead clip: created := arrival (booking can't be made after arrival).
+    neg = (cre0 > arr).fillna(False)
+    df.loc[neg, "created"] = arr[neg]
+    cre = pd.to_datetime(df["created"], utc=True, errors="coerce")
+
+    df["cancel_days_before_arrival"] = (arr - ct) / pd.Timedelta(days=1)
+    lead = (arr - cre) / pd.Timedelta(days=1)
+    los = (dep.dt.normalize() - arr.dt.normalize()) / pd.Timedelta(days=1)
+    gross = pd.to_numeric(df.get("totalGrossAmount_amount"), errors="coerce")
+
+    # §4.3 row rules + resolved-status filter (Confirmed dropped: label not yet known).
+    keep = (
+        (arr >= ARRIVAL_FLOOR) & (arr < cutoff)
+        & (lead >= 0) & (lead <= 365)
+        & (los >= 1) & (los <= 200)
+        & (~gross.le(0).fillna(True))
+        & (df["status"].isin(RESOLVED_STATUSES))
+    )
+    d = df[keep].copy()
+
+    # §4.5 target: 1 = Canceled AND logged at/before arrival (same-day counts as positive).
+    cdba = pd.to_numeric(d["cancel_days_before_arrival"], errors="coerce")
+    is_cba = (d["status"].eq("Canceled") & cdba.ge(0)).astype("int8")
+
+    feat = build_features(d)                  # §3.0 features — shared with serving
+    feat = wf.add_outcome_known_date(feat)    # §7 split metadata
+    feat["cancel_days_before_arrival"] = d["cancel_days_before_arrival"].to_numpy()
+    feat["is_canceled_by_arrival"] = is_cba.to_numpy()
+    feat["status"] = is_cba.to_numpy()        # encode the target in-place (was the string status)
+
+    out = feat[list(_CLEAN_DTYPES)].copy()
+    for col, dt in _CLEAN_DTYPES.items():
+        try:
+            out[col] = out[col].astype(dt)
+        except (TypeError, ValueError):
+            pass                              # tolerate minor dtype drift; values are what matter
+    return out.reset_index(drop=True)
 
 
 # =============================================================================
