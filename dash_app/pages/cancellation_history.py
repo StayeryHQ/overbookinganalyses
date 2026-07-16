@@ -15,8 +15,52 @@ from dash import Input, Output, State, callback, ctx, dcc, html, no_update
 
 from dash_app import theme
 from dash_app.backend import cancellation_history as ch
+from dash_app.backend import jobs                       # file-backed job runner
+from dash_app.backend import model_ops as mo
 from dash_app.components import history_charts as hc
 from dash_app.components import ui
+
+_HIDDEN = {"display": "none"}
+_SHOWN = {"display": "block"}
+
+
+def _history_update_card() -> dmc.Paper:
+    """Green 'update history' card (mirrors the Occupancy scoring card): pulls the full
+    reservations history and rebuilds the cleaned cache on the file-backed job runner."""
+    return dmc.Paper(dmc.Stack([
+        dmc.Group([
+            dmc.Stack([
+                dmc.Text("Update cancellation history", fw=600, size="sm"),
+                dmc.Text("Pulls the full reservations history from BigQuery and rebuilds "
+                         "the cleaned dataset behind these charts. Runs in the background; "
+                         "progress survives page changes.", size="xs", c="dimmed"),
+            ], gap=2),
+            dmc.Button("Update history", id="cxl-upd-btn", size="sm", variant="filled",
+                       leftSection=html.I(className="bi bi-arrow-clockwise")),
+        ], justify="space-between", align="center", wrap="wrap"),
+        html.Div(dmc.Stack([
+            html.Progress(id="cxl-upd-bar", value="0", max="100",
+                          style={"width": "100%", "height": "8px"}),
+            dmc.Text(id="cxl-upd-msg", size="xs", c="dimmed"),
+        ], gap=4), id="cxl-upd-wrap", style=_HIDDEN),
+        html.Div(id="cxl-upd-result"),
+    ], gap="xs"), p="md", radius="lg", withBorder=True)
+
+
+def _history_result(res: dict) -> dmc.Alert:
+    return dmc.Alert(dmc.Stack([
+        dmc.Text(f"History rebuilt: {res.get('clean_rows', 0):,} cleaned bookings from "
+                 f"{res.get('raw_rows', 0):,} raw rows in {res.get('elapsed_s', '?')}s.",
+                 fw=600, size="sm"),
+        dmc.Text(f"Cancel base rate {res.get('base_rate', 0) * 100:.1f}% · history "
+                 f"{res.get('span_start', '?')} → {res.get('span_end', '?')}.",
+                 size="xs", c="dimmed"),
+    ], gap=6), color="green", variant="light", icon=html.I(className="bi bi-check-circle"))
+
+
+def _err_alert(text: str) -> dmc.Alert:
+    return dmc.Alert(dmc.Text(str(text), size="sm"), color="red", variant="light",
+                     title="Update failed", icon=html.I(className="bi bi-exclamation-triangle"))
 
 dash.register_page(__name__, path="/cancellation-history", name="Cancellation History",
                    order=2, title="STAYERY · Cancellation History")
@@ -87,8 +131,16 @@ def layout(**_kwargs):
 
     return dmc.Stack([
         header,
+
+        # Update-history card (top) — rebuilds the cleaned dataset behind these charts.
+        _history_update_card(),
+
         ui.location_filter(props, "cxl-property-filter", span_label=span_label),
         dcc.Store(id="cxl-drawer-store"),
+        dcc.Store(id="cxl-upd-kick", data=0),
+        dcc.Store(id="cxl-upd-seen", data={}),
+        dcc.Store(id="cxl-data-version", data=0),         # bumped on update -> charts refresh
+        dcc.Interval(id="cxl-upd-poll", interval=1500, n_intervals=0),
 
         html.Div(id="cxl-kpi", children=dmc.Skeleton(height=96, radius="lg")),
         html.Div(id="cxl-anomaly"),
@@ -163,6 +215,53 @@ def _anomaly_alert(props):
         withCloseButton=True)
 
 
+# ---------------------------------------------------------------------------
+# Update-history job (file-backed runner): start on click, poll the job file,
+# bump cxl-data-version on success so every chart re-reads the fresh clean cache.
+# ---------------------------------------------------------------------------
+@callback(
+    Output("cxl-upd-kick", "data"),
+    Input("cxl-upd-btn", "n_clicks"),
+    prevent_initial_call=True,
+)
+def _start_history_update(n):
+    jobs.start("history", mo.update_history_job)
+    return (n or 0)
+
+
+@callback(
+    Output("cxl-upd-bar", "value"),
+    Output("cxl-upd-msg", "children"),
+    Output("cxl-upd-wrap", "style"),
+    Output("cxl-upd-result", "children"),
+    Output("cxl-upd-btn", "disabled"),
+    Output("cxl-data-version", "data"),
+    Output("cxl-upd-seen", "data"),
+    Input("cxl-upd-poll", "n_intervals"),
+    Input("cxl-upd-kick", "data"),
+    State("cxl-data-version", "data"),
+    State("cxl-upd-seen", "data"),
+)
+def _poll_history_update(_n, _kick, version, seen):
+    st = jobs.read("history")
+    status = st.get("status", "idle")
+    seen = dict(seen or {})
+    if status == "running":
+        bar = str(int(float(st.get("progress", 0)) * 100))
+        return bar, st.get("message", ""), _SHOWN, no_update, True, no_update, no_update
+    fin = st.get("finished")
+    bump = no_update
+    if fin and seen.get("history") != fin:
+        seen["history"] = fin
+        if status == "done":
+            bump = (version or 0) + 1
+    if status == "error":
+        return "0", "", _HIDDEN, _err_alert(st.get("error", "unknown error")), False, bump, seen
+    if status == "done":
+        return "0", "", _HIDDEN, _history_result(st.get("result") or {}), False, bump, seen
+    return "0", "", _HIDDEN, no_update, False, no_update, seen
+
+
 @callback(
     Output("cxl-kpi", "children"),
     Output("cxl-anomaly", "children"),
@@ -171,8 +270,9 @@ def _anomaly_alert(props):
     Output("cxl-lead", "figure"),
     Output("cxl-timing", "figure"),
     Input("cxl-property-filter", "value"),
+    Input("cxl-data-version", "data"),
 )
-def _update_filter(sel_value):
+def _update_filter(sel_value, _version):
     props = _sel(sel_value)
     k = ch.kpis(props)
     kpis = ui.kpi_strip(_kpi_cards(k))
@@ -198,8 +298,9 @@ def _update_filter(sel_value):
     Output("cxl-monthly", "figure"),
     Input("cxl-property-filter", "value"),
     Input("cxl-per-prop", "value"),
+    Input("cxl-data-version", "data"),
 )
-def _update_monthly(sel_value, mode):
+def _update_monthly(sel_value, mode, _version):
     props = _sel(sel_value)
     monthly = ch.monthly_rate(props)
     per = ch.monthly_rate(props, per_property=True) if mode == "per" else None
@@ -213,8 +314,9 @@ def _update_monthly(sel_value, mode):
     Output("cxl-heatmap", "figure"),
     Input("cxl-property-filter", "value"),
     Input("cxl-window", "value"),
+    Input("cxl-data-version", "data"),
 )
-def _update_heatmap(sel_value, window):
+def _update_heatmap(sel_value, window, _version):
     props = _sel(sel_value)
     months = int(window or "12")
     return hc.fig_heatmap(ch.property_month_matrix(props, months_back=months))

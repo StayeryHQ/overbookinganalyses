@@ -275,6 +275,55 @@ def score_window_job(progress: Progress = _noop, model_name: str | None = None,
             "finished": _fmt_ts(pd.Timestamp.utcnow().isoformat())}
 
 
+def update_history_job(progress: Progress = _noop) -> dict:
+    """Cancellation-History 'update history' job: pull the FULL reservations history
+    from BigQuery and rebuild the cleaned/labelled cache (src.build_clean_reservations,
+    validated to match notebook 00). Refreshes the history views. Fails loudly on a
+    BigQuery error — no cache fallback (the whole point is fresh history).
+    """
+    t0 = time.perf_counter()
+    progress("BigQuery: pulling full reservations history…", 0.10)
+    raw = src.load_reservations(force_refresh=True, quiet=True)   # also refreshes the raw cache
+    if raw.empty:
+        raise RuntimeError("BigQuery returned 0 reservations — refusing to rebuild the history.")
+
+    progress(f"Cleaning + labelling {len(raw):,} rows…", 0.60)
+    clean = src.build_clean_reservations(raw)
+    from src.data_loader import CLEAN_CACHE_FILE
+    out_path = src.data_dir() / CLEAN_CACHE_FILE
+    clean.to_parquet(out_path, index=False)
+
+    try:  # let the Cancellation-History page see the fresh clean cache
+        from dash_app.backend import cancellation_history as ch
+        ch._clean.cache_clear()
+        ch.property_list.cache_clear()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("CH cache clear after history update failed: %s", e)
+
+    arr = pd.to_datetime(clean["arrival"], utc=True, errors="coerce")
+    return {"clean_rows": int(len(clean)), "raw_rows": int(len(raw)),
+            "base_rate": round(float(pd.to_numeric(clean["status"]).mean()), 4),
+            "span_start": str(arr.min().date()), "span_end": str(arr.max().date()),
+            "elapsed_s": round(time.perf_counter() - t0, 1),
+            "finished": _fmt_ts(pd.Timestamp.utcnow().isoformat())}
+
+
+def shap_job(progress: Progress = _noop, model_name: str | None = None) -> dict:
+    """Occupancy XAI 'Build explanations' job: compute global SHAP over the CURRENT
+    14-day scored bookings for the served model (heavy → on demand). The single-booking
+    waterfalls are computed live and need no pre-build.
+    """
+    from dash_app.backend import explain as ex
+    model = model_name or sc.DEFAULT_MODEL
+    progress(f"Computing SHAP over the scored bookings · {model_label(model)}…", 0.2)
+    long = ex.compute_global_shap(model, refresh=True)
+    progress("Done.", 1.0)
+    return {"model": model, "model_label": model_label(model),
+            "n_points": int(len(long)),
+            "features": int(long["feature"].nunique()) if not long.empty else 0,
+            "finished": _fmt_ts(pd.Timestamp.utcnow().isoformat())}
+
+
 # =============================================================================
 # Job wrappers — thin adapters with the (progress, *args) signature jobs.start
 # expects. Keep ALL logic in the functions they call.

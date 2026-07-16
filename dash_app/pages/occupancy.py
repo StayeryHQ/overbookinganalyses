@@ -18,11 +18,24 @@ from dash import Input, Output, State, callback, ctx, dcc, html, no_update
 import src
 from dash_app import theme
 from dash_app.backend import data_access as da
+from dash_app.backend import explain as ex             # SHAP / PDP (14-day scored bookings)
 from dash_app.backend import jobs                       # file-backed job runner (no hang)
 from dash_app.backend import model_ops as mo
 from dash_app.backend import model_performance as mp   # shared global cost-store
 from dash_app.components import panels
+from dash_app.components import performance_charts as pc
+from dash_app.components import shap_explain as se
 from dash_app.components import ui
+
+
+def _served_model() -> str:
+    """The model the scored set was produced with (falls back to the default scorer)."""
+    scored = da.load_scored()
+    if not scored.empty and "model_used" in scored.columns:
+        mu = scored["model_used"].dropna()
+        if len(mu):
+            return str(mu.iloc[0])
+    return src.scoring.DEFAULT_MODEL
 
 _HIDDEN = {"display": "none"}
 _SHOWN = {"display": "block"}
@@ -43,17 +56,25 @@ def _selected_props(value) -> list[str]:
 # old Dash background callback is what left the button stuck loading forever).
 # ---------------------------------------------------------------------------
 def _scoring_card() -> dmc.Paper:
+    model_opts = mo.scoring_model_options()
+    default_model = model_opts[0]["value"] if model_opts else "hazard"
     return dmc.Paper(dmc.Stack([
         dmc.Group([
             dmc.Stack([
                 dmc.Text("Predictions · next 14 days", fw=600, size="sm"),
-                dmc.Text("Re-runs the model on the upcoming 14 days (from the local "
-                         "cache — no BigQuery). Runs in the background; progress keeps "
+                dmc.Text("Pulls the next 14 days of arrivals from BigQuery and scores them "
+                         "with the selected model. Runs in the background; progress keeps "
                          "going if you switch pages.", size="xs", c="dimmed"),
             ], gap=2),
-            dmc.Button("Run scoring", id="occ-score-btn", size="sm", variant="filled",
-                       leftSection=html.I(className="bi bi-play-fill")),
-        ], justify="space-between", align="center", wrap="wrap"),
+            dmc.Group([
+                dmc.Select(id="occ-score-model", label="Model", data=model_opts,
+                           value=default_model, clearable=False, allowDeselect=False,
+                           style={"width": "180px"},
+                           leftSection=html.I(className="bi bi-cpu")),
+                dmc.Button("Run scoring", id="occ-score-btn", size="sm", variant="filled",
+                           leftSection=html.I(className="bi bi-play-fill"), mt=22),
+            ], gap="sm", align="flex-end", wrap="nowrap"),
+        ], justify="space-between", align="flex-end", wrap="wrap"),
         html.Div(dmc.Stack([
             html.Progress(id="occ-score-bar", value="0", max="100",
                           style={"width": "100%", "height": "8px"}),
@@ -75,6 +96,51 @@ def _score_result(res: dict) -> dmc.Alert:
             dmc.Badge(f"Low: {b.get('low', 0):,}", color="green", variant="light"),
         ], gap="xs"),
     ], gap=6), color="green", variant="light", icon=html.I(className="bi bi-check-circle"))
+
+
+# ---------------------------------------------------------------------------
+# XAI section — all explanations for the CURRENT 14-day scored bookings, on the
+# served model. Global SHAP builds on demand (heavy); per-booking waterfalls are
+# computed live when a booking row is selected in the table above.
+# ---------------------------------------------------------------------------
+def _xai_section() -> dmc.Stack:
+    pdp_extra = dmc.Select(id="occ-xai-pdp-feature", data=[], placeholder="feature",
+                           searchable=True, size="xs", style={"width": "220px"})
+    return dmc.Stack([
+        dmc.Group([
+            dmc.Title("XAI · model explanations", order=4),
+            dmc.Badge("current 14-day scored bookings", color="gray", variant="light",
+                      radius="sm"),
+        ], gap="sm", align="center", mt="sm"),
+        dmc.Paper(dmc.Group([
+            dmc.Stack([
+                dmc.Text("Feature explanations (SHAP)", fw=600, size="sm"),
+                dmc.Text("Global SHAP over the currently scored bookings. Heavy — runs on "
+                         "demand; keeps going if you switch pages.",
+                         id="occ-xai-status", size="xs", c="dimmed"),
+            ], gap=2),
+            dmc.Button("Build explanations", id="occ-xai-btn", size="sm", variant="filled",
+                       leftSection=html.I(className="bi bi-diagram-3")),
+        ], justify="space-between", align="center", wrap="wrap"),
+            p="md", radius="lg", withBorder=True),
+        html.Div(dmc.Stack([
+            html.Progress(id="occ-xai-bar", value="0", max="100",
+                          style={"width": "100%", "height": "8px"}),
+            dmc.Text(id="occ-xai-msg", size="xs", c="dimmed"),
+        ], gap=4), id="occ-xai-wrap", style=_HIDDEN),
+        dmc.SimpleGrid([
+            ui.chart_card("Feature importance (mean |SHAP|)", "occ-xai-importance", height=440),
+            ui.chart_card("SHAP beeswarm", "occ-xai-beeswarm", height=460),
+        ], cols={"base": 1, "md": 2}, spacing="md"),
+        ui.chart_card("Partial dependence / ICE", "occ-xai-pdp", height=360,
+                      header_extra=pdp_extra),
+        dmc.Card([
+            dmc.Text("Why this booking (SHAP)", fw=600, size="sm", mb=6),
+            html.Div(id="occ-xai-booking",
+                     children=dmc.Text("Select a booking in the table above to see its "
+                                       "per-booking SHAP explanation.", c="dimmed", size="sm")),
+        ], withBorder=True, radius="lg", p="md"),
+    ], gap="md")
 
 
 # ---------------------------------------------------------------------------
@@ -108,10 +174,14 @@ def layout(**_kwargs):
         dcc.Store(id="occ-selection"),                    # {"property":..,"day":..} or None
         dcc.Store(id="occ-score-kick", data=0),
         dcc.Store(id="occ-score-seen", data={}),          # de-dupe the "job done" bump
+        dcc.Store(id="occ-xai-kick", data=0),
+        dcc.Store(id="occ-xai-seen", data={}),
+        dcc.Store(id="occ-xai-version", data=0),          # bumped when SHAP finishes
         # Fires once on page load so the cost inputs get pre-filled from the shared store.
         dcc.Interval(id="occ-costs-init", interval=200, n_intervals=0, max_intervals=1),
-        # Heartbeat: polls Data/jobs/scoring.json so progress survives page changes.
+        # Heartbeats: poll Data/jobs/*.json so progress survives page changes.
         dcc.Interval(id="occ-score-poll", interval=1200, n_intervals=0),
+        dcc.Interval(id="occ-xai-poll", interval=1500, n_intervals=0),
         # NOTE: "cost-store" now lives in the GLOBAL app.layout (single shared source of
         # truth across pages). Declaring it here too would duplicate the component id.
     ])
@@ -176,6 +246,9 @@ def layout(**_kwargs):
 
         # 4) Booking table (filtered by heatmap selection) + detail side panel
         booking_row,
+
+        # 5) XAI — explanations for the current 14-day scored bookings
+        _xai_section(),
     ], gap="md")
 
 
@@ -360,13 +433,14 @@ def _save_cost_params(walk, empty, high, mult, store):
 @callback(
     Output("occ-score-kick", "data"),
     Input("occ-score-btn", "n_clicks"),
+    State("occ-score-model", "value"),
     State("cost-store", "data"),
     prevent_initial_call=True,
 )
-def _start_scoring(n, cost_store):
+def _start_scoring(n, model, cost_store):
     walk, empty, high, mult = mp.read_cost_full(cost_store)
     eff_walk = src.effective_walk_cost(walk, high, mult)   # cost-based threshold, high-demand aware
-    jobs.start("scoring", mo.score_window_job, None, eff_walk, empty)
+    jobs.start("scoring", mo.score_window_job, model or None, eff_walk, empty)
     return (n or 0)
 
 
@@ -408,3 +482,102 @@ def _poll_scoring(_n, _kick, version, seen):
 def _err_alert(text: str) -> dmc.Alert:
     return dmc.Alert(dmc.Text(str(text), size="sm"), color="red", variant="light",
                      title="Scoring failed", icon=html.I(className="bi bi-exclamation-triangle"))
+
+
+# ---------------------------------------------------------------------------
+# XAI — global SHAP builds on demand (job runner); per-booking SHAP is live.
+# ---------------------------------------------------------------------------
+@callback(
+    Output("occ-xai-kick", "data"),
+    Input("occ-xai-btn", "n_clicks"),
+    prevent_initial_call=True,
+)
+def _start_xai(n):
+    jobs.start("shap", mo.shap_job, _served_model())
+    return (n or 0)
+
+
+@callback(
+    Output("occ-xai-bar", "value"),
+    Output("occ-xai-msg", "children"),
+    Output("occ-xai-wrap", "style"),
+    Output("occ-xai-btn", "disabled"),
+    Output("occ-xai-version", "data"),
+    Output("occ-xai-seen", "data"),
+    Input("occ-xai-poll", "n_intervals"),
+    Input("occ-xai-kick", "data"),
+    State("occ-xai-version", "data"),
+    State("occ-xai-seen", "data"),
+)
+def _poll_xai(_n, _kick, version, seen):
+    st = jobs.read("shap")
+    status = st.get("status", "idle")
+    seen = dict(seen or {})
+    if status == "running":
+        bar = str(int(float(st.get("progress", 0)) * 100))
+        return bar, st.get("message", ""), _SHOWN, True, no_update, no_update
+    fin = st.get("finished")
+    bump = no_update
+    if fin and seen.get("shap") != fin:
+        seen["shap"] = fin
+        if status == "done":
+            bump = (version or 0) + 1
+    if status == "error":
+        return "0", "SHAP build failed: " + str(st.get("error", "")), _HIDDEN, False, bump, seen
+    return "0", "", _HIDDEN, False, bump, seen
+
+
+@callback(
+    Output("occ-xai-importance", "figure"),
+    Output("occ-xai-beeswarm", "figure"),
+    Output("occ-xai-pdp-feature", "data"),
+    Output("occ-xai-pdp-feature", "value"),
+    Output("occ-xai-status", "children"),
+    Input("occ-xai-version", "data"),
+)
+def _update_xai_global(_version):
+    model = _served_model()
+    imp = pc.fig_importance(ex.importance_from_shap(model))
+    bee = pc.fig_beeswarm(ex.global_beeswarm(model))
+    feats = ex.explainable_features(model) if ex.shap_available(model) else []
+    opts = [{"label": f, "value": f} for f in feats]
+    status = (f"Explanations ready for {model} — {len(feats)} features."
+              if ex.shap_available(model)
+              else "No explanations built yet — click 'Build explanations'.")
+    return imp, bee, opts, (feats[0] if feats else None), status
+
+
+@callback(
+    Output("occ-xai-pdp", "figure"),
+    Input("occ-xai-pdp-feature", "value"),
+)
+def _update_xai_pdp(feature):
+    if not feature:
+        return pc.fig_pdp({})
+    try:
+        return pc.fig_pdp(ex.partial_dependence(_served_model(), feature))
+    except Exception:  # noqa: BLE001
+        return pc.fig_pdp({})
+
+
+@callback(
+    Output("occ-xai-booking", "children"),
+    Input("occ-grid", "selectedRows"),
+)
+def _per_booking_shap(selected_rows):
+    if not selected_rows:
+        return dmc.Text("Select a booking in the table above to see its per-booking SHAP "
+                        "explanation.", c="dimmed", size="sm")
+    booking_id = selected_rows[0].get("id")
+    scored = da.load_scored()
+    if scored.empty or booking_id is None:
+        return dmc.Text("No scored record for this booking.", c="dimmed", size="sm")
+    match = scored[scored["id"] == booking_id]
+    if match.empty:
+        return dmc.Text("No scored record for this booking.", c="dimmed", size="sm")
+    record = match.iloc[0]
+    model = str(record.get("model_used") or _served_model())
+    try:
+        return se.explanation_panel(model, record, mini=False)
+    except Exception as e:  # noqa: BLE001 — a SHAP failure must not break the page
+        return dmc.Text(f"Could not compute SHAP for this booking: {e}", c="dimmed", size="sm")
