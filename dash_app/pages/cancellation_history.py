@@ -38,11 +38,7 @@ def _history_update_card() -> dmc.Paper:
             dmc.Button("Update history", id="cxl-upd-btn", size="sm", variant="filled",
                        leftSection=html.I(className="bi bi-arrow-clockwise")),
         ], justify="space-between", align="center", wrap="wrap"),
-        html.Div(dmc.Stack([
-            html.Progress(id="cxl-upd-bar", value="0", max="100",
-                          style={"width": "100%", "height": "8px"}),
-            dmc.Text(id="cxl-upd-msg", size="xs", c="dimmed"),
-        ], gap=4), id="cxl-upd-wrap", style=_HIDDEN),
+        ui.job_loader("cxl-upd"),
         html.Div(id="cxl-upd-result"),
     ], gap="xs"), p="md", radius="lg", withBorder=True)
 
@@ -61,6 +57,11 @@ def _history_result(res: dict) -> dmc.Alert:
 def _err_alert(text: str) -> dmc.Alert:
     return dmc.Alert(dmc.Text(str(text), size="sm"), color="red", variant="light",
                      title="Update failed", icon=html.I(className="bi bi-exclamation-triangle"))
+
+
+def _cancelled_alert() -> dmc.Alert:
+    return dmc.Alert("History update cancelled — previous data kept.", color="gray",
+                     variant="light", icon=html.I(className="bi bi-x-circle"))
 
 dash.register_page(__name__, path="/cancellation-history", name="Cancellation History",
                    order=2, title="STAYERY · Cancellation History")
@@ -230,9 +231,11 @@ def _start_history_update(n):
 
 
 @callback(
-    Output("cxl-upd-bar", "value"),
+    Output("cxl-upd-ring", "sections"),
+    Output("cxl-upd-pct", "children"),
     Output("cxl-upd-msg", "children"),
     Output("cxl-upd-wrap", "style"),
+    Output("cxl-upd-cancel", "children"),
     Output("cxl-upd-result", "children"),
     Output("cxl-upd-btn", "disabled"),
     Output("cxl-data-version", "data"),
@@ -247,8 +250,10 @@ def _poll_history_update(_n, _kick, version, seen):
     status = st.get("status", "idle")
     seen = dict(seen or {})
     if status == "running":
-        bar = str(int(float(st.get("progress", 0)) * 100))
-        return bar, st.get("message", ""), _SHOWN, no_update, True, no_update, no_update
+        sec, pct, msg, wrap = ui.loader_view(float(st.get("progress", 0)) * 100,
+                                             st.get("message", ""), show=True)
+        return sec, pct, msg, wrap, "Cancel", no_update, True, no_update, no_update
+    sec, pct, msg, wrap = ui.loader_view(0, "", show=False)
     fin = st.get("finished")
     bump = no_update
     if fin and seen.get("history") != fin:
@@ -256,10 +261,22 @@ def _poll_history_update(_n, _kick, version, seen):
         if status == "done":
             bump = (version or 0) + 1
     if status == "error":
-        return "0", "", _HIDDEN, _err_alert(st.get("error", "unknown error")), False, bump, seen
+        return sec, pct, msg, wrap, no_update, _err_alert(st.get("error", "unknown error")), False, bump, seen
+    if status == "cancelled":
+        return sec, pct, msg, wrap, no_update, _cancelled_alert(), False, bump, seen
     if status == "done":
-        return "0", "", _HIDDEN, _history_result(st.get("result") or {}), False, bump, seen
-    return "0", "", _HIDDEN, no_update, False, no_update, seen
+        return sec, pct, msg, wrap, no_update, _history_result(st.get("result") or {}), False, bump, seen
+    return sec, pct, msg, wrap, no_update, no_update, False, no_update, seen
+
+
+@callback(
+    Output("cxl-upd-cancel", "children", allow_duplicate=True),
+    Input("cxl-upd-cancel", "n_clicks"),
+    prevent_initial_call=True,
+)
+def _cancel_history_update(_n):
+    jobs.cancel("history")
+    return "Cancelling…"
 
 
 @callback(

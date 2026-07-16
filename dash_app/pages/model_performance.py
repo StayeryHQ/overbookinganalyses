@@ -259,6 +259,14 @@ def _poll_rebuild(_n, seen, version):
         seen["artifacts"] = fin
         if status == "done":
             bump = (version or 0) + 1        # re-read the fresh artifacts once
+    # Auto-refresh when a RETRAIN finishes elsewhere — it rebuilds this page's eval, so the
+    # performance charts must not lag the freshly deployed model.
+    rt = jobs.read("retrain")
+    rfin = rt.get("finished")
+    if rfin and seen.get("retrain") != rfin:
+        seen["retrain"] = rfin
+        if rt.get("status") == "done":
+            bump = (version or 0) + 1
     if status == "error":
         return "✗ " + str(st.get("error", "failed")), False, bump, seen
     if status == "done":

@@ -10,13 +10,10 @@
 
 from __future__ import annotations
 
-import time
-
 import dash
 import dash_mantine_components as dmc
 from dash import Input, Output, State, callback, dcc, html, no_update
 
-import src
 from dash_app.backend import jobs
 from dash_app.backend import model_ops as mo
 from dash_app.components import ui
@@ -24,24 +21,11 @@ from dash_app.components import ui
 dash.register_page(__name__, path="/data-update", name="Update & Retraining",
                    order=4, title="STAYERY · Update & Retraining")
 
-_HIDDEN = {"display": "none"}
-_SHOWN = {"display": "block"}
 
 
 # ---------------------------------------------------------------------------
 # Small builders
 # ---------------------------------------------------------------------------
-def _progress_row(prefix: str):
-    return html.Div(
-        dmc.Stack([
-            html.Progress(id=f"{prefix}-bar", value="0", max="100",
-                          style={"width": "100%", "height": "8px"}),
-            dmc.Text(id=f"{prefix}-msg", size="xs", c="dimmed"),
-        ], gap=4),
-        id=f"{prefix}-wrap", style=_HIDDEN, className="mt-2",
-    )
-
-
 def _kv_rows(pairs: list[dict], key: str = "param", val: str = "value"):
     rows = []
     for i, p in enumerate(pairs):
@@ -95,14 +79,6 @@ def _err_alert(text: str):
                      title="Failed", icon=html.I(className="bi bi-exclamation-triangle"))
 
 
-def _running_note(state: dict) -> str:
-    started = state.get("started")
-    since = src.fmt_ts_local(started * 1_000_000_000) if started else None  # epoch s -> ns
-    mins = f" · running {int((time.time() - started) // 60)} min" if started else ""
-    return ((f"Started {since}" if since else "Running") + mins
-            + " - keeps running if you switch pages; the bar picks up again here.")
-
-
 # ---------------------------------------------------------------------------
 # Per-job SUCCESS renderers
 # ---------------------------------------------------------------------------
@@ -120,25 +96,6 @@ def _retrain_result(res: dict):
         dmc.Text("Re-score the next 14 days on Occupancy & Predictions to use the new model.",
                  size="xs", c="dimmed"),
     ], gap=6), color="green", variant="light", icon=html.I(className="bi bi-check-circle"))
-
-
-_RESULT_RENDERERS = {"retrain": _retrain_result}
-
-
-def _job_view(name: str, idle_text: str):
-    """(bar_value, msg, wrap_style, result_children, is_running) for one job."""
-    st = jobs.read(name)
-    status = st.get("status", "idle")
-    if status == "running":
-        bar = str(int(float(st.get("progress", 0)) * 100))
-        return bar, st.get("message", ""), _SHOWN, dmc.Text(_running_note(st), size="xs",
-                                                            c="dimmed"), True
-    if status == "error":
-        return "0", "", _HIDDEN, _err_alert(st.get("error", "unknown error")), False
-    if status == "done":
-        render = _RESULT_RENDERERS.get(name, lambda r: dmc.Text(str(r), size="xs"))
-        return "0", "", _HIDDEN, render(st.get("result") or {}), False
-    return "0", "", _HIDDEN, dmc.Text(idle_text, size="xs", c="dimmed"), False
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +166,7 @@ def layout(**_kwargs):
             dmc.Checkbox(id="du-retune", checked=False, size="sm",
                          label="Re-estimate hyperparameters (slower)", mt=26),
         ], gap="md", align="flex-end", mt=8),
-        _progress_row("du-retrain"),
+        ui.two_stage_loader("du-retrain", "Retrain + evaluate", "Explanations"),
         html.Div(id="du-retrain-result", className="mt-2"),
         dmc.Modal(id="du-retrain-modal", opened=False, centered=True,
                   title=dmc.Text("Confirm retraining", fw=700),
@@ -275,8 +232,9 @@ def _confirm_retrain(_n, model, retune):
                  size="sm"),
         dmc.Text(f"Mode: {mode}. Last retrained: {st.get('retrained_at') or 'never'}.",
                  size="sm", c="dimmed"),
-        dmc.Text("The job cannot be cancelled once started; it survives page changes.",
-                 size="xs", c="dimmed"),
+        dmc.Text("You can cancel it — it stops at the next stage and the previous model "
+                 "stays in place (a fit already running finishes that step first). "
+                 "It also survives page changes.", size="xs", c="dimmed"),
     ], gap=6)
     return True, body
 
@@ -304,13 +262,15 @@ def _abort_retrain(_n):
 
 
 # ---------------------------------------------------------------------------
-# THE poller - renders the retrain job from its status file, bumps the model-info
-# version once on completion, and disables the retrain button while it runs.
+# THE poller - renders the two-stage retrain loader from its status file, bumps the
+# model-info version once on completion, and disables the retrain button while running.
 # ---------------------------------------------------------------------------
 @callback(
-    Output("du-retrain-bar", "value"), Output("du-retrain-msg", "children"),
-    Output("du-retrain-wrap", "style"), Output("du-retrain-result", "children"),
-    Output("du-retrain-btn", "disabled"),
+    Output("du-retrain-ring1", "sections"), Output("du-retrain-pct1", "children"),
+    Output("du-retrain-ring2", "sections"), Output("du-retrain-pct2", "children"),
+    Output("du-retrain-msg", "children"), Output("du-retrain-wrap", "style"),
+    Output("du-retrain-cancel", "children"),
+    Output("du-retrain-result", "children"), Output("du-retrain-btn", "disabled"),
     Output("du-info-version", "data"),
     Output("du-jobs-seen", "data"),
     Input("du-poll", "n_intervals"),
@@ -320,12 +280,36 @@ def _abort_retrain(_n):
 )
 def _poll(_n, _kick, seen, info_v):
     seen = dict(seen or {})
-    r = _job_view("retrain", "Idle.")
-    new_info = no_update
     st = jobs.read("retrain")
+    status = st.get("status", "idle")
+    if status == "running":
+        r1, p1, r2, p2, msg, wrap = ui.two_stage_view(float(st.get("progress", 0)),
+                                                      st.get("message", ""), show=True)
+        return r1, p1, r2, p2, msg, wrap, "Cancel", no_update, True, no_update, no_update
+    r1, p1, r2, p2, msg, wrap = ui.two_stage_view(0, "", show=False)
     fin = st.get("finished")
+    new_info = no_update
     if fin and seen.get("retrain") != fin:
         seen["retrain"] = fin
-        if st.get("status") == "done":
+        if status == "done":
             new_info = (info_v or 0) + 1     # refresh the model tiles/metrics once
-    return (r[0], r[1], r[2], r[3], r[4], new_info, seen)
+    if status == "error":
+        return r1, p1, r2, p2, msg, wrap, no_update, _err_alert(st.get("error", "unknown error")), False, new_info, seen
+    if status == "cancelled":
+        return (r1, p1, r2, p2, msg, wrap, no_update,
+                dmc.Alert("Retrain cancelled — the previous model is still in place.",
+                          color="gray", variant="light", icon=html.I(className="bi bi-x-circle")),
+                False, new_info, seen)
+    if status == "done":
+        return r1, p1, r2, p2, msg, wrap, no_update, _retrain_result(st.get("result") or {}), False, new_info, seen
+    return r1, p1, r2, p2, msg, wrap, no_update, no_update, False, no_update, seen
+
+
+@callback(
+    Output("du-retrain-cancel", "children", allow_duplicate=True),
+    Input("du-retrain-cancel", "n_clicks"),
+    prevent_initial_call=True,
+)
+def _cancel_retrain(_n):
+    jobs.cancel("retrain")
+    return "Cancelling…"

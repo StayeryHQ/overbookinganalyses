@@ -75,11 +75,7 @@ def _scoring_card() -> dmc.Paper:
                            leftSection=html.I(className="bi bi-play-fill"), mt=22),
             ], gap="sm", align="flex-end", wrap="nowrap"),
         ], justify="space-between", align="flex-end", wrap="wrap"),
-        html.Div(dmc.Stack([
-            html.Progress(id="occ-score-bar", value="0", max="100",
-                          style={"width": "100%", "height": "8px"}),
-            dmc.Text(id="occ-score-msg", size="xs", c="dimmed"),
-        ], gap=4), id="occ-score-wrap", style=_HIDDEN),
+        ui.job_loader("occ-score"),
         html.Div(id="occ-score-result"),
     ], gap="xs"), p="md", radius="lg", withBorder=True)
 
@@ -123,11 +119,7 @@ def _xai_section() -> dmc.Stack:
                        leftSection=html.I(className="bi bi-diagram-3")),
         ], justify="space-between", align="center", wrap="wrap"),
             p="md", radius="lg", withBorder=True),
-        html.Div(dmc.Stack([
-            html.Progress(id="occ-xai-bar", value="0", max="100",
-                          style={"width": "100%", "height": "8px"}),
-            dmc.Text(id="occ-xai-msg", size="xs", c="dimmed"),
-        ], gap=4), id="occ-xai-wrap", style=_HIDDEN),
+        ui.job_loader("occ-xai"),
         dmc.SimpleGrid([
             ui.chart_card("Feature importance (mean |SHAP|)", "occ-xai-importance", height=440),
             ui.chart_card("SHAP beeswarm", "occ-xai-beeswarm", height=460),
@@ -445,9 +437,11 @@ def _start_scoring(n, model, cost_store):
 
 
 @callback(
-    Output("occ-score-bar", "value"),
+    Output("occ-score-ring", "sections"),
+    Output("occ-score-pct", "children"),
     Output("occ-score-msg", "children"),
     Output("occ-score-wrap", "style"),
+    Output("occ-score-cancel", "children"),
     Output("occ-score-result", "children"),
     Output("occ-score-btn", "disabled"),
     Output("occ-scored-version", "data"),
@@ -462,10 +456,11 @@ def _poll_scoring(_n, _kick, version, seen):
     status = st.get("status", "idle")
     seen = dict(seen or {})
     if status == "running":
-        bar = str(int(float(st.get("progress", 0)) * 100))
-        return bar, st.get("message", ""), _SHOWN, no_update, True, no_update, no_update
-    # done / error / idle: bump the scored-version ONCE per finished job so the
-    # heatmap + table re-read the fresh parquet exactly once.
+        sec, pct, msg, wrap = ui.loader_view(float(st.get("progress", 0)) * 100,
+                                             st.get("message", ""), show=True)
+        return sec, pct, msg, wrap, "Cancel", no_update, True, no_update, no_update
+    # terminal: bump the scored-version ONCE per finished job so heatmap + table re-read.
+    sec, pct, msg, wrap = ui.loader_view(0, "", show=False)
     fin = st.get("finished")
     bump = no_update
     if fin and seen.get("scoring") != fin:
@@ -473,15 +468,32 @@ def _poll_scoring(_n, _kick, version, seen):
         if status == "done":
             bump = (version or 0) + 1
     if status == "error":
-        return "0", "", _HIDDEN, _err_alert(st.get("error", "unknown error")), False, bump, seen
+        return sec, pct, msg, wrap, no_update, _err_alert(st.get("error", "unknown error")), False, bump, seen
+    if status == "cancelled":
+        return sec, pct, msg, wrap, no_update, _cancelled_alert("Scoring"), False, bump, seen
     if status == "done":
-        return "0", "", _HIDDEN, _score_result(st.get("result") or {}), False, bump, seen
-    return "0", "", _HIDDEN, no_update, False, no_update, seen
+        return sec, pct, msg, wrap, no_update, _score_result(st.get("result") or {}), False, bump, seen
+    return sec, pct, msg, wrap, no_update, no_update, False, no_update, seen
+
+
+@callback(
+    Output("occ-score-cancel", "children", allow_duplicate=True),
+    Input("occ-score-cancel", "n_clicks"),
+    prevent_initial_call=True,
+)
+def _cancel_scoring(_n):
+    jobs.cancel("scoring")
+    return "Cancelling…"
 
 
 def _err_alert(text: str) -> dmc.Alert:
     return dmc.Alert(dmc.Text(str(text), size="sm"), color="red", variant="light",
                      title="Scoring failed", icon=html.I(className="bi bi-exclamation-triangle"))
+
+
+def _cancelled_alert(what: str) -> dmc.Alert:
+    return dmc.Alert(f"{what} cancelled — previous data kept.", color="gray", variant="light",
+                     icon=html.I(className="bi bi-x-circle"))
 
 
 # ---------------------------------------------------------------------------
@@ -498,9 +510,11 @@ def _start_xai(n):
 
 
 @callback(
-    Output("occ-xai-bar", "value"),
+    Output("occ-xai-ring", "sections"),
+    Output("occ-xai-pct", "children"),
     Output("occ-xai-msg", "children"),
     Output("occ-xai-wrap", "style"),
+    Output("occ-xai-cancel", "children"),
     Output("occ-xai-btn", "disabled"),
     Output("occ-xai-version", "data"),
     Output("occ-xai-seen", "data"),
@@ -514,17 +528,27 @@ def _poll_xai(_n, _kick, version, seen):
     status = st.get("status", "idle")
     seen = dict(seen or {})
     if status == "running":
-        bar = str(int(float(st.get("progress", 0)) * 100))
-        return bar, st.get("message", ""), _SHOWN, True, no_update, no_update
+        sec, pct, msg, wrap = ui.loader_view(float(st.get("progress", 0)) * 100,
+                                             st.get("message", ""), show=True)
+        return sec, pct, msg, wrap, "Cancel", True, no_update, no_update
+    sec, pct, msg, wrap = ui.loader_view(0, "", show=False)
     fin = st.get("finished")
     bump = no_update
     if fin and seen.get("shap") != fin:
         seen["shap"] = fin
         if status == "done":
             bump = (version or 0) + 1
-    if status == "error":
-        return "0", "SHAP build failed: " + str(st.get("error", "")), _HIDDEN, False, bump, seen
-    return "0", "", _HIDDEN, False, bump, seen
+    return sec, pct, msg, wrap, no_update, False, bump, seen
+
+
+@callback(
+    Output("occ-xai-cancel", "children", allow_duplicate=True),
+    Input("occ-xai-cancel", "n_clicks"),
+    prevent_initial_call=True,
+)
+def _cancel_xai(_n):
+    jobs.cancel("shap")
+    return "Cancelling…"
 
 
 @callback(

@@ -25,6 +25,23 @@ import src
 
 _LOCK = threading.Lock()
 _THREADS: dict[str, threading.Thread] = {}
+_CANCEL: dict[str, threading.Event] = {}
+
+
+class JobCancelled(Exception):
+    """Raised inside a job (via the progress checkpoint) when the user cancels."""
+
+
+def cancel(name: str) -> bool:
+    """Request COOPERATIVE cancellation. The job stops at its next progress checkpoint
+    and is marked 'cancelled' WITHOUT writing its result — so whatever data existed
+    before stays untouched. Threads can't be force-killed, so a step already running
+    (e.g. a model fit) finishes that step before the cancel is noticed."""
+    ev = _CANCEL.get(name)
+    if ev is not None and running(name):
+        ev.set()
+        return True
+    return False
 
 
 def _job_path(name: str) -> Path:
@@ -73,11 +90,17 @@ def start(name: str, fn: Callable, *args, **kwargs) -> bool:
     with _LOCK:
         if running(name):
             return False
+        cancel_ev = threading.Event()
+        _CANCEL[name] = cancel_ev
         state = {"status": "running", "progress": 0.0, "message": "starting…",
                  "started": time.time(), "finished": None, "result": None, "error": None}
         _write(name, state)
 
         def progress(msg: str, frac: float) -> None:
+            # Cooperative cancel checkpoint: raise BEFORE doing/reporting more work, so
+            # the job aborts before it writes anything and the previous data survives.
+            if cancel_ev.is_set():
+                raise JobCancelled()
             state["message"] = str(msg)
             state["progress"] = max(0.0, min(1.0, float(frac)))
             _write(name, state)
@@ -87,6 +110,9 @@ def start(name: str, fn: Callable, *args, **kwargs) -> bool:
                 result = fn(progress, *args, **kwargs)
                 state.update(status="done", progress=1.0, message="done",
                              finished=time.time(), result=result)
+            except JobCancelled:
+                state.update(status="cancelled", progress=0.0, finished=time.time(),
+                             message="Cancelled — previous data kept.", result=None)
             except Exception as e:  # noqa: BLE001 — the whole point: fail LOUDLY
                 state.update(status="error", finished=time.time(),
                              error=f"{type(e).__name__}: {str(e)[:600]}",

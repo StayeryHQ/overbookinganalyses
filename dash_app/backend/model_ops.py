@@ -289,6 +289,7 @@ def update_history_job(progress: Progress = _noop) -> dict:
 
     progress(f"Cleaning + labelling {len(raw):,} rows…", 0.60)
     clean = src.build_clean_reservations(raw)
+    progress("Writing the cleaned dataset…", 0.90)   # last cancel checkpoint before the write
     from src.data_loader import CLEAN_CACHE_FILE
     out_path = src.data_dir() / CLEAN_CACHE_FILE
     clean.to_parquet(out_path, index=False)
@@ -363,16 +364,15 @@ def run_retrain(model_name: str, *, retune: bool = False, asof: str | None = Non
     src.training.retrain (which dispatches hazard to src.hazard.retrain_hazard) — no modelling
     logic is duplicated here. Returns a compact, UI-friendly summary."""
     mode = "retune" if retune else "refit"
-    progress(f"Retraining '{model_label(model_name)}' ({mode}) — fitting on all resolved "
-             "data. This can take a while…", 0.1)
-
-    # refresh_eval=True rebuilds the Model-Performance eval artifact for this model right
-    # after the new model is persisted, so the comparison page never lags the deployed model.
+    # Stage 1/2 — fit on all resolved data AND rebuild the Model-Performance eval artifact
+    # (refresh_eval=True), so the performance page is never stale after a retrain.
+    progress(f"Stage 1/2 · retraining '{model_label(model_name)}' ({mode}) + rebuilding "
+             "evaluation. This can take a while…", 0.05)
     result = tr.retrain(model_name, mode=mode, asof=asof, persist=True, refresh_eval=True)
 
-    # Also rebuild this model's explanations (SHAP beeswarm/importance + iteration curve) so
-    # the XAI page reflects the retrained model. Best-effort — never fail the retrain on it.
-    progress("Rebuilding explanations (SHAP) for the updated model…", 0.85)
+    # Stage 2/2 — rebuild this model's explanations (SHAP + iteration curve) so the XAI
+    # section reflects the retrained model. Best-effort — never fail the retrain on it.
+    progress("Stage 2/2 · rebuilding explanations (SHAP) for the updated model…", 0.55)
     try:
         from dash_app.backend import explain as ex
         ex.compute_global_shap(model_name, refresh=True)
