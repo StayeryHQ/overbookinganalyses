@@ -1,9 +1,9 @@
 {
   "model": "xgboost",
-  "retrained_at": "2026-07-03T20:39:37.146110+00:00",
+  "retrained_at": "2026-07-15T19:21:33.801073+00:00",
   "mode": "retune",
-  "asof": "2026-06-28",
-  "n_train_deploy": 179576,
+  "asof": "2026-07-12",
+  "n_train_deploy": 183008,
   "features_numeric": [
     "adults_n",
     "arrival_dow",
@@ -42,37 +42,38 @@
     "changed": true
   },
   "hyperparams": {
-    "max_depth": 6,
-    "learning_rate": 0.05,
-    "subsample": 0.8,
-    "colsample_bytree": 0.8,
-    "min_child_weight": 1,
-    "reg_lambda": 1.0,
-    "reg_alpha": 0.0,
-    "n_estimators": 471
+    "max_depth": 4,
+    "learning_rate": 0.24465498962794868,
+    "subsample": 0.9509357413523924,
+    "colsample_bytree": 0.7031766510860622,
+    "min_child_weight": 10,
+    "reg_lambda": 1.1191282495204613,
+    "reg_alpha": 4.295475449362941,
+    "n_estimators": 148
   },
   "walk_forward": {
     "auc": {
-      "mean": 0.7453591674734623,
-      "std": 0.03016868903701044
+      "mean": 0.7585903732740021,
+      "std": 0.025797192928362852
     },
     "ap": {
-      "mean": 0.2740003093819689,
-      "std": 0.030968121022620577
+      "mean": 0.26498160721098535,
+      "std": 0.062438091506110016
     },
     "brier": {
-      "mean": 0.12034715152288401,
-      "std": 0.014617832538530015
+      "mean": 0.10998150707582428,
+      "std": 0.0173349869568452
     },
     "cost": {
-      "mean": 29413.333333333332,
-      "std": 9226.142567003106
+      "mean": 27650.0,
+      "std": 10285.630753629064
     }
   },
   "operating_points": [
     {
       "name": "cost_optimal",
-      "threshold": 0.7894736842105263
+      "threshold": 0.7143
     }
-  ]
+  ],
+  "decision_time_recalibrated": true
 }

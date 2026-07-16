@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 
 from . import walkforward as wf
-from .features import load_feature_roster
+from .features import family_feature_lists, load_feature_roster
 from .paths import data_dir, repo_root
 
 SEED: Final[int] = 42
@@ -65,9 +65,15 @@ HP_GRID: Final[list[dict]] = [
 # Feature lists + event columns
 # =============================================================================
 def feature_lists(clean: pd.DataFrame) -> tuple[list[str], list[str]]:
+    """Hazard is an XGBoost (TREE-family) model, so it must use the RAW skewed columns
+    and DROP their `_log` twins — never both. Previously this read the raw roster
+    `numeric`, which carries a column AND its `_log` twin, so the hazard model (and its
+    SHAP/XAI) ended up with both. family_feature_lists(..., "tree") is the single
+    source of that per-family selection (same rule the static tree models use)."""
     r = load_feature_roster()
-    num = [c for c in r["numeric"] if c in clean.columns]
-    cat = [c for c in r["categorical"] if c in clean.columns]
+    num, cat = family_feature_lists(r, "tree")
+    num = [c for c in num if c in clean.columns]
+    cat = [c for c in cat if c in clean.columns]
     return num, cat
 
 

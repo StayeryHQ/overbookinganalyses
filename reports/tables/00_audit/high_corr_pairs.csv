@@ -1,7 +1,7 @@
 feature_a,feature_b,abs_spearman,note
 los_nights,los_nights_log,1.0,identical (engineered duplicate)
-gross_per_night,gross_per_night_log,0.9999999934568536,identical (engineered duplicate)
-diff_gross_cancellation_fee_log,diff_gross_cancellation_fee,0.9999999925289381,identical (engineered duplicate)
-lead_time_days,lead_time_days_log,0.9999546869129754,identical (engineered duplicate)
-cancellationFee_fee_amount,totalGrossAmount_amount,0.9210377419857878,real collinearity - VIF check downstream
-los_nights,gross_amount,0.8983884794326497,real collinearity - VIF check downstream
+gross_per_night,gross_per_night_log,0.9999999937275941,identical (engineered duplicate)
+diff_gross_cancellation_fee_log,diff_gross_cancellation_fee,0.9999974704156578,identical (engineered duplicate)
+lead_time_days,lead_time_days_log,0.9999539892131323,identical (engineered duplicate)
+cancellationFee_fee_amount,totalGrossAmount_amount,0.9214589877362521,real collinearity - VIF check downstream
+los_nights,gross_amount,0.8982090822707921,real collinearity - VIF check downstream

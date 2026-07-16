@@ -85,6 +85,7 @@ has_children,ENGINEERED,built in §3.0/§5/§7,3.0/5/7
 has_corporate_code,ENGINEERED,built in §3.0/§5/§7,3.0/5/7
 has_group,ENGINEERED,built in §3.0/§5/§7,3.0/5/7
 has_promo,ENGINEERED,built in §3.0/§5/§7,3.0/5/7
+is_canceled_by_arrival,ENGINEERED,built in §3.0/§5/§7,3.0/5/7
 is_weekend_arrival,ENGINEERED,built in §3.0/§5/§7,3.0/5/7
 lead_time_days,ENGINEERED,built in §3.0/§5/§7,3.0/5/7
 lead_time_days_log,ENGINEERED,built in §3.0/§5/§7,3.0/5/7

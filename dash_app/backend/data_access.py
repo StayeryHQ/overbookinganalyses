@@ -1,9 +1,9 @@
 # dash_app/backend/data_access.py
 # Read-only accessors the Occupancy dashboard uses. EVERYTHING here reads from the
 # Phase-1 local caches (parquet) — no live BigQuery is ever triggered by a filter or
-# table interaction (hard performance requirement). The only write path is
-# refresh_scored(), which re-runs the model on the already-cached reservations and
-# is meant to be called from a background callback, never inline on a filter.
+# table interaction (hard performance requirement). Re-scoring the upcoming window is
+# a separate write path that runs on the file-backed job runner (see
+# model_ops.score_window_job), never inline on a filter.
 
 from __future__ import annotations
 
@@ -148,18 +148,6 @@ def load_scored() -> pd.DataFrame:
     if not p.exists():
         return pd.DataFrame()
     return _drop_cancelled(pd.read_parquet(p))
-
-
-def refresh_scored(model_name: str | None = None) -> int:
-    """Re-run the model over the cached reservations and rewrite the scored parquet.
-
-    Reads reservations from the local cache (force_refresh=False => NO BigQuery).
-    Returns the row count. Intended to be called from a BACKGROUND callback (model
-    inference can take >1s), never inline on a filter interaction.
-    """
-    scored = sc.score_upcoming(model_name=model_name, force_refresh=False, save=True)
-    _reservations_cached.cache_clear()
-    return int(len(scored))
 
 
 # ---- Window filtering ------------------------------------------------------

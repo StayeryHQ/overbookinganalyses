@@ -21,6 +21,7 @@ from .data_loader import (
     load_clean_reservations,
     load_property_performance,
     load_reservations,
+    load_reservations_upcoming_window,
     property_universe,
     strip_pii,
 )
@@ -93,6 +94,7 @@ __all__ = [
     "load_clean_reservations",
     "load_property_performance",
     "load_reservations",
+    "load_reservations_upcoming_window",
     "property_universe",
     "strip_pii",
     # high-demand walk-cost scaling

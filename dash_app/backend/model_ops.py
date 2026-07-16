@@ -234,6 +234,47 @@ def update_all(progress: Progress = _noop, model_name: str | None = None,
     return res
 
 
+def score_window_job(progress: Progress = _noop, model_name: str | None = None,
+                     walk: float | None = None, empty: float | None = None,
+                     days: int = WINDOW_DAYS) -> dict:
+    """Occupancy 'Run scoring' job: pull ONLY the next `days` days of arrivals from
+    BigQuery (a windowed SQL scan — NOT the full history) and score them.
+
+    Hits BigQuery for a 14-day arrival window only, so it is cheap and always fresh;
+    it deliberately does NOT touch the full-history reservations cache (that is the
+    separate 'update historical data' action). Scores through the same src.scoring
+    path as everything else, writes Data/scored_upcoming.parquet, and returns bucket
+    counts for the green result card. Runs via the file-backed jobs runner (survives
+    page changes) — NOT a Dash background callback (which left the old button stuck
+    loading forever). Fails loudly if BigQuery is unavailable — no cache fallback.
+    """
+    t0 = time.perf_counter()
+    progress(f"BigQuery: pulling the next {days} days of arrivals…", 0.15)
+    df = src.load_reservations_upcoming_window(days=days, quiet=True)
+    if "status" in df.columns:
+        df = df[df["status"].astype("string") != "Canceled"].copy()
+
+    threshold = (sc.analytic_threshold(walk, empty)
+                 if walk is not None and empty is not None else None)
+    progress(f"Scoring {len(df):,} bookings arriving in the next {days} days…", 0.55)
+    scored = sc.score_reservations(df, model_name=model_name, threshold=threshold,
+                                   save_as="scored_upcoming.parquet")
+
+    try:  # let the page backends see the fresh scored parquet on their next read
+        from dash_app.backend import data_access as da
+        da._reservations_cached.cache_clear()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("cache clear after scoring failed: %s", e)
+
+    rb = scored.get("risk_bucket")
+    buckets = ({b: int((rb == b).sum()) for b in ("high", "medium", "low")}
+               if rb is not None else {"high": 0, "medium": 0, "low": 0})
+    return {"scored_rows": int(len(scored)), "buckets": buckets, "days": int(days),
+            "model_label": model_label(sc.resolve_model(model_name)),
+            "elapsed_s": round(time.perf_counter() - t0, 1),
+            "finished": _fmt_ts(pd.Timestamp.utcnow().isoformat())}
+
+
 # =============================================================================
 # Job wrappers — thin adapters with the (progress, *args) signature jobs.start
 # expects. Keep ALL logic in the functions they call.

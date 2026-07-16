@@ -1,9 +1,9 @@
 {
   "model": "histgb",
-  "retrained_at": "2026-07-03T21:41:02.484294+00:00",
+  "retrained_at": "2026-07-15T21:02:07.984378+00:00",
   "mode": "retune",
-  "asof": "2026-06-28",
-  "n_train_deploy": 179576,
+  "asof": "2026-07-12",
+  "n_train_deploy": 183008,
   "features_numeric": [
     "adults_n",
     "arrival_dow",
@@ -33,64 +33,44 @@
   "feature_change": {
     "hash": "40169eb23eec",
     "added": [
-      "adults_n",
-      "arrival_dow",
-      "arrival_month",
-      "cancellationFee_name",
-      "channelCode",
-      "diff_gross_cancellation_fee",
       "diff_gross_cancellation_fee_log",
-      "gross_per_night",
       "gross_per_night_log",
-      "guaranteeType",
-      "has_children",
-      "has_corporate_code",
-      "has_group",
-      "has_promo",
-      "is_weekend_arrival",
-      "lead_time_days",
       "lead_time_days_log",
-      "log_gross_amount",
-      "los_nights",
-      "los_nights_log",
-      "property_name",
-      "ratePlan_category",
-      "ratePlan_isSubjectToCityTax",
-      "stay_bucket",
-      "unitGroup_name"
+      "los_nights_log"
     ],
     "removed": [],
     "changed": true
   },
   "hyperparams": {
-    "l2_regularization": 10.25616274847308,
-    "learning_rate": 0.012886065671894011,
-    "max_iter": 900,
-    "max_leaf_nodes": 23,
-    "min_samples_leaf": 97
+    "l2_regularization": 64.89877132084352,
+    "learning_rate": 0.023545774516299134,
+    "max_iter": 600,
+    "max_leaf_nodes": 17,
+    "min_samples_leaf": 122
   },
   "walk_forward": {
     "auc": {
-      "mean": 0.7507047653919278,
-      "std": 0.036199275386902534
+      "mean": 0.7660489458173091,
+      "std": 0.024584006032495997
     },
     "ap": {
-      "mean": 0.28052839867420404,
-      "std": 0.03875108514882043
+      "mean": 0.276476116388031,
+      "std": 0.05584178740293517
     },
     "brier": {
-      "mean": 0.1151138559144178,
-      "std": 0.014251082467157226
+      "mean": 0.10590549225451514,
+      "std": 0.017204821776496865
     },
     "cost": {
-      "mean": 29413.333333333332,
-      "std": 9226.142567003106
+      "mean": 27660.0,
+      "std": 10337.674786914125
     }
   },
   "operating_points": [
     {
       "name": "cost_optimal",
-      "threshold": 0.7894736842105263
+      "threshold": 0.7353
     }
-  ]
+  ],
+  "decision_time_recalibrated": true
 }

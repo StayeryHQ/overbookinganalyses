@@ -347,6 +347,20 @@ def load_reservations(
     return df
 
 
+def load_reservations_upcoming_window(days: int = 14, quiet: bool = False) -> pd.DataFrame:
+    """Pull ONLY the next `days` days of arrivals straight from BigQuery (PII stripped,
+    dtypes cleaned). Deliberately does NOT read or write the full-history cache — the
+    caller (Occupancy scoring) wants fresh upcoming data and only a 14-day SQL scan.
+    Fails loudly if BigQuery is unavailable (no cache fallback)."""
+    if not quiet:
+        logging.basicConfig(level=logging.INFO, format="%(message)s")
+    df = _query_bigquery_window(days=days)
+    df = strip_pii(df)          # belt-and-suspenders (SQL already EXCEPTs PII)
+    df = clean_dtypes(df)
+    _validate_schema(df)
+    return df
+
+
 def load_clean_reservations() -> pd.DataFrame:
     """Load the cleaned parquet produced by 00_data_audit.ipynb.
 
@@ -426,10 +440,9 @@ def clean_dtypes(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _reservations_query(client, *, limit: int | None = None):
-    """(sql, n_pii) for THE one reservations pull — full history, PII excluded
-    in SQL. There is deliberately no date-windowed variant anymore: the full
-    pull is cheap (~200k rows) and already contains the upcoming bookings, so
-    one query serves history AND scoring (no second query definition to drift).
+    """(sql, n_pii) for THE full-history reservations pull — PII excluded in SQL.
+    Used for the history views + retraining. Scoring the upcoming window uses the
+    windowed variant below (_reservations_window_query).
     """
     table_ref = f"{BQ_PROJECT}.{BQ_DATASET}.{BQ_TABLE}"
     table_cols = {f.name for f in client.get_table(table_ref).schema}
@@ -440,6 +453,72 @@ def _reservations_query(client, *, limit: int | None = None):
     if limit is not None:
         sql += f"\nLIMIT {int(limit)}"
     return sql, len(pii_present)
+
+
+def _reservations_window_query(client, *, days: int = 14):
+    """(sql, n_pii) for a forward-WINDOWED reservations pull: only rows whose
+    `arrival` falls in [now, now + `days`). PII excluded in SQL. This is what the
+    Occupancy scoring action uses so it hits ONLY the next `days` days in BigQuery,
+    never the full history.
+
+    The `arrival` column's BigQuery type is detected at build time so the WHERE clause
+    uses the matching CURRENT_*/*_ADD functions (DATE / DATETIME / TIMESTAMP), avoiding
+    a type-mismatch error and keeping partition pruning intact.
+    """
+    table_ref = f"{BQ_PROJECT}.{BQ_DATASET}.{BQ_TABLE}"
+    schema = client.get_table(table_ref).schema
+    table_cols = {f.name for f in schema}
+    pii_present = [c for c in PII_COLUMNS if c in table_cols]
+    except_clause = f" EXCEPT({', '.join(pii_present)})" if pii_present else ""
+
+    arr_type = next((f.field_type for f in schema if f.name == "arrival"), "TIMESTAMP").upper()
+    now_fn, add_fn = {
+        "DATE": ("CURRENT_DATE()", "DATE_ADD"),
+        "DATETIME": ("CURRENT_DATETIME()", "DATETIME_ADD"),
+    }.get(arr_type, ("CURRENT_TIMESTAMP()", "TIMESTAMP_ADD"))
+
+    where = (f"WHERE arrival >= {now_fn} "
+             f"AND arrival < {add_fn}({now_fn}, INTERVAL {int(days)} DAY)")
+    sql = f"SELECT *{except_clause} FROM `{table_ref}`\n{where}"
+    return sql, len(pii_present)
+
+
+def _query_bigquery_window(days: int = 14) -> pd.DataFrame:
+    """Run the forward-windowed reservations query (next `days` days of arrivals).
+    Fails LOUDLY: no cache fallback — the caller explicitly wants FRESH upcoming data.
+    BigQuery imports lazily so the module works without the package installed."""
+    try:
+        from google.cloud import bigquery  # type: ignore[import-untyped]  # noqa: F401
+    except ImportError as e:
+        raise RuntimeError(
+            "google-cloud-bigquery is not installed. Run:\n"
+            "    uv add google-cloud-bigquery db-dtypes pyarrow\n"
+            "and authenticate with `gcloud auth application-default login`."
+        ) from e
+
+    client = get_bigquery_client()
+    sql, n_pii = _reservations_window_query(client, days=days)
+    logger.info(
+        f"running WINDOWED BigQuery query (next {days} days of arrivals; "
+        f"{n_pii} PII columns excluded at SQL level)…"
+    )
+
+    timeout_seconds = _get_bq_query_timeout_seconds()
+    job = None
+    try:
+        job = client.query(sql)
+        query_job = job.result(timeout=timeout_seconds)
+    except Exception as e:  # noqa: BLE001
+        if job is not None:
+            try:
+                job.cancel()
+            except Exception:  # noqa: BLE001
+                pass
+        raise RuntimeError(
+            f"BigQuery windowed query timed out or failed after {timeout_seconds}s: {e}"
+        ) from e
+
+    return _download_df(query_job)
 
 
 def _query_bigquery(limit: int | None = None) -> pd.DataFrame:

@@ -1,10 +1,11 @@
 # dash_app/pages/occupancy.py
 # MAIN PAGE - Occupancy & Overbooking. Fixed 14-day forward window; property filter
-# only (no date filter). Layout top→bottom: KPI tiles → heatmap → composition charts
-# → booking table → cost panel. Shell + KPIs render immediately
-# from the local cache; scoring runs in a BACKGROUND callback. Already-cancelled
-# bookings are excluded centrally in the data layer. No filter/table interaction ever
-# hits BigQuery.
+# only (no date filter). Layout top→bottom: scoring card → controls → costs → KPI
+# tiles → heatmap → composition charts → booking table. Shell + KPIs render
+# immediately from the local cache; re-scoring runs on the file-backed job runner
+# (model_ops.score_window_job) polled by a dcc.Interval — NOT a Dash background
+# callback (that left the button stuck loading). Already-cancelled bookings are
+# excluded centrally in the data layer. No filter/table interaction hits BigQuery.
 
 from __future__ import annotations
 
@@ -14,11 +15,17 @@ import dash_mantine_components as dmc
 import pandas as pd
 from dash import Input, Output, State, callback, ctx, dcc, html, no_update
 
+import src
 from dash_app import theme
 from dash_app.backend import data_access as da
+from dash_app.backend import jobs                       # file-backed job runner (no hang)
+from dash_app.backend import model_ops as mo
 from dash_app.backend import model_performance as mp   # shared global cost-store
 from dash_app.components import panels
 from dash_app.components import ui
+
+_HIDDEN = {"display": "none"}
+_SHOWN = {"display": "block"}
 
 dash.register_page(__name__, path="/occupancy", name="Occupancy & Predictions",
                    order=1, title="STAYERY · Occupancy")
@@ -29,6 +36,45 @@ def _selected_props(value) -> list[str]:
     if value is None:
         return []
     return list(value)
+
+
+# ---------------------------------------------------------------------------
+# Scoring card — runs on the file-backed job runner (survives page changes; the
+# old Dash background callback is what left the button stuck loading forever).
+# ---------------------------------------------------------------------------
+def _scoring_card() -> dmc.Paper:
+    return dmc.Paper(dmc.Stack([
+        dmc.Group([
+            dmc.Stack([
+                dmc.Text("Predictions · next 14 days", fw=600, size="sm"),
+                dmc.Text("Re-runs the model on the upcoming 14 days (from the local "
+                         "cache — no BigQuery). Runs in the background; progress keeps "
+                         "going if you switch pages.", size="xs", c="dimmed"),
+            ], gap=2),
+            dmc.Button("Run scoring", id="occ-score-btn", size="sm", variant="filled",
+                       leftSection=html.I(className="bi bi-play-fill")),
+        ], justify="space-between", align="center", wrap="wrap"),
+        html.Div(dmc.Stack([
+            html.Progress(id="occ-score-bar", value="0", max="100",
+                          style={"width": "100%", "height": "8px"}),
+            dmc.Text(id="occ-score-msg", size="xs", c="dimmed"),
+        ], gap=4), id="occ-score-wrap", style=_HIDDEN),
+        html.Div(id="occ-score-result"),
+    ], gap="xs"), p="md", radius="lg", withBorder=True)
+
+
+def _score_result(res: dict) -> dmc.Alert:
+    b = res.get("buckets") or {}
+    return dmc.Alert(dmc.Stack([
+        dmc.Text(f"Scored {res.get('scored_rows', 0):,} bookings for the next "
+                 f"{res.get('days', 14)} days with {res.get('model_label', 'the model')} "
+                 f"in {res.get('elapsed_s', '?')}s.", fw=600, size="sm"),
+        dmc.Group([
+            dmc.Badge(f"High: {b.get('high', 0):,}", color="red", variant="light"),
+            dmc.Badge(f"Medium: {b.get('medium', 0):,}", color="yellow", variant="light"),
+            dmc.Badge(f"Low: {b.get('low', 0):,}", color="green", variant="light"),
+        ], gap="xs"),
+    ], gap=6), color="green", variant="light", icon=html.I(className="bi bi-check-circle"))
 
 
 # ---------------------------------------------------------------------------
@@ -54,22 +100,18 @@ def layout(**_kwargs):
             leftSection=html.I(className="bi bi-geo-alt"),
             comboboxProps={"withinPortal": True},
             style={"flex": "1 1 320px", "minWidth": "260px"}),
-        dmc.Stack([
-            dmc.Text("Scores", size="sm", fw=600),
-            dmc.Group([
-                dmc.Button("Refresh scores", id="occ-refresh-btn", size="sm", variant="filled",
-                           leftSection=html.I(className="bi bi-arrow-clockwise")),
-                dmc.Text(id="occ-refresh-status", size="xs", c="dimmed"),
-            ], gap="xs", align="center"),
-        ], gap=4),
     ], align="flex-end", gap="md", wrap="wrap"), p="md", radius="lg", withBorder=True)
 
     stores = html.Div([
         dcc.Store(id="occ-scored-version", data=0),
         dcc.Store(id="occ-pernight-store"),
         dcc.Store(id="occ-selection"),                    # {"property":..,"day":..} or None
+        dcc.Store(id="occ-score-kick", data=0),
+        dcc.Store(id="occ-score-seen", data={}),          # de-dupe the "job done" bump
         # Fires once on page load so the cost inputs get pre-filled from the shared store.
         dcc.Interval(id="occ-costs-init", interval=200, n_intervals=0, max_intervals=1),
+        # Heartbeat: polls Data/jobs/scoring.json so progress survives page changes.
+        dcc.Interval(id="occ-score-poll", interval=1200, n_intervals=0),
         # NOTE: "cost-store" now lives in the GLOBAL app.layout (single shared source of
         # truth across pages). Declaring it here too would duplicate the component id.
     ])
@@ -112,6 +154,10 @@ def layout(**_kwargs):
     return dmc.Stack([
         header,
         stores,
+
+        # Scoring (next 14 days) — top of the page, file-backed job + progress
+        _scoring_card(),
+
         controls,
 
         # Global overbooking costs + derived cost-optimal threshold (single entry point)
@@ -308,20 +354,57 @@ def _save_cost_params(walk, empty, high, mult, store):
 
 
 # ---------------------------------------------------------------------------
-# Background: (re)score upcoming bookings from the cache (no BigQuery)
+# Scoring — file-backed job (survives page changes, no stuck loading bar). Start
+# on click; a dcc.Interval polls the job file and renders progress / result.
 # ---------------------------------------------------------------------------
 @callback(
-    Output("occ-scored-version", "data"),
-    Output("occ-refresh-status", "children"),
-    Input("occ-refresh-btn", "n_clicks"),
-    State("occ-scored-version", "data"),
-    background=True,
-    running=[(Output("occ-refresh-btn", "disabled"), True, False)],
+    Output("occ-score-kick", "data"),
+    Input("occ-score-btn", "n_clicks"),
+    State("cost-store", "data"),
     prevent_initial_call=True,
 )
-def _refresh_scores(_n, version):
-    try:
-        count = da.refresh_scored()
-        return (version or 0) + 1, f"Scored {count:,} bookings."
-    except Exception as e:  # noqa: BLE001 - surface the reason, don't crash
-        return no_update, f"Refresh failed: {e}"
+def _start_scoring(n, cost_store):
+    walk, empty, high, mult = mp.read_cost_full(cost_store)
+    eff_walk = src.effective_walk_cost(walk, high, mult)   # cost-based threshold, high-demand aware
+    jobs.start("scoring", mo.score_window_job, None, eff_walk, empty)
+    return (n or 0)
+
+
+@callback(
+    Output("occ-score-bar", "value"),
+    Output("occ-score-msg", "children"),
+    Output("occ-score-wrap", "style"),
+    Output("occ-score-result", "children"),
+    Output("occ-score-btn", "disabled"),
+    Output("occ-scored-version", "data"),
+    Output("occ-score-seen", "data"),
+    Input("occ-score-poll", "n_intervals"),
+    Input("occ-score-kick", "data"),
+    State("occ-scored-version", "data"),
+    State("occ-score-seen", "data"),
+)
+def _poll_scoring(_n, _kick, version, seen):
+    st = jobs.read("scoring")
+    status = st.get("status", "idle")
+    seen = dict(seen or {})
+    if status == "running":
+        bar = str(int(float(st.get("progress", 0)) * 100))
+        return bar, st.get("message", ""), _SHOWN, no_update, True, no_update, no_update
+    # done / error / idle: bump the scored-version ONCE per finished job so the
+    # heatmap + table re-read the fresh parquet exactly once.
+    fin = st.get("finished")
+    bump = no_update
+    if fin and seen.get("scoring") != fin:
+        seen["scoring"] = fin
+        if status == "done":
+            bump = (version or 0) + 1
+    if status == "error":
+        return "0", "", _HIDDEN, _err_alert(st.get("error", "unknown error")), False, bump, seen
+    if status == "done":
+        return "0", "", _HIDDEN, _score_result(st.get("result") or {}), False, bump, seen
+    return "0", "", _HIDDEN, no_update, False, no_update, seen
+
+
+def _err_alert(text: str) -> dmc.Alert:
+    return dmc.Alert(dmc.Text(str(text), size="sm"), color="red", variant="light",
+                     title="Scoring failed", icon=html.I(className="bi bi-exclamation-triangle"))
