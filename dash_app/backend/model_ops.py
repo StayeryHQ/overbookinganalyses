@@ -275,6 +275,34 @@ def score_window_job(progress: Progress = _noop, model_name: str | None = None,
             "finished": _fmt_ts(pd.Timestamp.utcnow().isoformat())}
 
 
+def training_rows_by_property() -> list[dict]:
+    """[{property, rows}] — bookings per property in the cleaned TRAINING set (the clean
+    cache). Descending by rows; empty list if the clean cache isn't built yet. Used for
+    the retrain-page comparison and the scoring-page data-quality warning."""
+    try:
+        clean = src.load_clean_reservations()
+    except Exception:  # noqa: BLE001 — no clean cache yet
+        return []
+    if clean.empty or "property_name" not in clean.columns:
+        return []
+    vc = clean["property_name"].astype("string").value_counts()
+    return [{"property": str(k), "rows": int(v)} for k, v in vc.items()]
+
+
+def data_quality_flags(model_name: str, *, min_rows: int = 100,
+                       stale_days: int = 182) -> dict:
+    """Scoring-page data-quality signals: locations with < `min_rows` training bookings,
+    and whether the model is older than `stale_days` (~6 months). Both are 'still works
+    but may be less accurate' warnings, never hard blocks."""
+    low = [r for r in training_rows_by_property() if r["rows"] < min_rows]
+    st = model_status(model_name)
+    days = st.get("retrained_days_ago")
+    return {"low_locations": low, "min_rows": min_rows,
+            "retrained_days_ago": days, "stale_days": stale_days,
+            "is_stale": bool(days is not None and days > stale_days),
+            "retrained_at": st.get("retrained_at")}
+
+
 def update_history_job(progress: Progress = _noop) -> dict:
     """Cancellation-History 'update history' job: pull the FULL reservations history
     from BigQuery and rebuild the cleaned/labelled cache (src.build_clean_reservations,

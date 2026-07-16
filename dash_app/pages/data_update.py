@@ -26,18 +26,6 @@ dash.register_page(__name__, path="/data-update", name="Update & Retraining",
 # ---------------------------------------------------------------------------
 # Small builders
 # ---------------------------------------------------------------------------
-def _kv_rows(pairs: list[dict], key: str = "param", val: str = "value"):
-    rows = []
-    for i, p in enumerate(pairs):
-        rows.append(dmc.Group([
-            dmc.Text(str(p[key]), size="sm", c="dimmed"),
-            dmc.Text(str(p[val]), size="sm", fw=600, style={"fontFamily": "monospace"}),
-        ], justify="space-between", wrap="nowrap"))
-        if i < len(pairs) - 1:
-            rows.append(dmc.Divider(variant="dotted"))
-    return dmc.Stack(rows, gap=6)
-
-
 def _tiles(status: dict):
     n_train = (f"{status['n_train_deploy']:,} bookings" if status.get("n_train_deploy")
                else (f"{status['n_train_person_period']:,} person-periods"
@@ -59,6 +47,75 @@ def _tiles(status: dict):
     ])
 
 
+# Plain-language explanations surfaced as ⓘ tooltips (no unexplained numbers).
+_HP_HELP = {
+    "max_depth": "Maximum tree depth. Higher = more complex trees, more overfitting risk.",
+    "learning_rate": "Boosting step size. Lower = slower learning but more robust.",
+    "eta": "Boosting step size (same as learning_rate). Lower = more robust.",
+    "n_estimators": "Number of boosting rounds (trees).",
+    "min_child_weight": "Min summed instance weight per leaf. Higher = more conservative splits.",
+    "reg_lambda": "L2 regularisation on leaf weights. Higher = smoother, less overfit.",
+    "reg_alpha": "L1 regularisation on leaf weights. Higher = sparser, less overfit.",
+    "subsample": "Fraction of rows sampled per tree (<1 adds regularising randomness).",
+    "colsample_bytree": "Fraction of features sampled per tree.",
+    "gamma": "Minimum loss reduction required to make a split. Higher = more conservative.",
+    "C": "Inverse regularisation strength (logistic reg). Lower = stronger regularisation.",
+    "max_iter": "Maximum optimisation iterations.",
+    "l2_regularization": "L2 penalty (HistGB). Higher = smoother, less overfit.",
+    "max_leaf_nodes": "Maximum leaves per tree (HistGB).",
+    "learning_rate_init": "Initial learning rate.",
+}
+_METRIC_HELP = {
+    "auc": "ROC-AUC on the leak-free walk-forward — ranking quality (0.5 = coin flip, 1 = perfect).",
+    "ap": "Average precision (area under precision–recall). At a ~20% cancel base rate, "
+          "values well below 1 are normal.",
+    "brier": "Mean squared error of the predicted probabilities. Lower = better calibrated.",
+    "cost": "Total € cost at the cost-optimal threshold on the validation fold.",
+    "val_ap_person_period": "Average precision for the HAZARD model, computed on person-period "
+        "rows (one row per booking per day-until-arrival). On any single day a booking cancels "
+        "on only a few of its many days, so the base rate per row is tiny and AP here is "
+        "naturally small (≈0.05–0.10). Don't read it as 'bad' — judge the hazard model by its "
+        "calibration and the aggregate per-night cancellation forecast, not this number alone.",
+}
+
+
+def _train_rows_panel(rows: list[dict]):
+    """Bar list of bookings-per-property in the cleaned training set (a quick comparison)."""
+    if not rows:
+        return dmc.Text("No cleaned training data yet — build it on the Cancellation "
+                        "History page.", size="sm", c="dimmed")
+    mx = max((r["rows"] for r in rows), default=1) or 1
+    items = []
+    for r in rows:
+        items.append(dmc.Stack([
+            dmc.Group([dmc.Text(r["property"], size="sm"),
+                       dmc.Text(f"{r['rows']:,}", size="xs", c="dimmed",
+                                style={"fontFamily": "monospace"})],
+                      justify="space-between", wrap="nowrap"),
+            dmc.Progress(value=r["rows"] / mx * 100, size="sm", radius="sm", color="yellow"),
+        ], gap=2))
+    return dmc.Stack(items, gap=8)
+
+
+def _hp_rows(model: str):
+    """Hyperparameter rows with a per-parameter ⓘ explanation."""
+    pairs = mo.hyperparams_rows(model)
+    rows = []
+    for i, p in enumerate(pairs):
+        name = str(p["param"])
+        help_txt = _HP_HELP.get(name)
+        label = dmc.Group(
+            [dmc.Text(name, size="sm", c="dimmed")]
+            + ([ui.info_icon(help_txt)] if help_txt else []),
+            gap=4, wrap="nowrap")
+        rows.append(dmc.Group([label, dmc.Text(str(p["value"]), size="sm", fw=600,
+                                               style={"fontFamily": "monospace"})],
+                              justify="space-between", wrap="nowrap"))
+        if i < len(pairs) - 1:
+            rows.append(dmc.Divider(variant="dotted"))
+    return dmc.Stack(rows, gap=6)
+
+
 def _wf_panel(model: str):
     wf = mo.latest_walkforward(model)
     if not wf:
@@ -70,8 +127,14 @@ def _wf_panel(model: str):
     for k, cell in wf.items():
         mean, std = cell.get("mean"), cell.get("std")
         val = "-" if mean is None else (f"{mean:.4g}" + (f" ± {std:.2g}" if std is not None else ""))
-        rows.append({"param": label.get(k, k), "value": val})
-    return _kv_rows(rows)
+        name_row = dmc.Group(
+            [dmc.Text(label.get(k, k), size="sm", c="dimmed")]
+            + ([ui.info_icon(_METRIC_HELP[k])] if k in _METRIC_HELP else []),
+            gap=4, wrap="nowrap")
+        rows.append(dmc.Group([name_row, dmc.Text(val, size="sm", fw=600,
+                                                  style={"fontFamily": "monospace"})],
+                              justify="space-between", wrap="nowrap"))
+    return dmc.Stack(rows, gap=6)
 
 
 def _err_alert(text: str):
@@ -141,9 +204,19 @@ def layout(**_kwargs):
 
     metrics_card = dmc.Card([
         dmc.Group([dmc.Text("Last walk-forward metrics", fw=600, size="sm"),
-                   ui.info_icon("Honest out-of-time metrics stored in the model card.")], gap=6),
+                   ui.info_icon("Honest out-of-time metrics stored in the model card. Hover "
+                                "each metric's ⓘ for what it means.")], gap=6),
         dmc.Space(h=8),
         html.Div(id="du-metrics"),
+    ], withBorder=True, radius="lg", p="md", shadow="xs")
+
+    trainrows_card = dmc.Card([
+        dmc.Group([dmc.Text("Training set by location", fw=600, size="sm"),
+                   ui.info_icon("Bookings per location in the cleaned training set — a quick "
+                                "comparison of how much history each location contributes. "
+                                "Rebuild it on the Cancellation History page.")], gap=6),
+        dmc.Space(h=8),
+        html.Div(id="du-trainrows", children=dmc.Skeleton(height=200, radius="md")),
     ], withBorder=True, radius="lg", p="md", shadow="xs")
 
     # 4) RETRAIN - controls, progress and result in ONE card + confirm modal.
@@ -185,6 +258,7 @@ def layout(**_kwargs):
         dmc.GridCol(info_card, span={"base": 12, "md": 12}),
         dmc.GridCol(hp_card, span={"base": 12, "md": 6}),
         dmc.GridCol(metrics_card, span={"base": 12, "md": 6}),
+        dmc.GridCol(trainrows_card, span={"base": 12, "md": 12}),
     ], gutter="md")
 
     return dmc.Stack([header, stores, top_grid, retrain_card], gap="md")
@@ -198,6 +272,7 @@ def layout(**_kwargs):
     Output("du-cadence", "children"),
     Output("du-hp", "children"),
     Output("du-metrics", "children"),
+    Output("du-trainrows", "children"),
     Input("du-model", "value"),
     Input("du-info-version", "data"),
 )
@@ -208,7 +283,8 @@ def _fill_info(model, _version):
     color = {"due": "yellow"}.get(hint["level"], "gray")
     cadence = dmc.Alert(hint["text"], color=color, variant="light", radius="md",
                         icon=html.I(className="bi bi-clock-history"))
-    return _tiles(status), cadence, _kv_rows(mo.hyperparams_rows(model)), _wf_panel(model)
+    return (_tiles(status), cadence, _hp_rows(model), _wf_panel(model),
+            _train_rows_panel(mo.training_rows_by_property()))
 
 
 # ---------------------------------------------------------------------------

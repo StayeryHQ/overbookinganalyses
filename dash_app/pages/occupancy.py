@@ -219,6 +219,7 @@ def layout(**_kwargs):
 
         # Scoring (next 14 days) — top of the page, file-backed job + progress
         _scoring_card(),
+        html.Div(id="occ-data-quality"),
 
         controls,
 
@@ -549,6 +550,40 @@ def _poll_xai(_n, _kick, version, seen):
 def _cancel_xai(_n):
     jobs.cancel("shap")
     return "Cancelling…"
+
+
+# ---------------------------------------------------------------------------
+# Data-quality note: flag locations with thin training history (<100 bookings) and
+# a stale model (>6 months). Advisory only — scoring still runs.
+# ---------------------------------------------------------------------------
+@callback(
+    Output("occ-data-quality", "children"),
+    Input("occ-score-model", "value"),
+    Input("occ-scored-version", "data"),
+)
+def _update_data_quality(model, _version):
+    try:
+        fl = mo.data_quality_flags(model or _served_model())
+    except Exception:  # noqa: BLE001
+        return None
+    msgs = []
+    if fl["low_locations"]:
+        names = ", ".join(f"{r['property']} ({r['rows']})" for r in fl["low_locations"][:6])
+        more = "" if len(fl["low_locations"]) <= 6 else f" +{len(fl['low_locations']) - 6} more"
+        msgs.append(f"Under {fl['min_rows']} bookings in the training data for: "
+                    f"{names}{more} — predictions there are less reliable.")
+    if fl["is_stale"]:
+        months = fl["stale_days"] // 30
+        msgs.append(f"The model was last retrained {fl['retrained_days_ago']} days ago "
+                    f"(over {months} months) — consider retraining for fresher patterns.")
+    if not msgs:
+        return None
+    return dmc.Alert(
+        dmc.Stack([dmc.Text(m, size="sm") for m in msgs]
+                  + [dmc.Text("Scoring still runs — treat flagged results as indicative, "
+                              "not exact.", size="xs", c="dimmed")], gap=4),
+        title="Data-quality note", color="yellow", variant="light",
+        icon=html.I(className="bi bi-exclamation-triangle"), radius="md", withCloseButton=True)
 
 
 @callback(
