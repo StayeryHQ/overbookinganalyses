@@ -222,7 +222,7 @@ def update_all(progress: Progress = _noop, model_name: str | None = None,
     # Let the page backends see the fresh parquets on their next read.
     try:
         from dash_app.backend import data_access as da
-        for fn in ("_reservations_cached", "_capacity_from_perf", "_property_code_to_name"):
+        for fn in ("_reservations_cached", "_property_code_to_name", "_perf_daily"):
             getattr(da, fn).cache_clear()
     except Exception as e:  # noqa: BLE001
         logger.warning("cache clear after update failed: %s", e)
@@ -265,7 +265,7 @@ def score_window_job(progress: Progress = _noop, model_name: str | None = None,
 
     try:  # let the Occupancy backend see the fresh scored parquet + perf on its next read
         from dash_app.backend import data_access as da
-        for fn in ("_reservations_cached", "_capacity_from_perf", "_property_code_to_name"):
+        for fn in ("_reservations_cached", "_property_code_to_name", "_perf_daily"):
             getattr(da, fn).cache_clear()
     except Exception as e:  # noqa: BLE001
         logger.warning("cache clear after scoring failed: %s", e)

@@ -332,6 +332,8 @@ def heatmap_figure(grid: pd.DataFrame) -> go.Figure:
     occupied = piv("occupied_units")
     arr, dep, pred = piv("arrivals"), piv("departures"), piv("pred_cancels")
     expc = piv("exp_cancels") if "exp_cancels" in grid.columns else occupied * 0.0
+    canc = piv("cancellations") if "cancellations" in grid.columns else occupied * 0.0
+    ooo = piv("out_of_order") if "out_of_order" in grid.columns else occupied * 0.0
 
     has_pct = bool(np.isfinite(occ_pct.to_numpy(dtype="float64")).any())
     z = (
@@ -340,18 +342,22 @@ def heatmap_figure(grid: pd.DataFrame) -> go.Figure:
         else occupied.to_numpy(dtype="float64")
     )
     unit = "%" if has_pct else " units"
-    # per-cell extra numbers for the hover. Predicted cancellations are shown TWO ways:
+    # per-cell extra numbers for the hover. Occupancy / occupied / arrivals / departures /
+    # cancellations come straight from the PMS perf table; predicted cancellations are the
+    # MODEL's view, shown TWO ways:
     #   * expected (Σ P(cancel) over the night's arrivals) — threshold-independent
     #   * count over the current COST-BASED threshold (moves with the walk/empty costs)
     cd = np.dstack(
         [occupied.to_numpy(), arr.to_numpy(), dep.to_numpy(),
-         pred.to_numpy(), expc.to_numpy()]
+         pred.to_numpy(), expc.to_numpy(), canc.to_numpy(), ooo.to_numpy()]
     )
     hover = (
         "<b>%{y}</b> · %{x}"
         "<br>Occupancy: %{z:.0f}" + unit + "<br>Occupied: %{customdata[0]:.0f}"
+        "<br>Out of order: %{customdata[6]:.0f}"
         "<br>Arrivals: %{customdata[1]:.0f}"
         "<br>Departures: %{customdata[2]:.0f}"
+        "<br>Cancellations (recorded): %{customdata[5]:.0f}"
         "<br>Expected cancellations (Σp): %{customdata[4]:.1f}"
         "<br>Above cost threshold: %{customdata[3]:.0f}"
         "<extra></extra>"
