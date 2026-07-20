@@ -50,6 +50,22 @@ app = Dash(
     suppress_callback_exceptions=True,   # callbacks target components on page-scoped layouts
     title="STAYERY · Cancellation Analytics",
 )
+
+# After app = Dash(...), before server = app.server
+_original_strip = app.strip_relative_path
+def _patched_strip(path):
+    if path is None:
+        return None
+    prefix = app.config.requests_pathname_prefix
+    if prefix == "/":
+        return _original_strip(path)
+    if path.startswith(prefix.rstrip("/")):
+        return _original_strip(path)
+    # Renderer already stripped the prefix — just remove slashes
+    return path.strip("/")
+app.strip_relative_path = _patched_strip
+
+
 # WSGI server object (gunicorn dash_app.app:server). Exposed early on purpose.
 server = app.server
 

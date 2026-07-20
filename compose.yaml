@@ -8,7 +8,7 @@ services:
     secrets:
       - bigquery_secret
     volumes:
-      - streamlit_data:/app/data
+      - streamlit_data:/app/Data
     environment:
       - GCP_SERVICE_ACCOUNT_JSON_FILE=/run/secrets/bigquery_secret
       # Traefik forwards the full /_carogician/ path (no strip) so Dash must
