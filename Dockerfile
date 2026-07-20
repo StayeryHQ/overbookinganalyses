@@ -49,31 +49,3 @@ EXPOSE 8050
 HEALTHCHECK CMD curl --fail http://localhost:8050/
 
 ENTRYPOINT ["gunicorn", "dash_app.app:server", "--bind", "0.0.0.0:8050", "--workers", "4", "--timeout", "120", "--access-logfile", "-"]
-# docker ps --format 'table {{.ID}}\t{{.Names}}\t{{.Image}}' | grep -i traefik
-# docker inspect c917c58b3973 --format '{{range .Args}}{{println .}}{{end}}'
-# docker inspect c917c58b3973 --format '{{range .Config.Cmd}}{{println .}}{{end}}'
-# docker inspect c917c58b3973 --format '{{range .Mounts}}{{println .Source " -> " .Destination}}{{end}}'
-#
-
-docker service ps stayomat_web     --format 'table {{.Name}}\t{{.Node}}\t{{.CurrentState}}'
-docker service ps streamlit_revenue_app --format 'table {{.Name}}\t{{.Node}}\t{{.CurrentState}}'
-docker service ps overbookinganalyses_app       --format 'table {{.Name}}\t{{.Node}}\t{{.CurrentState}}'
-docker service ps <traefik_svc>           --format 'table {{.Name}}\t{{.Node}}\t{{.CurrentState}}'
-docker node ls
-
-docker service inspect <main_stayomat_web>       --format '{{json .Spec.TaskTemplate.ContainerSpec.Labels}}' | jq
-docker service inspect streamlit_revenue_app   --format '{{json .Spec.TaskTemplate.ContainerSpec.Labels}}' | jq
-docker service inspect overbookinganalyses_app         --format '{{json .Spec.TaskTemplate.ContainerSpec.Labels}}' | jq
-
-# c78381b7eb5e
-
-
-docker service inspect <main_stayomat_web>     --format '{{json .Spec.Labels}}' | jq
-docker service inspect <streamlit_revenue_svc> --format '{{json .Spec.Labels}}' | jq
-docker service inspect <overbooking_svc>       --format '{{json .Spec.Labels}}' | jq
-
-docker service inspect stayomat_web --format '{{json .Spec.TaskTemplate.ContainerSpec.Labels}}' | jq
-
-docker inspect c917c58b3973 --format '{{.Config.Image}}'
-
-docker service logs -f --timestamps traefik_traefik 2>&1
