@@ -23,23 +23,23 @@ services:
       # Service configuration
       - traefik.http.services.overbooking-analysis.loadbalancer.server.port=8050
 
-      # Router for /ruby-reports path
-      - traefik.http.routers.overbooking-analysis-https.rule=Host(`dev.stayomat.de`) && PathPrefix(`/_carogician`)
+      # Router for /overbooking-analysis path
+      - traefik.http.routers.overbooking-analysis-https.rule=Host(`stayomat.de`) && PathPrefix(`/_carogician`)
       - traefik.http.routers.overbooking-analysis-https.entrypoints=https
       - traefik.http.routers.overbooking-analysis-https.tls=true
       - traefik.http.routers.overbooking-analysis-https.tls.certresolver=le
 
       # ForwardAuth middleware to check authentication
-      - traefik.http.middlewares.streamlit-auth.forwardauth.address=http://stayomat_web:6000/api/forward-auth/streamlit
-      - traefik.http.middlewares.streamlit-auth.forwardauth.authResponseHeaders=X-User-Id
-      - traefik.http.middlewares.streamlit-auth.forwardauth.trustForwardHeader=true
-      - traefik.http.middlewares.streamlit-auth.forwardauth.authRequestHeaders=Cookie
+      - traefik.http.middlewares.overbooking-auth.forwardauth.address=http://stayomat_web:6000/api/forward-auth/streamlit
+      - traefik.http.middlewares.overbooking-auth.forwardauth.authResponseHeaders=X-User-Id
+      - traefik.http.middlewares.overbooking-auth.forwardauth.trustForwardHeader=true
+      - traefik.http.middlewares.overbooking-auth.forwardauth.authRequestHeaders=Cookie
 
-      # Strip /ruby-reports prefix before forwarding to Streamlit
-      - traefik.http.middlewares.streamlit-stripprefix.stripprefix.prefixes=/_carogician
+      # Strip /overbooking-analysis prefix before forwarding to Streamlit
+      - traefik.http.middlewares.overbooking-stripprefix.stripprefix.prefixes=/_carogician
 
       # Apply middlewares
-      - traefik.http.routers.overbooking-analysis-https.middlewares=streamlit-auth,streamlit-stripprefix
+      - traefik.http.routers.overbooking-analysis-https.middlewares=overbooking-auth,overbooking-stripprefix
 
 networks:
   streamlit:
