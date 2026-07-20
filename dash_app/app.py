@@ -51,7 +51,6 @@ app = Dash(
     title="STAYERY · Cancellation Analytics",
 )
 
-# After app = Dash(...), before server = app.server
 _original_strip = app.strip_relative_path
 def _patched_strip(path):
     if path is None:
