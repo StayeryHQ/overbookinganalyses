@@ -53,21 +53,28 @@ app = Dash(
 # WSGI server object (gunicorn dash_app.app:server). Exposed early on purpose.
 server = app.server
 
+# Public URL prefix: empty (/) locally, /_carogician/ behind Traefik.
+# Used for html.A hrefs since dcc.Link's client-side navigation double-strips
+# the prefix and breaks Dash's internal pages callback.
+_URL_PREFIX = os.environ.get("DASH_URL_BASE_PATHNAME", "/")
+
 
 def _navbar() -> html.Header:
     """Top navigation shell. The links live in an id'd container and are rendered
     by the callback below, which reads dcc.Location - that is how the active link
     gets its `.active` class now that dbc.NavLink is gone (styling: brand.css)."""
-    # dcc.Link (not html.A) so Dash auto-applies requests_pathname_prefix.
-    # Locally this renders as <a href="/">; deployed it becomes
-    # <a href="/_carogician/"> and keeps the user inside the Dash app.
-    brand = dcc.Link(
+    # html.A (not dcc.Link) — dcc.Link's client-side navigation sets
+    # _pages_location.pathname without the prefix, which then causes Dash's
+    # strip_relative_path to error (double-strip). html.A forces a full page
+    # load so pathname comes from window.location.pathname (with prefix).
+    # _URL_PREFIX is DASH_URL_BASE_PATHNAME (/_carogician/) or "/" locally.
+    brand = html.A(
         html.Div([
             html.Span(className="stayery-accent"),
             html.Span("STAYERY", className="stayery-wordmark"),
             html.Span("Cancellation Analytics", className="stayery-subbrand"),
         ], className="stayery-brand-inner"),
-        href="/", className="stayery-brand")
+        href=_URL_PREFIX, className="stayery-brand")
     return html.Header(
         html.Div([brand, html.Nav(id="stayery-nav", className="stayery-nav")],
                  className="stayery-header-inner"),
@@ -79,9 +86,11 @@ def _nav_links(pathname):
     """Re-render the nav links on every route change; the current page gets
     `.active` (underline, see brand.css)."""
     pages = sorted(dash.page_registry.values(), key=lambda p: p.get("order", 99))
-    return [dcc.Link(p["name"], href=p["relative_path"],
-                     className="stayery-navlink"
-                     + (" active" if pathname == p["relative_path"] else ""))
+    # html.A (not dcc.Link) — same reason as the brand link above.
+    # p["relative_path"] already includes the prefix (or "/" locally).
+    return [html.A(p["name"], href=p["relative_path"],
+                    className="stayery-navlink"
+                    + (" active" if pathname == p["relative_path"] else ""))
             for p in pages]
 
 
