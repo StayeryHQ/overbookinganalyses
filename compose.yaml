@@ -11,6 +11,10 @@ services:
       - streamlit_data:/app/data
     environment:
       - GCP_SERVICE_ACCOUNT_JSON_FILE=/run/secrets/bigquery_secret
+      # Public URL prefix the app is served under (Traefik strips this before
+      # forwarding). Only set here so local dev / raw docker runs keep serving
+      # at "/". Must end with a slash - Dash validates this at startup.
+      - DASH_URL_BASE_PATHNAME=/_carogician/
     labels:
       - traefik.enable=true
       - traefik.docker.network=traefik-public
