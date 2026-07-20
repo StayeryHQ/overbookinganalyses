@@ -41,6 +41,7 @@ MIN_N_MONTH = 50        # monthly line points (matches experiments/cancellation_
 MIN_N_CELL = 30         # property × month heatmap cells
 MIN_N_CHANNEL = 200     # channel-deviation bars
 MIN_N_KPI = 100         # "highest-rate location" KPI guard
+MIN_N_DAILY = 50        # per-day lead / per-night stay points (daily-granularity charts)
 
 
 # ---- Loading / preparation -------------------------------------------------
@@ -77,12 +78,23 @@ def _clean() -> pd.DataFrame:
     return _prepare(_load_clean_df())
 
 
-def _filtered(properties: list[str] | None) -> pd.DataFrame:
-    """Clean frame limited to the selected properties (None/empty => all)."""
+def _filtered(properties: list[str] | None,
+              window_months: int | None = None) -> pd.DataFrame:
+    """Clean frame limited to the selected properties (None/empty => all) and,
+    optionally, to the last `window_months` months of arrivals (None => full history).
+    This is the single choke point the page's global location + time-window filters both
+    flow through, so every chart stays consistent. The window is anchored on the newest
+    month in the FULL cache, so it means the same span regardless of the location selection."""
     df = _clean()
-    if df.empty or not properties:
+    if df.empty:
         return df
-    return df[df["property_name"].isin(properties)]
+    if properties:
+        df = df[df["property_name"].isin(properties)]
+    if window_months:
+        last = _clean()["month"].max()
+        start = (last.to_period("M") - (int(window_months) - 1)).to_timestamp()
+        df = df[df["month"] >= start]
+    return df
 
 
 @lru_cache(maxsize=1)
@@ -98,6 +110,14 @@ def property_list() -> list[str]:
 def base_rate() -> float | None:
     """Global cancel rate across ALL locations (the fixed reference line)."""
     df = _clean()
+    return float(df[TARGET].mean()) if not df.empty else None
+
+
+def selection_rate(properties: list[str] | None = None,
+                   window_months: int | None = None) -> float | None:
+    """Overall cancel rate for the current selection (the dashed reference on the
+    breakdown charts). Cheaper than kpis() when only this one number is needed."""
+    df = _filtered(properties, window_months)
     return float(df[TARGET].mean()) if not df.empty else None
 
 
@@ -129,9 +149,9 @@ def _monthly(df: pd.DataFrame, per_property: bool = False) -> pd.DataFrame:
     return g.sort_values(keys).reset_index(drop=True)
 
 
-def monthly_rate(properties: list[str] | None = None,
-                 per_property: bool = False) -> pd.DataFrame:
-    return _monthly(_filtered(properties), per_property)
+def monthly_rate(properties: list[str] | None = None, per_property: bool = False,
+                 window_months: int | None = None) -> pd.DataFrame:
+    return _monthly(_filtered(properties, window_months), per_property)
 
 
 # ---- 2) Property × month heatmap matrix ------------------------------------
@@ -150,16 +170,18 @@ def _property_month(df: pd.DataFrame, months_back: int = 12,
     return g.sort_values(["property_name", "month"]).reset_index(drop=True)
 
 
-def property_month_matrix(properties: list[str] | None = None,
-                          months_back: int = 12) -> pd.DataFrame:
-    return _property_month(_filtered(properties), months_back)
+def property_month_matrix(properties: list[str] | None = None, months_back: int = 12,
+                          window_months: int | None = None) -> pd.DataFrame:
+    # `months_back` = how many months the heatmap DISPLAYS; `window_months` = the page's
+    # global time filter applied first. The heatmap shows whichever is the tighter span.
+    return _property_month(_filtered(properties, window_months), months_back)
 
 
 def flag_anomalies(properties: list[str] | None = None, months_back: int = 12,
-                   factor: float = 1.5) -> pd.DataFrame:
+                   factor: float = 1.5, window_months: int | None = None) -> pd.DataFrame:
     """Property-months whose cancel rate exceeds the global base rate by >= `factor`×
     (and clears the min-sample guard). Drives the 'unusually high' warnings/badges."""
-    g = property_month_matrix(properties, months_back).dropna(subset=["cancel_rate"])
+    g = property_month_matrix(properties, months_back, window_months).dropna(subset=["cancel_rate"])
     base = _clean()[TARGET].mean() if not _clean().empty else np.nan
     if g.empty or not np.isfinite(base):
         return g.assign(base_rate=base).iloc[0:0]
@@ -184,8 +206,9 @@ def _channel_dev(df: pd.DataFrame, min_n: int = MIN_N_CHANNEL) -> tuple[pd.DataF
     return g.sort_values("deviation").reset_index(drop=True), base
 
 
-def channel_deviation(properties: list[str] | None = None) -> tuple[pd.DataFrame, float]:
-    return _channel_dev(_filtered(properties))
+def channel_deviation(properties: list[str] | None = None,
+                      window_months: int | None = None) -> tuple[pd.DataFrame, float]:
+    return _channel_dev(_filtered(properties, window_months))
 
 
 # ---- 4a) Stay-segment (length of stay) rate --------------------------------
@@ -199,8 +222,9 @@ def _stay_segment(df: pd.DataFrame) -> pd.DataFrame:
     return g.sort_values("order").drop(columns="order").reset_index(drop=True)
 
 
-def stay_segment_rate(properties: list[str] | None = None) -> pd.DataFrame:
-    return _stay_segment(_filtered(properties))
+def stay_segment_rate(properties: list[str] | None = None,
+                      window_months: int | None = None) -> pd.DataFrame:
+    return _stay_segment(_filtered(properties, window_months))
 
 
 # ---- 4b) Lead-time bucket rate ---------------------------------------------
@@ -217,8 +241,70 @@ def _leadtime(df: pd.DataFrame) -> pd.DataFrame:
     return g.sort_values("bucket").reset_index(drop=True)
 
 
-def leadtime_bucket_rate(properties: list[str] | None = None) -> pd.DataFrame:
-    return _leadtime(_filtered(properties))
+def leadtime_bucket_rate(properties: list[str] | None = None,
+                         window_months: int | None = None) -> pd.DataFrame:
+    return _leadtime(_filtered(properties, window_months))
+
+
+# ---- 4c) Length-of-stay per NIGHT (daily granularity, coloured by segment) --
+def _stay_segment_of(night: int) -> str:
+    """Which short/mid/long bucket a night count belongs to (colour only)."""
+    return "short" if night <= 2 else "mid" if night <= 6 else "long"
+
+
+def _stay_daily(df: pd.DataFrame, max_night: int = 14,
+                min_n: int = MIN_N_DAILY) -> pd.DataFrame:
+    """[night, label, segment, n, cancel_rate] — one row per exact stay length in nights.
+    Stays of >= max_night nights are pooled into a single 'max_night+' bin (individually
+    too thin). `segment` is the short(1–2)/mid(3–6)/long(7+) bucket the length falls in,
+    used only to colour the bars. Rates over < min_n bookings are masked to NaN."""
+    cols = ["night", "label", "segment", "n", "cancel_rate"]
+    if df.empty or "los_nights" not in df.columns:
+        return pd.DataFrame(columns=cols)
+    los = pd.to_numeric(df["los_nights"], errors="coerce").astype("Int64")
+    night = los.clip(lower=1, upper=max_night)
+    tmp = pd.DataFrame({"night": night, TARGET: df[TARGET].to_numpy()}).dropna(subset=["night"])
+    g = (tmp.groupby("night")[TARGET].agg(["size", "mean"]).reset_index()
+           .rename(columns={"size": "n", "mean": "cancel_rate"}))
+    g["night"] = g["night"].astype(int)
+    g["cancel_rate"] = g["cancel_rate"].where(g["n"] >= min_n)
+    g["segment"] = g["night"].map(_stay_segment_of)
+    g["label"] = g["night"].map(lambda x: f"{x}+" if x >= max_night else str(x))
+    return g.sort_values("night").reset_index(drop=True)
+
+
+def stay_daily_rate(properties: list[str] | None = None, max_night: int = 14,
+                    window_months: int | None = None) -> pd.DataFrame:
+    return _stay_daily(_filtered(properties, window_months), max_night)
+
+
+# ---- 4d) Lead-time per DAY (daily granularity, optional length-of-stay split) --
+def _leadtime_daily(df: pd.DataFrame, by_stay: bool = False, max_day: int = 45,
+                    min_n: int = MIN_N_DAILY) -> pd.DataFrame:
+    """[lead_day(, stay_bucket), n, cancel_rate] — one row per whole lead-time day
+    0..max_day. `lead_time_days` is fractional, rounded to the nearest whole day; days
+    beyond max_day are dropped (the near term is the story — default 45 days). When
+    by_stay is set the rate is additionally split by the short/mid/long stay bucket
+    (three series). Points over < min_n bookings are masked to NaN."""
+    cols = ["lead_day"] + (["stay_bucket"] if by_stay else []) + ["n", "cancel_rate"]
+    if df.empty or "lead_time_days" not in df.columns:
+        return pd.DataFrame(columns=cols)
+    day = pd.to_numeric(df["lead_time_days"], errors="coerce").round()
+    tmp = pd.DataFrame({"lead_day": day, TARGET: df[TARGET].to_numpy()})
+    if by_stay:
+        tmp["stay_bucket"] = df["stay_bucket"].to_numpy()
+    tmp = tmp[(tmp["lead_day"] >= 0) & (tmp["lead_day"] <= max_day)].dropna(subset=["lead_day"])
+    keys = ["lead_day"] + (["stay_bucket"] if by_stay else [])
+    g = (tmp.groupby(keys)[TARGET].agg(["size", "mean"]).reset_index()
+           .rename(columns={"size": "n", "mean": "cancel_rate"}))
+    g["lead_day"] = g["lead_day"].astype(int)
+    g["cancel_rate"] = g["cancel_rate"].where(g["n"] >= min_n)
+    return g.sort_values(keys).reset_index(drop=True)
+
+
+def leadtime_daily_rate(properties: list[str] | None = None, by_stay: bool = False,
+                        max_day: int = 45, window_months: int | None = None) -> pd.DataFrame:
+    return _leadtime_daily(_filtered(properties, window_months), by_stay, max_day)
 
 
 # ---- 5) Cancel-timing curve (WHEN do cancellations land?) ------------------
@@ -244,9 +330,85 @@ def _cancel_timing(df: pd.DataFrame, max_days: int = 90) -> tuple[pd.DataFrame, 
     return pd.DataFrame({"days_before": grid, "cum_share_within": cum}), n
 
 
-def cancel_timing_curve(properties: list[str] | None = None,
-                        max_days: int = 90) -> tuple[pd.DataFrame, int]:
-    return _cancel_timing(_filtered(properties), max_days)
+def cancel_timing_curve(properties: list[str] | None = None, max_days: int = 90,
+                        window_months: int | None = None) -> tuple[pd.DataFrame, int]:
+    return _cancel_timing(_filtered(properties, window_months), max_days)
+
+
+# ---- 6) Lead × stay cancel-rate grid (the "blend" heatmap) ------------------
+def _leadtime_stay_grid(df: pd.DataFrame, min_n: int = MIN_N_CELL) -> pd.DataFrame:
+    """[stay_bucket, lead_bucket, n, cancel_rate] — cancel rate for every lead-bucket ×
+    stay-bucket cell. Cells over < min_n bookings are masked to NaN. Feeds the heatmap
+    that shows how lead time and length of stay COMBINE to drive cancellation."""
+    cols = ["stay_bucket", "lead_bucket", "n", "cancel_rate"]
+    if df.empty or "lead_time_days" not in df.columns or "stay_bucket" not in df.columns:
+        return pd.DataFrame(columns=cols)
+    lead = pd.to_numeric(df["lead_time_days"], errors="coerce")
+    lb = pd.cut(lead, bins=LEAD_BINS, labels=LEAD_LABELS)
+    tmp = pd.DataFrame({"stay_bucket": df["stay_bucket"].to_numpy(), "lead_bucket": lb,
+                        TARGET: df[TARGET].to_numpy()})
+    g = (tmp.groupby(["stay_bucket", "lead_bucket"], observed=True)[TARGET]
+           .agg(["size", "mean"]).reset_index()
+           .rename(columns={"size": "n", "mean": "cancel_rate"}))
+    g["cancel_rate"] = g["cancel_rate"].where(g["n"] >= min_n)
+    g["stay_bucket"] = pd.Categorical(g["stay_bucket"], categories=STAY_ORDER, ordered=True)
+    g["lead_bucket"] = pd.Categorical(g["lead_bucket"], categories=LEAD_LABELS, ordered=True)
+    return g.sort_values(["stay_bucket", "lead_bucket"]).reset_index(drop=True)
+
+
+def leadtime_stay_grid(properties: list[str] | None = None,
+                       window_months: int | None = None) -> pd.DataFrame:
+    return _leadtime_stay_grid(_filtered(properties, window_months))
+
+
+# ---- 7) Cancel-timing near-window heatmap (days-before × stay/lead) ---------
+CANCEL_TIMING_MAX_DAY = 14      # near-arrival window shown day-by-day; rest pools into 15+
+
+
+def _cancel_timing_grid(df: pd.DataFrame, dim: str = "stay",
+                        max_day: int = CANCEL_TIMING_MAX_DAY,
+                        min_bookings: int = 100) -> pd.DataFrame:
+    """[row, day, day_order, n_cancel, row_bookings, rate] — near-arrival cancellation
+    timing as a grid. Rows are stay segments (dim='stay') or lead buckets (dim='lead');
+    columns are whole days before arrival 0..max_day with ONE 'max_day+1 plus' overflow
+    column so nothing is hidden by the near-window focus. Each day column is exactly one
+    day wide (unlike the old unequal buckets). rate = cancellations in the cell / ALL
+    bookings in that row segment, so a row's cells sum to that segment's overall cancel
+    rate. Segments with < min_bookings are dropped (denominator too thin to trust)."""
+    cols = ["row", "day", "day_order", "n_cancel", "row_bookings", "rate"]
+    if df.empty or "cancel_days_before_arrival" not in df.columns:
+        return pd.DataFrame(columns=cols)
+    if dim == "lead":
+        lead = pd.to_numeric(df["lead_time_days"], errors="coerce")
+        rowkey = pd.cut(lead, bins=LEAD_BINS, labels=LEAD_LABELS).astype("object")
+    else:
+        rowkey = df["stay_bucket"].astype("object").map(STAY_LABELS)
+    rowkey = pd.Series(rowkey, index=df.index)
+    base = rowkey.value_counts().rename("row_bookings")            # denominator per row
+    over = f"{max_day + 1}+"
+
+    c = df[df[TARGET] == 1].copy()
+    days = np.floor(pd.to_numeric(c["cancel_days_before_arrival"], errors="coerce"))
+    c = c.assign(_row=rowkey.loc[c.index].to_numpy(), _d=days.to_numpy())
+    c = c[c["_d"] >= 0]
+    if c.empty:
+        return pd.DataFrame(columns=cols)
+    c["day"] = np.where(c["_d"] <= max_day, c["_d"].astype("Int64").astype(str), over)
+    g = (c.groupby(["_row", "day"]).size().rename("n_cancel").reset_index()
+           .rename(columns={"_row": "row"}))
+    g = g.merge(base, left_on="row", right_index=True, how="left")
+    g = g[g["row_bookings"] >= min_bookings].copy()
+    g["rate"] = g["n_cancel"] / g["row_bookings"]
+    day_labels = [str(i) for i in range(max_day + 1)] + [over]
+    g["day_order"] = g["day"].map({d: i for i, d in enumerate(day_labels)})
+    return g.sort_values(["row", "day_order"]).reset_index(drop=True)[cols]
+
+
+def cancel_timing_grid(properties: list[str] | None = None, dim: str = "stay",
+                       window_months: int | None = None) -> pd.DataFrame:
+    return _cancel_timing_grid(_filtered(properties, window_months), dim)
+
+
 
 
 # ---- Drill-down slices (feed the right-side detail Drawer) -----------------
@@ -298,13 +460,16 @@ def drill_month(properties: list[str] | None, month_iso: str) -> dict | None:
 
 
 # ---- KPI headline numbers --------------------------------------------------
-def kpis(properties: list[str] | None = None) -> dict:
+def kpis(properties: list[str] | None = None,
+         window_months: int | None = None) -> dict:
     """Headline figures for the KPI strip. Any value not backed by enough real data is
-    returned as None so the UI can show 'unavailable' rather than fabricate a number."""
+    returned as None so the UI can show 'unavailable' rather than fabricate a number.
+    `base_rate` stays the FULL-history global reference; everything else honours the
+    location + time-window selection."""
     out = {"n_bookings": None, "overall_rate": None, "base_rate": None,
            "latest_month": None, "latest_rate": None, "delta_vs_base": None,
            "top_property": None, "top_rate": None, "span": date_span()}
-    df = _filtered(properties)
+    df = _filtered(properties, window_months)
     if df.empty:
         return out
     full = _clean()

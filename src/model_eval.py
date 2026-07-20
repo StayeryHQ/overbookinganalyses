@@ -136,18 +136,11 @@ def _decision_horizon(rows: pd.DataFrame, horizon_days: int) -> np.ndarray:
 
 
 def _hazard_hp() -> dict | None:
-    """Frozen hazard hyperparameters from the model card (the search space keys only), so
-    per-fold evaluation refits with ONE fit instead of a full RandomizedSearch. None (=>
-    full search) if no card exists yet."""
-    from . import scoring as sc
-    try:
-        hp = dict(sc.load_model_card("hazard").get("hyperparams", {}))
-    except Exception:  # noqa: BLE001
-        return None
-    keys = ("max_depth", "learning_rate", "min_child_weight", "reg_lambda",
-            "subsample", "colsample_bytree")
-    picked = {k: hp[k] for k in keys if k in hp}
-    return picked or None
+    """Frozen hazard hyperparameters — delegates to hazard.card_hp() (the SINGLE source),
+    so the Model-Performance page and the notebook bake-offs fit the hazard identically.
+    None (=> full search) if no card exists yet."""
+    from . import hazard as hz
+    return hz.card_hp()
 
 
 def _hazard_score(hz_mod, hzm, rows: pd.DataFrame, horizon_days: int):

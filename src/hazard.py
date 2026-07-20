@@ -199,6 +199,27 @@ def _sample_hp(rng) -> dict:
     )
 
 
+def card_hp() -> dict | None:
+    """Frozen hazard hyperparameters from the model card (search-space keys only), so
+    per-fold EVALUATION refits with ONE fit instead of a full RandomizedSearch. Returns
+    None (=> full search) when no card exists yet.
+
+    THE single source of the frozen hazard HP: src.model_eval AND the notebook bake-offs
+    (training.bakeoff_walk_forward, walk_forward_eval_hazard, walk_forward_per_snapshot,
+    _wf_hazard_folds) all call this, so every EVAL surface fits the hazard IDENTICALLY
+    (consistency fix). Retraining for DEPLOYMENT still runs the full search on purpose.
+    """
+    from . import scoring as sc
+    try:
+        hp = dict(sc.load_model_card("hazard").get("hyperparams", {}))
+    except Exception:  # noqa: BLE001 — no card yet
+        return None
+    keys = ("max_depth", "learning_rate", "min_child_weight", "reg_lambda",
+            "subsample", "colsample_bytree")
+    picked = {k: hp[k] for k in keys if k in hp}
+    return picked or None
+
+
 def fit_hazard(clean_resolved: pd.DataFrame, *, val_frac: float = 0.15,
                n_iter: int = 15, seed: int = SEED, fixed_hp: dict | None = None) -> dict:
     """Fit the hazard model on RESOLVED bookings via a RandomizedSearch (with
@@ -448,7 +469,7 @@ def walk_forward_eval_hazard(*, n_folds: int = 6, horizon_days: int = 14, step_d
         tr, te = clean.iloc[f.train_idx], clean.iloc[f.test_idx]
         if len(tr) < 500 or len(te) < 50:
             continue
-        hz = fit_hazard(tr, seed=seed)
+        hz = fit_hazard(tr, seed=seed, fixed_hp=card_hp())   # frozen HP: eval == every surface
         S = pd.Timestamp(f.origin)
         teb = te.copy()
         arr = pd.to_datetime(teb[ARRIVAL], utc=True); cre = pd.to_datetime(teb["created"], utc=True)
@@ -541,7 +562,7 @@ def walk_forward_per_snapshot(*, n_folds: int = 6, horizon_days: int = 14,
         tr, te = clean.iloc[f.train_idx], clean.iloc[f.test_idx]
         if len(tr) < 500 or len(te) < 50:
             continue
-        hz = fit_hazard(tr, seed=seed)
+        hz = fit_hazard(tr, seed=seed, fixed_hp=card_hp())   # frozen HP: eval == every surface
         parts.append(per_snapshot_scores(hz, te, max_days=horizon_days))   # daily decision band only
     scores = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=[AXIS, "width", "y", "p"])
     return {"per_snapshot": snapshot_metrics(scores), "scores": scores}
@@ -557,7 +578,7 @@ def _wf_hazard_folds(n_folds, horizon_days, step_days, seed):
         tr, te = clean.iloc[f.train_idx], clean.iloc[f.test_idx]
         if len(tr) < 500 or len(te) < 50:
             continue
-        hz = fit_hazard(tr, seed=seed)
+        hz = fit_hazard(tr, seed=seed, fixed_hp=card_hp())   # frozen HP: eval == every surface
         te = te.copy()
         arr = pd.to_datetime(te[ARRIVAL], utc=True); cre = pd.to_datetime(te["created"], utc=True)
         te["lead"] = (arr - cre) / pd.Timedelta(days=1)

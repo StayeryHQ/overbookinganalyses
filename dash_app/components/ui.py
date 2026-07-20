@@ -110,6 +110,44 @@ def location_filter(options: list[str], filter_id: str, *,
 
 
 # ---------------------------------------------------------------------------
+# Sticky filter bar: location MultiSelect + a global time-window control, pinned
+# to the top so it stays reachable after scrolling. `position: sticky` degrades
+# gracefully (just scrolls with the page) if an ancestor prevents pinning.
+# ---------------------------------------------------------------------------
+_TIMEWIN_DATA = [{"label": "All time", "value": "all"}, {"label": "24 mo", "value": "24"},
+                 {"label": "12 mo", "value": "12"}, {"label": "6 mo", "value": "6"}]
+
+
+def sticky_filter_bar(options: list[str], filter_id: str, timewin_id: str, *,
+                      span_label: str | None = None, timewin_info: str | None = None):
+    location = dmc.MultiSelect(
+        id=filter_id, data=[{"label": o, "value": o} for o in options], value=list(options),
+        placeholder="All locations", clearable=True, searchable=True,
+        hidePickedOptions=False, maxDropdownHeight=320,
+        leftSection=html.I(className="bi bi-geo-alt"),
+        comboboxProps={"withinPortal": True},
+        styles={"input": {"minHeight": "40px"}})
+    left = dmc.Stack([
+        dmc.Group([dmc.Text("Locations", size="sm", fw=600),
+                   dmc.Text(span_label, size="xs", c="dimmed") if span_label else None],
+                  justify="space-between", align="baseline"),
+        location,
+    ], gap=6, style={"flex": "1 1 340px", "minWidth": "260px"})
+    right = dmc.Stack([
+        dmc.Group([dmc.Text("Time window", size="sm", fw=600),
+                   info_icon(timewin_info) if timewin_info else None], gap=4, wrap="nowrap"),
+        dmc.SegmentedControl(id=timewin_id, data=_TIMEWIN_DATA, value="all",
+                             size="xs", radius="md"),
+    ], gap=6)
+    bar = dmc.Group([left, right], justify="space-between", align="flex-end",
+                    gap="lg", wrap="wrap")
+    return dmc.Paper(bar, p="md", radius="lg", withBorder=True,
+                     style={"position": "sticky", "top": "8px", "zIndex": 200,
+                            "backgroundColor": theme.WHITE,
+                            "boxShadow": "0 2px 12px rgba(0,0,0,0.06)"})
+
+
+# ---------------------------------------------------------------------------
 # Job loader: a beautiful RingProgress % + a gently spinning hourglass + the live
 # status message + an optional Cancel button. Replaces the raw <progress> bar.
 # IDs: {prefix}-wrap / -ring / -pct / -msg / -cancel. Hidden until a job runs.

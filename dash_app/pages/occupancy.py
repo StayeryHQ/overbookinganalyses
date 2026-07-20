@@ -152,6 +152,15 @@ def layout(**_kwargs):
             leftSection=html.I(className="bi bi-geo-alt"),
             comboboxProps={"withinPortal": True},
             style={"flex": "1 1 320px", "minWidth": "260px"}),
+        # Export exactly what's shown in the booking table + a backtest sheet
+        # (predictions vs. actual outcome) for reconciliation. Read-only, no re-scoring.
+        dmc.Tooltip(
+            dmc.Button("Download predictions (Excel)", id="occ-xls-btn", size="sm",
+                       variant="light",
+                       leftSection=html.I(className="bi bi-file-earmark-excel")),
+            label="Excel with two sheets: the bookings shown here, plus a backtest of the "
+                  "served model's predictions vs. the real outcome.",
+            multiline=True, w=280, withArrow=True, position="top"),
     ], align="flex-end", gap="md", wrap="wrap"), p="md", radius="lg", withBorder=True)
 
     stores = html.Div([
@@ -164,6 +173,7 @@ def layout(**_kwargs):
         dcc.Interval(id="occ-costs-init", interval=200, n_intervals=0, max_intervals=1),
         # Heartbeat: polls Data/jobs/scoring.json so progress survives page changes.
         dcc.Interval(id="occ-score-poll", interval=1200, n_intervals=0),
+        dcc.Download(id="occ-xls-download"),              # Excel export target
         # NOTE: "cost-store" now lives in the GLOBAL app.layout (single shared source of
         # truth across pages). Declaring it here too would duplicate the component id.
     ])
@@ -475,6 +485,35 @@ def _poll_scoring(_n, _kick, version, seen):
 def _cancel_scoring(_n):
     jobs.cancel("scoring")
     return "Cancelling…"
+
+
+# ---------------------------------------------------------------------------
+# Excel export: the currently-shown predictions + a backtest sheet (pred vs
+# actual). Reads the local caches only — no re-scoring, no BigQuery. Honours the
+# current property filter and heatmap-cell selection so the file matches the view.
+# ---------------------------------------------------------------------------
+@callback(
+    Output("occ-xls-download", "data"),
+    Input("occ-xls-btn", "n_clicks"),
+    State("occ-property-filter", "value"),
+    State("occ-selection", "data"),
+    State("cost-store", "data"),
+    prevent_initial_call=True,
+)
+def _download_predictions_xls(_n, sel_props, selection, cost_store):
+    from dash_app.backend import exports as xls
+    props = _selected_props(sel_props)
+    day = None
+    if selection:
+        props = [selection["property"]]
+        day = selection.get("day")
+    walk, empty, high, mult = mp.read_cost_full(cost_store)
+    thr = da.cost_optimal_threshold(walk, empty, high, mult)
+    model = _served_model()
+    ts = pd.Timestamp.now().strftime("%Y%m%d_%H%M")
+    return dcc.send_bytes(
+        lambda buf: xls.write_predictions_workbook(buf, props or None, day, thr, model),
+        f"stayery_predictions_{ts}.xlsx")
 
 
 def _err_alert(text: str) -> dmc.Alert:

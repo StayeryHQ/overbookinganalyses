@@ -81,19 +81,42 @@ _INFO = {
     "channel": "How each booking channel's cancellation rate compares to the current "
                "selection's base rate. Red = cancels more than average, green = less. "
                "Channels with fewer than 200 bookings are omitted.",
-    "stay": "Cancellation rate by length of stay. Short = 1–2 nights, Mid = 3–6, "
-            "Long = 7+ nights.",
-    "lead": "Cancellation rate by lead time - the gap between when a booking was made "
-            "and the arrival date.",
+    "stay": "Cancellation rate by exact length of stay, night by night (stays of 14+ "
+            "nights are pooled into one bar). Bar colour marks the segment: green = "
+            "short (1–2 nights), amber = mid (3–6), red = long (7+). Bars over fewer "
+            "than 50 bookings are hidden as too noisy.",
+    "lead": "Cancellation rate by lead time — the gap in days between when a booking was "
+            "made and the arrival date — shown day by day (longer lead almost always "
+            "cancels more). Use 'by length of stay' to split the curve into short / mid "
+            "/ long, and the day toggle to extend the window. Days over fewer than 50 "
+            "bookings are hidden.",
     "timing": "Of the bookings that cancelled, the cumulative share that had cancelled "
               "by a given number of days before arrival. Shows how late rooms typically "
               "free up.",
+    "timewin": "Filters every chart on this page to the last 6 / 12 / 24 months of "
+               "arrivals (or the full history). The dashed base-rate reference always "
+               "stays the full-history average, so a window is easy to compare against it.",
+    "blend": "Cancellation rate for each combination of lead time and length of stay — "
+             "the two biggest drivers blended into one grid. Green = low, red = high. "
+             "Top-right (long stays booked far ahead) is the riskiest mix. Cells under "
+             "30 bookings are hidden.",
+    "ct_grid": "When cancellations land in the last two weeks before arrival, day by day "
+               "(0 = arrival day; the '15+' column pools everything earlier). Rows split "
+               "by length of stay or lead time. Colour shows either the per-cell cancel "
+               "rate (share of that segment's bookings) or the raw number of "
+               "cancellations — both are always in the hover. Each day column is exactly "
+               "one day wide, so nothing is distorted by unequal bucket sizes.",
 }
 
 
 def _sel(value) -> list[str] | None:
     """Normalise the MultiSelect value; an empty selection means 'all locations'."""
     return list(value) if value else None
+
+
+def _win(value) -> int | None:
+    """Normalise the time-window control; 'all'/empty means the full history."""
+    return None if not value or value == "all" else int(value)
 
 
 # ---------------------------------------------------------------------------
@@ -118,11 +141,46 @@ def layout(**_kwargs):
     heatmap_extra = dmc.SegmentedControl(id="cxl-window", data=_WINDOW_DATA, value="12",
                                          size="xs", radius="md")
 
+    # Channel + Length-of-stay stay side by side; Lead time gets its own full-width row
+    # (below) so the day-by-day curve has room to breathe.
     breakdowns = dmc.SimpleGrid(
         [ui.chart_card("Channel risk", "cxl-channel", info=_INFO["channel"], height=300),
-         ui.chart_card("Length of stay", "cxl-stay", info=_INFO["stay"], height=300),
-         ui.chart_card("Lead time", "cxl-lead", info=_INFO["lead"], height=300)],
-        cols={"base": 1, "md": 3}, spacing="md")
+         ui.chart_card("Length of stay", "cxl-stay", info=_INFO["stay"], height=300)],
+        cols={"base": 1, "md": 2}, spacing="md")
+
+    # Lead-time card controls: window (focus first 30 days, extend to 60) + split toggle.
+    lead_extra = dmc.Group([
+        dmc.SegmentedControl(id="cxl-lead-range", value="30", size="xs", radius="md",
+                             data=[{"label": "30 d", "value": "30"},
+                                   {"label": "60 d", "value": "60"}]),
+        dmc.SegmentedControl(id="cxl-lead-split", value="all", size="xs", radius="md",
+                             data=[{"label": "Overall", "value": "all"},
+                                   {"label": "By length of stay", "value": "stay"}]),
+    ], gap="xs", wrap="nowrap")
+    lead_card = ui.chart_card(
+        "Lead time", "cxl-lead", info=_INFO["lead"], height=360, header_extra=lead_extra,
+        subtitle="Cancellation rate day by day before arrival · toggle the split by "
+                 "length of stay to see how short / mid / long stays differ.")
+
+    # Standmixer: lead × stay cancel-rate heatmap (the two drivers blended).
+    blend_card = ui.chart_card(
+        "Lead time × length of stay", "cxl-blend", info=_INFO["blend"], height=300,
+        subtitle="Where the two drivers combine — the darkest cell is the riskiest mix.")
+
+    # Cancel-timing near-window heatmap: days-before × (stay or lead), rate or count.
+    ct_extra = dmc.Group([
+        dmc.SegmentedControl(id="cxl-ct-dim", value="stay", size="xs", radius="md",
+                             data=[{"label": "By length of stay", "value": "stay"},
+                                   {"label": "By lead time", "value": "lead"}]),
+        dmc.SegmentedControl(id="cxl-ct-metric", value="rate", size="xs", radius="md",
+                             data=[{"label": "Cancel rate", "value": "rate"},
+                                   {"label": "Count", "value": "count"}]),
+    ], gap="xs", wrap="nowrap")
+    ct_card = ui.chart_card(
+        "Cancel timing · last 14 days before arrival", "cxl-ct-grid", info=_INFO["ct_grid"],
+        height=320, header_extra=ct_extra,
+        subtitle="Day-by-day near arrival (0 = arrival day) · switch the rows between "
+                 "length of stay and lead time, and the colour between rate and count.")
 
     drawer = dmc.Drawer(
         id="cxl-drawer", position="right", size="md", padding="lg", opened=False,
@@ -136,7 +194,8 @@ def layout(**_kwargs):
         # Update-history card (top) — rebuilds the cleaned dataset behind these charts.
         _history_update_card(),
 
-        ui.location_filter(props, "cxl-property-filter", span_label=span_label),
+        ui.sticky_filter_bar(props, "cxl-property-filter", "cxl-timewin",
+                             span_label=span_label, timewin_info=_INFO["timewin"]),
         dcc.Store(id="cxl-drawer-store"),
         dcc.Store(id="cxl-upd-kick", data=0),
         dcc.Store(id="cxl-upd-seen", data={}),
@@ -156,8 +215,14 @@ def layout(**_kwargs):
 
         breakdowns,
 
+        lead_card,
+
+        blend_card,
+
         ui.chart_card("Cancel-timing curve", "cxl-timing", info=_INFO["timing"], height=320,
                       subtitle="How late before arrival do cancellations land?"),
+
+        ct_card,
 
         drawer,
     ], gap="md")
@@ -199,8 +264,8 @@ def _kpi_cards(k: dict) -> list:
     ]
 
 
-def _anomaly_alert(props):
-    hot = ch.flag_anomalies(props)
+def _anomaly_alert(props, window_months=None):
+    hot = ch.flag_anomalies(props, window_months=window_months)
     if hot.empty:
         return None
     top = hot.head(3)
@@ -284,28 +349,70 @@ def _cancel_history_update(_n):
     Output("cxl-anomaly", "children"),
     Output("cxl-channel", "figure"),
     Output("cxl-stay", "figure"),
-    Output("cxl-lead", "figure"),
     Output("cxl-timing", "figure"),
+    Output("cxl-blend", "figure"),
     Input("cxl-property-filter", "value"),
+    Input("cxl-timewin", "value"),
     Input("cxl-data-version", "data"),
 )
-def _update_filter(sel_value, _version):
+def _update_filter(sel_value, timewin, _version):
     props = _sel(sel_value)
-    k = ch.kpis(props)
+    win = _win(timewin)
+    k = ch.kpis(props, window_months=win)
     kpis = ui.kpi_strip(_kpi_cards(k))
-    anomaly = _anomaly_alert(props)
+    anomaly = _anomaly_alert(props, win)
 
-    dev, base = ch.channel_deviation(props)
-    stay = ch.stay_segment_rate(props)
-    lead = ch.leadtime_bucket_rate(props)
-    curve, n = ch.cancel_timing_curve(props)
+    dev, base = ch.channel_deviation(props, window_months=win)
+    stay = ch.stay_daily_rate(props, window_months=win)      # per-night, coloured by segment
+    curve, n = ch.cancel_timing_curve(props, window_months=win)
+    grid = ch.leadtime_stay_grid(props, window_months=win)   # lead × stay heatmap
     overall = k["overall_rate"]
 
     return (kpis, anomaly,
             hc.fig_channel(dev, base),
-            hc.fig_rate_bars(stay, "label", base=overall, color=theme.GREEN),
-            hc.fig_rate_bars(lead, "bucket", base=overall, color=theme.ORANGE),
-            hc.fig_timing(curve, n))
+            hc.fig_stay_daily(stay, base=overall),
+            hc.fig_timing(curve, n),
+            hc.fig_leadtime_stay_heatmap(grid))
+
+
+# ---------------------------------------------------------------------------
+# Cancel-timing near-window heatmap: filter + time-window + dim (stay/lead) +
+# metric (rate/count). Own callback because of its two extra toggles.
+# ---------------------------------------------------------------------------
+@callback(
+    Output("cxl-ct-grid", "figure"),
+    Input("cxl-property-filter", "value"),
+    Input("cxl-ct-dim", "value"),
+    Input("cxl-ct-metric", "value"),
+    Input("cxl-timewin", "value"),
+    Input("cxl-data-version", "data"),
+)
+def _update_ct_grid(sel_value, dim, metric, timewin, _version):
+    props = _sel(sel_value)
+    dim = dim if dim in ("stay", "lead") else "stay"
+    grid = ch.cancel_timing_grid(props, dim=dim, window_months=_win(timewin))
+    return hc.fig_cancel_timing_heatmap(grid, dim=dim, metric=(metric or "rate"))
+
+
+# ---------------------------------------------------------------------------
+# Lead-time curve (own row): filter + window (30/60 d) + optional stay split
+# ---------------------------------------------------------------------------
+@callback(
+    Output("cxl-lead", "figure"),
+    Input("cxl-property-filter", "value"),
+    Input("cxl-lead-split", "value"),
+    Input("cxl-lead-range", "value"),
+    Input("cxl-timewin", "value"),
+    Input("cxl-data-version", "data"),
+)
+def _update_leadtime(sel_value, split, rng, timewin, _version):
+    props = _sel(sel_value)
+    win = _win(timewin)
+    by_stay = split == "stay"
+    daily = ch.leadtime_daily_rate(props, by_stay=by_stay, max_day=int(rng or "30"),
+                                   window_months=win)
+    return hc.fig_leadtime_daily(daily, by_stay=by_stay,
+                                 base=ch.selection_rate(props, window_months=win))
 
 
 # ---------------------------------------------------------------------------
@@ -315,12 +422,14 @@ def _update_filter(sel_value, _version):
     Output("cxl-monthly", "figure"),
     Input("cxl-property-filter", "value"),
     Input("cxl-per-prop", "value"),
+    Input("cxl-timewin", "value"),
     Input("cxl-data-version", "data"),
 )
-def _update_monthly(sel_value, mode, _version):
+def _update_monthly(sel_value, mode, timewin, _version):
     props = _sel(sel_value)
-    monthly = ch.monthly_rate(props)
-    per = ch.monthly_rate(props, per_property=True) if mode == "per" else None
+    win = _win(timewin)
+    monthly = ch.monthly_rate(props, window_months=win)
+    per = ch.monthly_rate(props, per_property=True, window_months=win) if mode == "per" else None
     return hc.fig_monthly(monthly, ch.base_rate(), per)
 
 
@@ -331,12 +440,14 @@ def _update_monthly(sel_value, mode, _version):
     Output("cxl-heatmap", "figure"),
     Input("cxl-property-filter", "value"),
     Input("cxl-window", "value"),
+    Input("cxl-timewin", "value"),
     Input("cxl-data-version", "data"),
 )
-def _update_heatmap(sel_value, window, _version):
+def _update_heatmap(sel_value, window, timewin, _version):
     props = _sel(sel_value)
     months = int(window or "12")
-    return hc.fig_heatmap(ch.property_month_matrix(props, months_back=months))
+    return hc.fig_heatmap(ch.property_month_matrix(props, months_back=months,
+                                                   window_months=_win(timewin)))
 
 
 # ---------------------------------------------------------------------------

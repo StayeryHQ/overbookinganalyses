@@ -1,6 +1,6 @@
 """Diagnose the Model-Performance calibration/Brier vs the notebook.
 
-Run in the project venv:   uv run python diagnose_calibration.py [--model xgboost]
+Run in the project venv:   uv run python tests/diagnose_calibration.py [--model xgboost]
 
 It answers ONE question: is the page's eval artifact doing the same thing as the
 notebook's own decision-time walk-forward (src.training.walk_forward_predict), or does my

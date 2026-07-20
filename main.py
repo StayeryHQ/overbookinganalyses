@@ -63,13 +63,21 @@ def cmd_score(args: argparse.Namespace) -> int:
         print("No upcoming arrivals to score.")
         return 0
 
-    rb = load_risk_buckets()                       # THE one risk scale
+    rb = load_risk_buckets()                       # THE one risk scale: {high_cutoff, labels}
+    high_cut = float(rb["high_cutoff"])            # fixed High cutoff (0.85)
+    # Low/Medium boundary is the DYNAMIC cost-optimal threshold, carried on each scored row
+    # (not a config value any more — see configs/risk_buckets.yaml / src.scoring).
+    thr = (float(scored["cancel_threshold"].iloc[0])
+           if "cancel_threshold" in scored.columns and len(scored) else None)
     n_high   = int((scored["risk_bucket"] == "high").sum())
     n_medium = int((scored["risk_bucket"] == "medium").sum())
     n_low    = int((scored["risk_bucket"] == "low").sum())
     print(f"\n  rows scored          : {len(scored):,}")
-    print(f"  high (≥{rb['high_min']:.0%})          : {n_high:,}")
-    print(f"  medium ({rb['low_max']:.0%}–{rb['high_min']:.0%})    : {n_medium:,}")
+    print(f"  high (≥{high_cut:.0%})          : {n_high:,}")
+    if thr is not None:
+        print(f"  medium ({thr:.0%}–{high_cut:.0%})    : {n_medium:,}")
+    else:
+        print(f"  medium               : {n_medium:,}")
     print(f"  low                  : {n_low:,}")
     print(f"\nResult saved to: {data_dir() / 'scored_upcoming.parquet'}")
     return 0
@@ -260,6 +268,34 @@ def cmd_retrain(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_build_roster(args: argparse.Namespace) -> int:
+    """Regenerate Data/feature_roster.json from the raw cache — the runtime twin of
+    notebook 00 §11. Lets a fresh deploy (or a cache rebuild) recreate the roster
+    without opening Jupyter; build_clean_reservations also does this automatically when
+    the roster is missing."""
+    from src import (
+        build_clean_reservations,
+        data_dir,
+        load_feature_roster,
+        load_reservations,
+    )
+
+    print("Rebuilding the clean dataset from the raw cache and regenerating the feature roster…")
+    try:
+        raw = load_reservations()                       # cached parquet (no BigQuery)
+        clean = build_clean_reservations(raw, write_roster=True)
+    except FileNotFoundError as e:
+        print(f"ERROR: {e}\n  Run `uv run python main.py refresh` first to build the raw cache.",
+              file=sys.stderr)
+        return 1
+    r = load_feature_roster()
+    print(f"  wrote {data_dir() / 'feature_roster.json'}")
+    print(f"  clean rows           : {len(clean):,}")
+    print(f"  numeric / categorical: {r['n_numeric']} / {r['n_categorical']}")
+    print(f"  ratePlan map entries : {len(r.get('ratePlan_category_map', {}))}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="overbooking-analyse",
@@ -290,6 +326,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     pb = sub.add_parser("bqcheck", help="Probe the BigQuery connection (credentials, quota project).")
     pb.set_defaults(func=cmd_bqcheck)
+
+    pbr = sub.add_parser("build-roster",
+                         help="Regenerate Data/feature_roster.json from the raw cache (nb00 §11 twin).")
+    pbr.set_defaults(func=cmd_build_roster)
 
     prt = sub.add_parser("retrain", help="Retrain a model on all resolved data (refit/retune).")
     prt.add_argument("--model", required=True, choices=list(EVAL_MODELS),

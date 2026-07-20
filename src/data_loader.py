@@ -400,15 +400,23 @@ _CLEAN_DTYPES: Final[dict] = {
 }
 
 
-def build_clean_reservations(raw: pd.DataFrame) -> pd.DataFrame:
+def build_clean_reservations(raw: pd.DataFrame, *, write_roster: bool = False) -> pd.DataFrame:
     """Raw PII-free reservations -> the cleaned/labelled training frame (same schema as
     Data/reservations_clean.parquet). Programmatic equivalent of notebook 00's cleaning.
 
     Validated to reproduce the clean cache's feature columns + target exactly. Feature
     engineering reuses src.scoring.build_features (the serving function), so there is ONE
     definition — training and serving cannot drift.
+
+    The ratePlan_category map is fit here (on the SAME arrival-window population the
+    notebook uses) and handed to build_features explicitly — so this runs WITHOUT a
+    pre-existing feature_roster.json. If `write_roster` is True (or no roster exists yet),
+    it also (re)writes Data/feature_roster.json, so a fresh deploy can self-heal instead
+    of hard-failing on a missing roster (was: notebook-only artifact).
     """
     from .scoring import build_features
+    from .features import (ROSTER_FILENAME, build_rateplan_category_map,
+                           write_feature_roster)
     from . import walkforward as wf
 
     df = raw.copy()
@@ -439,11 +447,16 @@ def build_clean_reservations(raw: pd.DataFrame) -> pd.DataFrame:
     )
     d = df[keep].copy()
 
+    # ratePlan_category map — fit on the SAME arrival-window population the notebook uses
+    # ([ARRIVAL_FLOOR, cutoff)), so the rare-bucket collapse reproduces the committed map.
+    window_mask = (arr >= ARRIVAL_FLOOR) & (arr < cutoff)
+    rp_map = build_rateplan_category_map(df[window_mask])
+
     # §4.5 target: 1 = Canceled AND logged at/before arrival (same-day counts as positive).
     cdba = pd.to_numeric(d["cancel_days_before_arrival"], errors="coerce")
     is_cba = (d["status"].eq("Canceled") & cdba.ge(0)).astype("int8")
 
-    feat = build_features(d)                  # §3.0 features — shared with serving
+    feat = build_features(d, rateplan_category_map=rp_map)   # §3.0 features — shared with serving
     feat = wf.add_outcome_known_date(feat)    # §7 split metadata
     feat["cancel_days_before_arrival"] = d["cancel_days_before_arrival"].to_numpy()
     feat["is_canceled_by_arrival"] = is_cba.to_numpy()
@@ -455,7 +468,14 @@ def build_clean_reservations(raw: pd.DataFrame) -> pd.DataFrame:
             out[col] = out[col].astype(dt)
         except (TypeError, ValueError):
             pass                              # tolerate minor dtype drift; values are what matter
-    return out.reset_index(drop=True)
+    out = out.reset_index(drop=True)
+
+    # Self-heal the roster: write it when asked, or when it is simply missing (fresh
+    # deploy). The map came from the arrival-window population above, so the persisted
+    # roster matches what the notebook would have produced.
+    if write_roster or not (data_dir() / ROSTER_FILENAME).exists():
+        write_feature_roster(out, rateplan_category_map=rp_map)
+    return out
 
 
 # =============================================================================

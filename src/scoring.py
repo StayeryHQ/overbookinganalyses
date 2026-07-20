@@ -321,13 +321,19 @@ _CHANNEL_RENAME: Final[dict[str, str]] = {
 }
 
 
-def build_features(df: pd.DataFrame, today: pd.Timestamp | None = None) -> pd.DataFrame:
+def build_features(df: pd.DataFrame, today: pd.Timestamp | None = None,
+                   *, rateplan_category_map: dict | None = None) -> pd.DataFrame:
     """Build the model features from a raw (PII-stripped) reservations frame.
 
     Parameters
     ----------
     df : DataFrame
         Raw reservations (post PII strip).
+    rateplan_category_map : dict | None
+        Explicit `normalized ratePlan_name -> category` map. None -> load it from the
+        feature roster (the normal serving path). The explicit form lets the cleaner
+        (build_clean_reservations) bootstrap features BEFORE a roster exists, so a
+        fresh deploy is not stuck on a missing feature_roster.json.
     today : pd.Timestamp | None
         Point-in-time "as-of" date for the DYNAMIC features (days_until_arrival,
         days_since_booking, pct_lead_time_elapsed, is_within_7d_of_arrival).
@@ -409,8 +415,11 @@ def build_features(df: pd.DataFrame, today: pd.Timestamp | None = None) -> pd.Da
     # ratePlan_category: look up the TRAIN-fitted name->category map persisted in
     # the roster (00 §3.0.d/§11); unseen names -> "other". Recomputing the rare-name
     # collapse on scoring data would be a train/serve parity bug.
-    from .features import load_feature_roster
-    _rp_map = load_feature_roster().get("ratePlan_category_map", {})
+    if rateplan_category_map is not None:
+        _rp_map = rateplan_category_map
+    else:
+        from .features import load_feature_roster
+        _rp_map = load_feature_roster().get("ratePlan_category_map", {})
     _rp_norm = (_to_str_nz(out.get("ratePlan_name"), out.index)
                 .str.strip().str.lower().str.replace(r"\s+", " ", regex=True))
     _rp_cat = _rp_norm.map(_rp_map)
