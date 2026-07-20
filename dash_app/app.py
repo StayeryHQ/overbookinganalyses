@@ -42,6 +42,12 @@ def _background_manager():
     return DiskcacheManager(diskcache.Cache(cache_dir))
 
 
+# Public URL prefix the app is served under when deployed behind a reverse proxy
+# (Traefik strips this before forwarding). Defaults to "/" for local runs so
+# `uv run python -m dash_app.app` and `docker run` on the raw image both keep
+# working at http://localhost:8050/ unchanged.
+_URL_BASE_PATHNAME = os.environ.get("DASH_URL_BASE_PATHNAME", "/")
+
 app = Dash(
     __name__,
     use_pages=True,
@@ -49,6 +55,12 @@ app = Dash(
     external_stylesheets=EXTERNAL_STYLESHEETS,
     suppress_callback_exceptions=True,   # callbacks target components on page-scoped layouts
     title="STAYERY · Cancellation Analytics",
+    # Traefik strips the public prefix before forwarding, so Dash still serves
+    # its routes at "/". But the HTML it emits (asset URLs, /_dash-* endpoints,
+    # dcc.Link hrefs, page_registry relative_paths) must be prefixed with the
+    # public path so the browser hits Traefik at URLs that get routed back here.
+    routes_pathname_prefix="/",
+    requests_pathname_prefix=_URL_BASE_PATHNAME,
 )
 # WSGI server object (gunicorn dash_app.app:server). Exposed early on purpose.
 server = app.server
