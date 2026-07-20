@@ -114,4 +114,4 @@ jobs:
               --entrypoint sh \
               -v overbookinganalyses_streamlit_data:/app/Data \
               ghcr.io/stayeryhq/overbookinganalyses:${{ needs.build-and-push-image.outputs.web_image_sha_tag }} \
-              -c "cp -u /app/.builtin-models/*.joblib /app/Data/ && echo 'Models seeded'"
+              -c "cp -u /app/.builtin-models/ /app/Data/ && echo 'Models seeded'"
