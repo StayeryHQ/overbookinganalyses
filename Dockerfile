@@ -38,6 +38,7 @@ COPY src ./src
 COPY main.py ./main.py
 COPY configs ./configs
 COPY pyproject.toml ./
+COPY Data/ /app/Data/
 
 # Set environment variables
 ENV PATH="/opt/venv/bin:$PATH" \
