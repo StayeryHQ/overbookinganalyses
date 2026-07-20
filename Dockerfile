@@ -46,6 +46,6 @@ ENV PATH="/opt/venv/bin:$PATH" \
 
 EXPOSE 8050
 
-HEALTHCHECK CMD curl --fail http://localhost:8050/
+HEALTHCHECK CMD curl --fail http://localhost:8050/_carogician/
 
 ENTRYPOINT ["gunicorn", "dash_app.app:server", "--bind", "0.0.0.0:8050", "--workers", "4", "--timeout", "120", "--access-logfile", "-"]
