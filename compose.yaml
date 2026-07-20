@@ -1,0 +1,55 @@
+services:
+  app:
+    hostname: overbooking-analysis
+    image: ghcr.io/stayeryhq/overbookinganalyses:${APP_IMAGE_TAG}
+    networks:
+      - streamlit
+      - traefik-public
+    secrets:
+      - bigquery_secret
+    volumes:
+      - streamlit_data:/app/data
+    environment:
+      - GCP_SERVICE_ACCOUNT_JSON_FILE=/run/secrets/bigquery_secret
+      # Public URL prefix the app is served under (Traefik strips this before
+      # forwarding). Only set here so local dev / raw docker runs keep serving
+      # at "/". Must end with a slash - Dash validates this at startup.
+      - DASH_URL_BASE_PATHNAME=/_carogician/
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=traefik-public
+      - traefik.constraint-label=traefik-public
+
+      # Service configuration
+      - traefik.http.services.overbooking-analysis.loadbalancer.server.port=8050
+
+      # Router for /overbooking-analysis path
+      - traefik.http.routers.overbooking-analysis-https.rule=Host(`stayomat.de`) && PathPrefix(`/_carogician`)
+      - traefik.http.routers.overbooking-analysis-https.entrypoints=https
+      - traefik.http.routers.overbooking-analysis-https.tls=true
+      - traefik.http.routers.overbooking-analysis-https.tls.certresolver=le
+
+      # ForwardAuth middleware to check authentication
+      - traefik.http.middlewares.overbooking-auth.forwardauth.address=http://stayomat_web:6000/api/forward-auth/streamlit
+      - traefik.http.middlewares.overbooking-auth.forwardauth.authResponseHeaders=X-User-Id
+      - traefik.http.middlewares.overbooking-auth.forwardauth.trustForwardHeader=true
+      - traefik.http.middlewares.overbooking-auth.forwardauth.authRequestHeaders=Cookie
+
+      # Strip /overbooking-analysis prefix before forwarding to Streamlit
+      - traefik.http.middlewares.overbooking-stripprefix.stripprefix.prefixes=/_carogician
+
+      # Apply middlewares
+      - traefik.http.routers.overbooking-analysis-https.middlewares=overbooking-auth,overbooking-stripprefix
+
+networks:
+  streamlit:
+    external: true
+  traefik-public:
+    external: true
+
+secrets:
+  bigquery_secret:
+    external: true
+
+volumes:
+  streamlit_data:
