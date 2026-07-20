@@ -101,3 +101,16 @@ jobs:
           registry_pass: ${{ secrets.GITHUB_TOKEN }}
           file: ${{ 'compose.yaml' }}
           env_file: ./deployment.env
+
+      - name: Seed model files to volume
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: stayomat.de
+          username: luca
+          key: ${{ secrets.STAYOMAT_SSH_KEY }}
+          script: |
+            docker run --rm \
+              --entrypoint sh \
+              -v overbookinganalyses_streamlit_data:/app/Data \
+              ghcr.io/stayeryhq/overbookinganalyses:${{ needs.build-and-push-image.outputs.web_image_sha_tag }} \
+              -c "cp -u /app/.builtin-models/*.joblib /app/Data/ && echo 'Models seeded'"

@@ -38,7 +38,7 @@ COPY src ./src
 COPY main.py ./main.py
 COPY configs ./configs
 COPY pyproject.toml ./
-COPY Data/ /app/Data/
+COPY Data/*.joblib /app/.builtin-models/
 
 # Set environment variables
 ENV PATH="/opt/venv/bin:$PATH" \
