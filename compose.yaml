@@ -11,15 +11,12 @@ services:
       - streamlit_data:/app/data
     environment:
       - GCP_SERVICE_ACCOUNT_JSON_FILE=/run/secrets/bigquery_secret
-      # Dash-native env vars for path prefixing behind Traefik.
-      # DASH_ROUTES_PATHNAME_PREFIX stays at "/" because Traefik strips the
-      # public prefix before forwarding. DASH_REQUESTS_PATHNAME_PREFIX tells
-      # Dash to emit asset URLs and dcc.Link hrefs prefixed with the public
-      # path so the browser reaches Traefik at the correct routed endpoint.
-      # These map 1:1 to Dash constructor kwargs and don't collide like
-      # the deprecated DASH_URL_BASE_PATHNAME (which maps to url_base_pathname).
-      - DASH_ROUTES_PATHNAME_PREFIX=/
-      - DASH_REQUESTS_PATHNAME_PREFIX=/_carogician/
+      # Traefik forwards the full /_carogician/ path (no strip) so Dash must
+      # serve both routes and assets under /_carogician/. DASH_URL_BASE_PATHNAME
+      # sets routes_pathname_prefix + requests_pathname_prefix to the same value
+      # — exactly what we need. Safe because the Dash constructor no longer
+      # passes explicit prefix kwargs (which would collide with this env var).
+      - DASH_URL_BASE_PATHNAME=/_carogician/
     labels:
       - traefik.enable=true
       - traefik.docker.network=traefik-public
@@ -40,11 +37,8 @@ services:
       - traefik.http.middlewares.overbooking-auth.forwardauth.trustForwardHeader=true
       - traefik.http.middlewares.overbooking-auth.forwardauth.authRequestHeaders=Cookie
 
-      # Strip /overbooking-analysis prefix before forwarding to Streamlit
-      - traefik.http.middlewares.overbooking-stripprefix.stripprefix.prefixes=/_carogician
-
-      # Apply middlewares
-      - traefik.http.routers.overbooking-analysis-https.middlewares=overbooking-auth,overbooking-stripprefix
+      # Apply middlewares (no stripprefix — Dash serves under /_carogician/ natively)
+      - traefik.http.routers.overbooking-analysis-https.middlewares=overbooking-auth
 
 networks:
   streamlit:
