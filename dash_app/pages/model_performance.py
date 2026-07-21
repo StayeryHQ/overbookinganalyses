@@ -74,7 +74,7 @@ def layout(**_kwargs):
     model0 = serving[0] if serving else "hazard"
 
     controls = dmc.Paper(dmc.Group([
-        # Served models only (hazard / xgboost) — no 4-model comparison. XAI lives on
+        # Served models only (hazard / xgboost)  no 4-model comparison. XAI lives on
         # Occupancy & Predictions now; this page is the served model's training performance.
         dmc.Select(id="mp-model", label="Served model", value=model0,
                    data=mo.scoring_model_options(), allowDeselect=False,
@@ -259,7 +259,7 @@ def _poll_rebuild(_n, seen, version):
         seen["artifacts"] = fin
         if status == "done":
             bump = (version or 0) + 1        # re-read the fresh artifacts once
-    # Auto-refresh when a RETRAIN finishes elsewhere — it rebuilds this page's eval, so the
+    # Auto-refresh when a RETRAIN finishes elsewhere  it rebuilds this page's eval, so the
     # performance charts must not lag the freshly deployed model.
     rt = jobs.read("retrain")
     rfin = rt.get("finished")

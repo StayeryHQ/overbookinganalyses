@@ -55,7 +55,7 @@ def _family_feature_lists(model_name: str) -> tuple[list[str], list[str]]:
 
 
 def _target(df: pd.DataFrame) -> pd.Series:
-    """Binary target — delegates to the one shared accessor (wf.target_series)."""
+    """Binary target  delegates to the one shared accessor (wf.target_series)."""
     return wf.target_series(df)
 
 
@@ -285,12 +285,12 @@ def walk_forward_eval(model_name: str, *, hp: dict | None = None, n_folds: int =
     AUC / AP / Brier / cost.
 
     Cost is measured at the TRAIN-derived cost-optimal threshold APPLIED to the held-out
-    test fold (out-of-sample) — an honest "operated well" estimate, NOT the optimistic
+    test fold (out-of-sample)  an honest "operated well" estimate, NOT the optimistic
     in-sample argmin on the very rows it is scored on. (At the fixed analytic threshold
     ~0.79 no calibrated model flags anything, so that metric was identical across models.)
 
     `collect_predictions=True` also returns the pooled out-of-time predictions
-    under "predictions" [fold, y_true, y_prob] — retrain() persists them so the
+    under "predictions" [fold, y_true, y_prob]  retrain() persists them so the
     serving thresholds can be derived from real data.
     """
     from sklearn.metrics import roc_auc_score, average_precision_score, brier_score_loss
@@ -310,7 +310,7 @@ def walk_forward_eval(model_name: str, *, hp: dict | None = None, n_folds: int =
         p = pipe.predict_proba(X.iloc[f.test_idx])[:, 1]
         yt = y.iloc[f.test_idx].values
         # Operating point chosen OUT-OF-SAMPLE: fit the cost-optimal threshold on the TRAIN
-        # predictions, then APPLY it to the held-out test fold — honest cost, not the
+        # predictions, then APPLY it to the held-out test fold  honest cost, not the
         # optimistic in-sample argmin (M1 fix).
         ytr = y.iloc[f.train_idx].values
         p_tr = pipe.predict_proba(X.iloc[f.train_idx])[:, 1]
@@ -513,7 +513,7 @@ def retrain(model_name: str, *, mode: str = "refit", asof: str | pd.Timestamp | 
         jp = data_dir() / reg["joblib"]
         import joblib
         joblib.dump(pipe, jp)
-        # Persist the pooled (recalibrated) predictions — scoring's threshold
+        # Persist the pooled (recalibrated) predictions  scoring's threshold
         # helpers (cost_optimal_threshold) read this file.
         if preds is not None and len(preds):
             pred_path = data_dir() / reg["joblib"].replace("_model.joblib",
@@ -563,11 +563,11 @@ def retrain(model_name: str, *, mode: str = "refit", asof: str | pd.Timestamp | 
 def select_models() -> dict:
     """The optimal models to retrain/serve.
 
-    primary : "hazard" — the horizon-aware per-night expected-freed engine. The
+    primary : "hazard"  the horizon-aware per-night expected-freed engine. The
               overbooking decision is made a horizon (d = 1..14 days) before
               arrival, so the time-resolved hazard model is the right serving
               model; `src.hazard` makes it persistable/retrainable.
-    static  : best static model by AP among well-calibrated ones (Brier gate) —
+    static  : best static model by AP among well-calibrated ones (Brier gate) 
               a horizon-blind per-booking BASELINE / cross-check, not the decision
               engine (it has no days-until-arrival feature).
     """

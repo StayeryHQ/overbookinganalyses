@@ -4,10 +4,10 @@
 # boosting iteration curve.
 #
 # Design decision (freigegeben, "B1"): SHAP is computed MODEL-AGNOSTICALLY on the SAME
-# scalar the four models are compared on — P(cancel by arrival) via src.scoring.cancel_proba
+# scalar the four models are compared on  P(cancel by arrival) via src.scoring.cancel_proba
 # (for the hazard model that is the survival-product output). ONE code path for all models:
 #   * it keeps the hazard explanation on the same estimand as the classifiers (comparable
-#     beeswarms), which is exactly why SurvSHAP is NOT needed here — the decision target is
+#     beeswarms), which is exactly why SurvSHAP is NOT needed here  the decision target is
 #     already a scalar;
 #   * it never applies the classifiers' SHAP code unchanged to the hazard model.
 # Trade-off: the model-agnostic explainer is slow, so global SHAP is PRE-COMPUTED per model
@@ -16,7 +16,7 @@
 #
 # NB (verify in your env): the exact shap API is pinned by the installed version
 # (shap 0.49/0.52). This uses shap.Explainer(f, masker=shap.maskers.Independent(...)),
-# shap.maskers.Independent and the Explanation.values / .base_values attributes — please
+# shap.maskers.Independent and the Explanation.values / .base_values attributes  please
 # confirm these against `shap.__version__` if a call signature has drifted.
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ import src
 from src import scoring as sc
 from src import model_eval as me
 
-# Sample sizes — kept modest so the agnostic explainer stays tractable; raise for a
+# Sample sizes  kept modest so the agnostic explainer stays tractable; raise for a
 # sharper global picture at the cost of compute (pre-warm handles the wait).
 BG_SAMPLE = 100        # background rows for the masker
 GLOBAL_SAMPLE = 300    # rows whose SHAP values populate the beeswarm
@@ -108,7 +108,7 @@ def _predict_fn(model: str, decode):
 
 
 # ---------------------------------------------------------------------------
-# Explanation sample (upcoming scored bookings — what the model does "now")
+# Explanation sample (upcoming scored bookings  what the model does "now")
 # ---------------------------------------------------------------------------
 def _explain_frame(n: int | None = None) -> pd.DataFrame:
     """Rows to explain: the cached scored upcoming bookings (already carry the engineered
@@ -123,7 +123,7 @@ def _explain_frame(n: int | None = None) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Global SHAP (beeswarm + importance) — pre-computed, cached
+# Global SHAP (beeswarm + importance)  pre-computed, cached
 # ---------------------------------------------------------------------------
 def compute_global_shap(model: str, *, refresh: bool = False,
                         bg: int = BG_SAMPLE, sample: int = GLOBAL_SAMPLE) -> pd.DataFrame:
@@ -186,7 +186,7 @@ def global_beeswarm(model: str) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Single-booking SHAP (live) — the reusable unit (see components/shap_explain)
+# Single-booking SHAP (live)  the reusable unit (see components/shap_explain)
 # ---------------------------------------------------------------------------
 def single_contribution(model: str, booking: pd.Series | pd.DataFrame,
                         *, bg: int = BG_SAMPLE) -> dict:
@@ -222,19 +222,19 @@ def single_contribution(model: str, booking: pd.Series | pd.DataFrame,
 
 def _fmt_val(v) -> str:
     if v is None or (isinstance(v, float) and np.isnan(v)):
-        return "—"
+        return ""
     if isinstance(v, float):
         return f"{v:.2f}"
     return str(v)
 
 
 # ---------------------------------------------------------------------------
-# Partial dependence / ICE — manual sweep through the adapter (uniform, all models)
+# Partial dependence / ICE  manual sweep through the adapter (uniform, all models)
 # ---------------------------------------------------------------------------
 def partial_dependence(model: str, feature: str, *, n_rows: int = 120,
                        n_grid: int = 20, ice: bool = True) -> dict:
     """Average P(cancel) as `feature` is swept across its observed range, holding the other
-    features at each sampled row's values (manual PD — correct for every model via the
+    features at each sampled row's values (manual PD  correct for every model via the
     adapter, no sklearn estimator required for the hazard model). Optional ICE lines."""
     frame = _explain_frame(n_rows)
     if frame.empty or feature not in frame.columns:
@@ -263,7 +263,7 @@ def partial_dependence(model: str, feature: str, *, n_rows: int = 120,
 
 
 # ---------------------------------------------------------------------------
-# Cached PDP (built on retrain, read read-only on the predictions page) — so the
+# Cached PDP (built on retrain, read read-only on the predictions page)  so the
 # global explanations are NOT recomputed over many bookings on every rescore.
 # ---------------------------------------------------------------------------
 def pdp_cache_path(model: str):
@@ -289,7 +289,7 @@ def compute_all_pdp(model: str, *, refresh: bool = False, ice_sample: int = 30) 
     for feat in explainable_features(model):
         try:
             d = partial_dependence(model, feat)
-        except Exception:  # noqa: BLE001 — one bad feature must not sink the whole cache
+        except Exception:  # noqa: BLE001  one bad feature must not sink the whole cache
             continue
         if not d:
             continue
@@ -318,7 +318,7 @@ def cached_pdp(model: str, feature: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Boosting iteration curve (XGBoost / HistGB only) — best-effort, labelled
+# Boosting iteration curve (XGBoost / HistGB only)  best-effort, labelled
 # ---------------------------------------------------------------------------
 def _itercurve_path(model: str):
     return src.data_dir() / f"itercurve_{model}.json"
@@ -328,7 +328,7 @@ def iteration_curve(model: str, *, refresh: bool = False) -> dict:
     """Train/validation loss vs boosting iteration, CACHED to JSON (computing it refits a
     model, so we never redo it on every page interaction). Only meaningful for the boosting
     models (xgboost, histgb); returns {} for logreg (no iterations) and for hazard (its curve
-    is person-period logloss on a different scale — not shown next to the others)."""
+    is person-period logloss on a different scale  not shown next to the others)."""
     import json
     p = _itercurve_path(model)
     if p.exists() and not refresh:
@@ -340,7 +340,7 @@ def iteration_curve(model: str, *, refresh: bool = False) -> dict:
         return {}
     try:
         curve = _xgb_iteration_curve() if model == "xgboost" else _histgb_iteration_curve()
-    except Exception:  # noqa: BLE001 — never fabricate a curve; fall through to empty
+    except Exception:  # noqa: BLE001  never fabricate a curve; fall through to empty
         return {}
     if curve:
         try:

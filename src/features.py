@@ -1,11 +1,11 @@
 # ---------------------------------------------------------------------------
-# Shared feature engineering — identical in training and serving.
+# Shared feature engineering  identical in training and serving.
 #
 # Two jobs: (1) stateless transforms both sides apply the same way
 # (country -> region), (2) generator + loader for the feature roster.
 #
 # WHICH columns are model features is decided once, at the end of notebook 00,
-# and persisted to Data/feature_roster.json — everything loads that artifact.
+# and persisted to Data/feature_roster.json  everything loads that artifact.
 # FEATURE_EXCLUSIONS below is the single list of what is NOT a feature and why.
 # ---------------------------------------------------------------------------
 
@@ -25,7 +25,7 @@ REGION_COL:       Final[str] = "guest_country_region"
 
 # Region taxonomy: DE/AT/CH explicit, GB separate (distinct market, cancels more
 # than DACH), rest of EU/EEA -> EU_other, everything else -> RoW, blank -> Unknown.
-# Diagnostics only — the region column is excluded from the model roster.
+# Diagnostics only  the region column is excluded from the model roster.
 
 DACH: Final[frozenset[str]] = frozenset({"DE", "AT", "CH"})
 EU_EEA: Final[frozenset[str]] = frozenset({
@@ -127,7 +127,7 @@ FEATURE_EXCLUSIONS: Final[dict[str, list[str]]] = {
 
 
 def excluded_columns() -> dict[str, str]:
-    """Flatten FEATURE_EXCLUSIONS to `{column: reason}` — the roster audit trail."""
+    """Flatten FEATURE_EXCLUSIONS to `{column: reason}`  the roster audit trail."""
     return {col: reason for reason, cols in FEATURE_EXCLUSIONS.items() for col in cols}
 
 
@@ -263,7 +263,7 @@ _MIN_CATEGORY_COUNT: Final[int] = 50
 
 
 def _classify_rate_plan(value) -> tuple[str, int, str]:
-    """(normalized_name, is_nonref, coarse_type) — verbatim port of nb00 §3.0.d."""
+    """(normalized_name, is_nonref, coarse_type)  verbatim port of nb00 §3.0.d."""
     if value is None or pd.isna(value):
         return "", 0, "unknown"
     n = re.sub(r"\s+", " ", str(value).strip().lower())
@@ -293,7 +293,7 @@ def build_rateplan_category_map(windowed: pd.DataFrame, *, name_col: str = "rate
 
     `windowed` MUST be the SAME arrival-window population the cleaner filters to
     ([ARRIVAL_FLOOR, cutoff)); the rare-bucket collapse is population-dependent, so
-    the caller (data_loader.build_clean_reservations) passes exactly that slice —
+    the caller (data_loader.build_clean_reservations) passes exactly that slice 
     this reproduces the committed map byte-for-byte. Rare buckets (< `min_count` in
     the >28-days-before-max training slice) collapse to 'other'.
     """
@@ -318,13 +318,13 @@ def build_rateplan_category_map(windowed: pd.DataFrame, *, name_col: str = "rate
 
 
 def build_feature_roster(clean: pd.DataFrame, *, rateplan_category_map: dict | None = None) -> dict:
-    """Assemble the feature-roster dict from a CLEAN reservations frame — the runtime
+    """Assemble the feature-roster dict from a CLEAN reservations frame  the runtime
     twin of notebook 00 §11, so the roster can be regenerated WITHOUT the notebook.
 
     Uses the same column-classification helpers the notebook uses
     (`model_feature_roster`, `log_twin_map`, `excluded_columns`) plus the fixed
     `DYNAMIC_NUMERIC` list and the passed-in ratePlan map. Raises on a degenerate
-    roster (missing must-have categoricals, dynamic leak, too few numerics) — the
+    roster (missing must-have categoricals, dynamic leak, too few numerics)  the
     same guard rails as nb00 §11.
     """
     numeric, categorical = model_feature_roster(clean)

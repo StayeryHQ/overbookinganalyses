@@ -254,7 +254,7 @@ def side_panel_content(record: dict | None) -> list:
 _MULT_HELP = (
     "High-demand period: walking a guest hurts more, so the walk cost is multiplied "
     "by this factor. That raises the EFFECTIVE walk cost and therefore the cost-optimal "
-    "threshold — the model flags fewer bookings, only the clearest cancellations."
+    "threshold  the model flags fewer bookings, only the clearest cancellations."
 )
 
 
@@ -270,7 +270,7 @@ def cost_controls() -> dmc.Paper:
         dmc.Stack([
             dmc.Group([
                 dmc.Text("Overbooking costs", fw=600, size="sm"),
-                dmc.Text("One global setting — shared with Model Performance.",
+                dmc.Text("One global setting  shared with Model Performance.",
                          size="xs", c="dimmed"),
             ], gap="sm", align="center"),
             dmc.Group([
@@ -308,7 +308,7 @@ def cost_controls() -> dmc.Paper:
 # ---------------------------------------------------------------------------
 # Heatmap: property (rows) × 14 days (cols). Colour = occupancy %; the other
 # metrics (occupied, arrivals, departures, expected + over-threshold
-# cancellations) live in the hover — too many numbers to print in each tile.
+# cancellations) live in the hover  too many numbers to print in each tile.
 # ---------------------------------------------------------------------------
 _OCC_COLORSCALE = [[0.0, "#FFFFFF"], [0.5, theme.YELLOW], [1.0, theme.ORANGE]]
 
@@ -345,7 +345,7 @@ def heatmap_figure(grid: pd.DataFrame) -> go.Figure:
     # per-cell extra numbers for the hover. Occupancy / occupied / arrivals / departures /
     # cancellations come straight from the PMS perf table; predicted cancellations are the
     # MODEL's view, shown TWO ways:
-    #   * expected (Σ P(cancel) over the night's arrivals) — threshold-independent
+    #   * expected (Σ P(cancel) over the night's arrivals)  threshold-independent
     #   * count over the current COST-BASED threshold (moves with the walk/empty costs)
     cd = np.dstack(
         [occupied.to_numpy(), arr.to_numpy(), dep.to_numpy(),

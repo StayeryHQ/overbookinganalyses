@@ -96,7 +96,7 @@ ok("scoring.best_model ranks by AP with Brier gate", "ap" in open("src/scoring.p
 print("\n=== 10. train/serve parity: build_features == notebook-00 clean engineering ===")
 # build_clean_reservations reuses src.scoring.build_features (the SERVING function). If it
 # reproduces the committed clean parquet (nb00's output) value-for-value, serving and
-# training feature engineering are provably in sync (M3 — catches formula drift the
+# training feature engineering are provably in sync (M3  catches formula drift the
 # column-presence check in §3 cannot).
 from src.data_loader import build_clean_reservations
 rebuilt = build_clean_reservations(raw)

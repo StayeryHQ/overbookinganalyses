@@ -1,6 +1,6 @@
 # dash_app/backend/data_access.py
 # Read-only accessors the Occupancy dashboard uses. EVERYTHING here reads from the
-# Phase-1 local caches (parquet) — no live BigQuery is ever triggered by a filter or
+# Phase-1 local caches (parquet)  no live BigQuery is ever triggered by a filter or
 # table interaction (hard performance requirement). Re-scoring the upcoming window is
 # a separate write path that runs on the file-backed job runner (see
 # model_ops.score_window_job), never inline on a filter.
@@ -22,7 +22,7 @@ WINDOW_DAYS = 14                      # fixed forward-looking window for this pa
 # Default DECISION threshold when no costs are entered yet: the analytic cost-optimal
 # point for the project's default walk/empty costs. Everything downstream (heatmap
 # count, KPI, table Low/Medium boundary) uses the cost-based threshold instead once
-# costs are set — see cost_optimal_threshold().
+# costs are set  see cost_optimal_threshold().
 DEFAULT_RISK_THRESHOLD = float(sc.analytic_threshold())
 RAW_CACHE_FILE = "reservations_raw_no_pii.parquet"
 SCORED_CACHE_FILE = "scored_upcoming.parquet"
@@ -81,7 +81,7 @@ def data_freshness() -> dict:
 
 
 def model_meta() -> dict:
-    """Real model metadata for the KPI tiles — never fabricated.
+    """Real model metadata for the KPI tiles  never fabricated.
 
     Returns retrained_at + training-set size for the DEFAULT scoring model, reading
     the model card and the cleaned-dataset metadata. Any value that isn't present in
@@ -91,7 +91,7 @@ def model_meta() -> dict:
            "trained_on_note": None}
     try:
         name = sc.resolve_model()
-    except Exception:  # noqa: BLE001 — no model artifact on disk
+    except Exception:  # noqa: BLE001  no model artifact on disk
         return out
     out["model"] = name
     # retrained_at from the model card, if the card exists and has it.
@@ -170,7 +170,7 @@ def in_window(df: pd.DataFrame, properties: list[str] | None = None,
 def per_night_expected_freed(scored_window: pd.DataFrame,
                              hotel_col: str | None = "property_name") -> pd.DataFrame:
     """Per-(arrival-night[, hotel]) expected freed rooms from the scored window.
-    Thin wrapper over src.hazard.per_night_table — ONE implementation of
+    Thin wrapper over src.hazard.per_night_table  ONE implementation of
     exp = Σp / var = Σp(1-p), instead of a drifting inline copy."""
     if scored_window.empty or "cancel_proba" not in scored_window.columns:
         cols = ["arrival_date"] + (["hotel"] if hotel_col else []) + ["n", "exp", "var"]
@@ -185,7 +185,7 @@ def add_display_columns(df: pd.DataFrame, threshold: float | None = None) -> pd.
     """Add `risk_label` (cost-based Low/Medium/High) and `is_group` (booking is
     part of a group: blockId or groupName present). No-op on an empty frame.
 
-    `threshold` is the cost-based decision threshold — it is the Low/Medium boundary;
+    `threshold` is the cost-based decision threshold  it is the Low/Medium boundary;
     High is the fixed 0.85 cutoff (src.HIGH_RISK_CUTOFF). Defaults to
     DEFAULT_RISK_THRESHOLD so the column is never blank just because no costs were
     passed. Recomputed live at display time, so changing the costs re-colours the
@@ -201,7 +201,7 @@ def add_display_columns(df: pd.DataFrame, threshold: float | None = None) -> pd.
         out["risk_label"] = ""
 
     def _txt(col: str) -> pd.Series:
-        """Column as string Series, '' for missing values AND missing columns —
+        """Column as string Series, '' for missing values AND missing columns 
         so a schema drift in ONE of the two group fields can't crash the page."""
         if col not in out.columns:
             return pd.Series([""] * len(out), index=out.index, dtype="string")
@@ -214,7 +214,7 @@ def add_display_columns(df: pd.DataFrame, threshold: float | None = None) -> pd.
 # ---- Capacity per property (for occupancy %) -------------------------------
 @lru_cache(maxsize=1)
 def _property_code_to_name() -> dict[str, str]:
-    """{property_code -> property_name} from the reservations cache — the bridge
+    """{property_code -> property_name} from the reservations cache  the bridge
     between the performance table's propertyId (e.g. 'BER_FR') and the
     property_name used everywhere else. Empty dict if the columns are absent."""
     df = _reservations_cached()
@@ -227,7 +227,7 @@ def _property_code_to_name() -> dict[str, str]:
 # NOTE: capacity is no longer a single per-property number. It comes PER DAY from
 # _perf_daily() (houseCount straight from the perf table). The old
 # _capacity_from_perf()/property_capacity() helpers were removed as dead code when the
-# heatmap switched to the PMS `occupancyPercentage` (2026-07 — nothing else referenced them).
+# heatmap switched to the PMS `occupancyPercentage` (2026-07  nothing else referenced them).
 
 
 @lru_cache(maxsize=1)
@@ -236,7 +236,7 @@ def _perf_daily() -> pd.DataFrame:
     normalised to a UTC midnight `_day`.
 
     THE authoritative operational source for the heatmap: occupancy %, sold/house
-    counts, arrivals/departures and cancellations come STRAIGHT from the PMS here —
+    counts, arrivals/departures and cancellations come STRAIGHT from the PMS here 
     never re-derived from reservations. `occupancyPercentage` is already
     soldCount / (houseCount − outOfOrderCount) × 100 (so it can exceed 100 % when a
     night is overbooked); we take it verbatim. Empty frame if the cache/mapping is
@@ -275,7 +275,7 @@ def cost_optimal_threshold(walk: float | None, empty: float | None,
     eff_walk = src.effective_walk_cost(w, bool(high_demand), mult)
     try:
         thr = sc.operating_threshold(sc.resolve_model(model), eff_walk, e)
-    except Exception:  # noqa: BLE001 — no artifact/validation preds -> analytic Bayes
+    except Exception:  # noqa: BLE001  no artifact/validation preds -> analytic Bayes
         thr = sc.analytic_threshold(eff_walk, e)
     return float(min(max(thr, 0.0), 1.0))
 

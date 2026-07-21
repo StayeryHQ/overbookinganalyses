@@ -88,7 +88,7 @@ def main() -> int:
             print(f"  (built with n_folds_requested={meta.get('n_folds_requested')}, "
                   f"n_folds_used={meta.get('n_folds_used')})")
     else:
-        print("  not built yet — run `python main.py eval --model %s`." % m)
+        print("  not built yet  run `python main.py eval --model %s`." % m)
 
     print("\nInterpretation: compare C to A (same regime). Match => no harness bug, it's the "
           "fold window/recency (compare A vs B). Divergence => tell me, I'll fix the harness.")

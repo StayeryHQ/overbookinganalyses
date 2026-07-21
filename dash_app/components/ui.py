@@ -175,7 +175,7 @@ def job_loader(prefix: str, *, with_cancel: bool = True) -> html.Div:
 
 
 def loader_view(pct: float, message: str, *, show: bool):
-    """(ring_sections, pct_text, message, wrap_style) for one job loader — feed these to
+    """(ring_sections, pct_text, message, wrap_style) for one job loader  feed these to
     the {prefix}-ring/-pct/-msg/-wrap outputs from a poll callback."""
     p = max(0, min(100, int(round(float(pct)))))
     return ([{"value": p, "color": "yellow"}], f"{p}%", message,

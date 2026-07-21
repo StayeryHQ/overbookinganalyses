@@ -60,7 +60,7 @@ def _err_alert(text: str) -> dmc.Alert:
 
 
 def _cancelled_alert() -> dmc.Alert:
-    return dmc.Alert("History update cancelled — previous data kept.", color="gray",
+    return dmc.Alert("History update cancelled  previous data kept.", color="gray",
                      variant="light", icon=html.I(className="bi bi-x-circle"))
 
 dash.register_page(__name__, path="/cancellation-history", name="Cancellation History",
@@ -85,8 +85,8 @@ _INFO = {
             "nights are pooled into one bar). Bar colour marks the segment: green = "
             "short (1–2 nights), amber = mid (3–6), red = long (7+). Bars over fewer "
             "than 50 bookings are hidden as too noisy.",
-    "lead": "Cancellation rate by lead time — the gap in days between when a booking was "
-            "made and the arrival date — shown day by day (longer lead almost always "
+    "lead": "Cancellation rate by lead time  the gap in days between when a booking was "
+            "made and the arrival date  shown day by day (longer lead almost always "
             "cancels more). Use 'by length of stay' to split the curve into short / mid "
             "/ long, and the day toggle to extend the window. Days over fewer than 50 "
             "bookings are hidden.",
@@ -96,16 +96,27 @@ _INFO = {
     "timewin": "Filters every chart on this page to the last 6 / 12 / 24 months of "
                "arrivals (or the full history). The dashed base-rate reference always "
                "stays the full-history average, so a window is easy to compare against it.",
-    "blend": "Cancellation rate for each combination of lead time and length of stay — "
+    "blend": "Cancellation rate for each combination of lead time and length of stay  "
              "the two biggest drivers blended into one grid. Green = low, red = high. "
              "Top-right (long stays booked far ahead) is the riskiest mix. Cells under "
              "30 bookings are hidden.",
-    "ct_grid": "When cancellations land in the last two weeks before arrival, day by day "
-               "(0 = arrival day; the '15+' column pools everything earlier). Rows split "
-               "by length of stay or lead time. Colour shows either the per-cell cancel "
-               "rate (share of that segment's bookings) or the raw number of "
-               "cancellations — both are always in the hover. Each day column is exactly "
-               "one day wide, so nothing is distorted by unequal bucket sizes.",
+    "ct_grid": "Cancellations in the last 14 days before arrival, day by day (0 = arrival "
+               "day). In 'Cancel rate' mode each cell is a per-day rate: cancellations "
+               "that day ÷ the bookings that were still due to arrive that day (booked at "
+               "least that far ahead and not yet cancelled)  so it answers 'of the "
+               "bookings still due to arrive d days out, what share cancel that day', not "
+               "a share of all bookings. A row therefore does NOT sum to the segment's "
+               "overall cancel rate, and a 0–7 day lead bucket is simply empty past day 7. "
+               "'Count' mode shows the raw number of cancellations. Rows switch between "
+               "length of stay and lead time; both count and base are always in the hover.",
+    "ns_monthly": "Share of resolved arrivals (guests who did NOT cancel before arrival) "
+                  "that were no-shows, per arrival month. Based on the raw reservations "
+                  "history. Months with fewer than 50 arrivals are hidden. Hover shows the "
+                  "no-show count and the arrivals base.",
+    "ns_heatmap": "No-show rate per location and arrival month. Blank cells have fewer "
+                  "than 30 resolved arrivals. Hover shows the no-show count and arrivals.",
+    "ns_stay": "No-show rate by length of stay (short 1–2, mid 3–6, long 7+ nights). "
+               "Each bar is labelled with the absolute number of no-shows.",
 }
 
 
@@ -165,7 +176,7 @@ def layout(**_kwargs):
     # Standmixer: lead × stay cancel-rate heatmap (the two drivers blended).
     blend_card = ui.chart_card(
         "Lead time × length of stay", "cxl-blend", info=_INFO["blend"], height=300,
-        subtitle="Where the two drivers combine — the darkest cell is the riskiest mix.")
+        subtitle="Where the two drivers combine  the darkest cell is the riskiest mix.")
 
     # Cancel-timing near-window heatmap: days-before × (stay or lead), rate or count.
     ct_extra = dmc.Group([
@@ -179,8 +190,25 @@ def layout(**_kwargs):
     ct_card = ui.chart_card(
         "Cancel timing · last 14 days before arrival", "cxl-ct-grid", info=_INFO["ct_grid"],
         height=320, header_extra=ct_extra,
-        subtitle="Day-by-day near arrival (0 = arrival day) · switch the rows between "
-                 "length of stay and lead time, and the colour between rate and count.")
+        subtitle="Per-day cancel rate near arrival (0 = arrival day) · rate = of the "
+                 "bookings still due to arrive that day, the share that cancel. Switch "
+                 "rows (stay / lead) and colour (rate / count).")
+
+    # ---- No-show section (new) --------------------------------------------
+    noshow_header = dmc.Stack([
+        dmc.Divider(mt="lg", mb=2),
+        dmc.Group([
+            dmc.Title("No-shows", order=2),
+            dmc.Badge("Resolved arrivals · didn't cancel, didn't show", color="gray",
+                      variant="light", radius="sm"),
+        ], gap="sm", align="center"),
+        dmc.Text("How often confirmed arrivals turn into no-shows  over time, by location "
+                 "and by length of stay. Based on the raw reservations history; the same "
+                 "location and time-window filters apply.", size="sm", c="dimmed"),
+    ], gap=4)
+    noshow_stay_card = ui.chart_card(
+        "No-show rate by length of stay", "cxl-ns-stay", info=_INFO["ns_stay"], height=300,
+        subtitle="Short 1–2 · Mid 3–6 · Long 7+ nights · bars labelled with the no-show count.")
 
     drawer = dmc.Drawer(
         id="cxl-drawer", position="right", size="md", padding="lg", opened=False,
@@ -191,7 +219,7 @@ def layout(**_kwargs):
     return dmc.Stack([
         header,
 
-        # Update-history card (top) — rebuilds the cleaned dataset behind these charts.
+        # Update-history card (top)  rebuilds the cleaned dataset behind these charts.
         _history_update_card(),
 
         ui.sticky_filter_bar(props, "cxl-property-filter", "cxl-timewin",
@@ -223,6 +251,18 @@ def layout(**_kwargs):
                       subtitle="How late before arrival do cancellations land?"),
 
         ct_card,
+
+        noshow_header,
+
+        ui.chart_card("No-show rate over time", "cxl-ns-monthly", info=_INFO["ns_monthly"],
+                      height=320,
+                      subtitle="Monthly · share of resolved arrivals that were no-shows."),
+
+        ui.chart_card("No-show rate · location × month", "cxl-ns-heatmap",
+                      info=_INFO["ns_heatmap"], height=None,
+                      subtitle="Click-free overview · blank cells have too few arrivals."),
+
+        noshow_stay_card,
 
         drawer,
     ], gap="md")
@@ -392,6 +432,30 @@ def _update_ct_grid(sel_value, dim, metric, timewin, _version):
     dim = dim if dim in ("stay", "lead") else "stay"
     grid = ch.cancel_timing_grid(props, dim=dim, window_months=_win(timewin))
     return hc.fig_cancel_timing_heatmap(grid, dim=dim, metric=(metric or "rate"))
+
+
+# ---------------------------------------------------------------------------
+# No-show section: monthly rate + location×month heatmap + by length of stay.
+# Same location + time-window filters as the cancellation charts.
+# ---------------------------------------------------------------------------
+@callback(
+    Output("cxl-ns-monthly", "figure"),
+    Output("cxl-ns-heatmap", "figure"),
+    Output("cxl-ns-stay", "figure"),
+    Input("cxl-property-filter", "value"),
+    Input("cxl-timewin", "value"),
+    Input("cxl-data-version", "data"),
+)
+def _update_noshow(sel_value, timewin, _version):
+    props = _sel(sel_value)
+    win = _win(timewin)
+    base = ch.noshow_overall_rate(props, window_months=win)
+    monthly = ch.noshow_monthly_rate(props, window_months=win)
+    matrix = ch.noshow_property_month_matrix(props, months_back=12, window_months=win)
+    stay = ch.noshow_stay_rate(props, window_months=win)
+    return (hc.fig_noshow_monthly(monthly, base),
+            hc.fig_noshow_heatmap(matrix),
+            hc.fig_noshow_stay(stay, base=base))
 
 
 # ---------------------------------------------------------------------------

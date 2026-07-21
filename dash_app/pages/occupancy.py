@@ -3,7 +3,7 @@
 # only (no date filter). Layout top→bottom: scoring card → controls → costs → KPI
 # tiles → heatmap → composition charts → booking table. Shell + KPIs render
 # immediately from the local cache; re-scoring runs on the file-backed job runner
-# (model_ops.score_window_job) polled by a dcc.Interval — NOT a Dash background
+# (model_ops.score_window_job) polled by a dcc.Interval  NOT a Dash background
 # callback (that left the button stuck loading). Already-cancelled bookings are
 # excluded centrally in the data layer. No filter/table interaction hits BigQuery.
 
@@ -52,7 +52,7 @@ def _selected_props(value) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Scoring card — runs on the file-backed job runner (survives page changes; the
+# Scoring card  runs on the file-backed job runner (survives page changes; the
 # old Dash background callback is what left the button stuck loading forever).
 # ---------------------------------------------------------------------------
 def _scoring_card() -> dmc.Paper:
@@ -97,7 +97,7 @@ def _score_result(res: dict) -> dmc.Alert:
 
 
 # ---------------------------------------------------------------------------
-# XAI section — all explanations for the CURRENT 14-day scored bookings, on the
+# XAI section  all explanations for the CURRENT 14-day scored bookings, on the
 # served model. Global SHAP builds on demand (heavy); per-booking waterfalls are
 # computed live when a booking row is selected in the table above.
 # ---------------------------------------------------------------------------
@@ -111,7 +111,7 @@ def _xai_section() -> dmc.Stack:
         ], gap="sm", align="center", mt="sm"),
         dmc.Text("Global explanations (feature importance, beeswarm, partial dependence) "
                  "describe the deployed model and are rebuilt when you retrain it (Update & "
-                 "Retraining) — they are not recomputed on each rescore. Click a booking in "
+                 "Retraining)  they are not recomputed on each rescore. Click a booking in "
                  "the table above for its OWN live SHAP explanation.",
                  id="occ-xai-status", size="xs", c="dimmed"),
         dmc.SimpleGrid([
@@ -217,7 +217,7 @@ def layout(**_kwargs):
         header,
         stores,
 
-        # Scoring (next 14 days) — top of the page, file-backed job + progress
+        # Scoring (next 14 days)  top of the page, file-backed job + progress
         _scoring_card(),
         html.Div(id="occ-data-quality"),
 
@@ -240,7 +240,7 @@ def layout(**_kwargs):
         # 4) Booking table (filtered by heatmap selection) + detail side panel
         booking_row,
 
-        # 5) XAI — explanations for the current 14-day scored bookings
+        # 5) XAI  explanations for the current 14-day scored bookings
         _xai_section(),
     ], gap="md")
 
@@ -420,7 +420,7 @@ def _save_cost_params(walk, empty, high, mult, store):
 
 
 # ---------------------------------------------------------------------------
-# Scoring — file-backed job (survives page changes, no stuck loading bar). Start
+# Scoring  file-backed job (survives page changes, no stuck loading bar). Start
 # on click; a dcc.Interval polls the job file and renders progress / result.
 # ---------------------------------------------------------------------------
 @callback(
@@ -489,7 +489,7 @@ def _cancel_scoring(_n):
 
 # ---------------------------------------------------------------------------
 # Excel export: the currently-shown predictions + a backtest sheet (pred vs
-# actual). Reads the local caches only — no re-scoring, no BigQuery. Honours the
+# actual). Reads the local caches only  no re-scoring, no BigQuery. Honours the
 # current property filter and heatmap-cell selection so the file matches the view.
 # ---------------------------------------------------------------------------
 @callback(
@@ -522,13 +522,13 @@ def _err_alert(text: str) -> dmc.Alert:
 
 
 def _cancelled_alert(what: str) -> dmc.Alert:
-    return dmc.Alert(f"{what} cancelled — previous data kept.", color="gray", variant="light",
+    return dmc.Alert(f"{what} cancelled  previous data kept.", color="gray", variant="light",
                      icon=html.I(className="bi bi-x-circle"))
 
 
 # ---------------------------------------------------------------------------
 # Data-quality note: flag locations with thin training history (<100 bookings) and
-# a stale model (>6 months). Advisory only — scoring still runs.
+# a stale model (>6 months). Advisory only  scoring still runs.
 # ---------------------------------------------------------------------------
 @callback(
     Output("occ-data-quality", "children"),
@@ -545,16 +545,16 @@ def _update_data_quality(model, _version):
         names = ", ".join(f"{r['property']} ({r['rows']})" for r in fl["low_locations"][:6])
         more = "" if len(fl["low_locations"]) <= 6 else f" +{len(fl['low_locations']) - 6} more"
         msgs.append(f"Under {fl['min_rows']} bookings in the training data for: "
-                    f"{names}{more} — predictions there are less reliable.")
+                    f"{names}{more}  predictions there are less reliable.")
     if fl["is_stale"]:
         months = fl["stale_days"] // 30
         msgs.append(f"The model was last retrained {fl['retrained_days_ago']} days ago "
-                    f"(over {months} months) — consider retraining for fresher patterns.")
+                    f"(over {months} months)  consider retraining for fresher patterns.")
     if not msgs:
         return None
     return dmc.Alert(
         dmc.Stack([dmc.Text(m, size="sm") for m in msgs]
-                  + [dmc.Text("Scoring still runs — treat flagged results as indicative, "
+                  + [dmc.Text("Scoring still runs  treat flagged results as indicative, "
                               "not exact.", size="xs", c="dimmed")], gap=4),
         title="Data-quality note", color="yellow", variant="light",
         icon=html.I(className="bi bi-exclamation-triangle"), radius="md", withCloseButton=True)
@@ -570,18 +570,18 @@ def _update_data_quality(model, _version):
 )
 def _update_xai_global(_version):
     """Render the model-level explanations from the CACHED artifacts (built on retrain).
-    Never recomputes global SHAP here — that would be heavy and belongs to retraining."""
+    Never recomputes global SHAP here  that would be heavy and belongs to retraining."""
     model = _served_model()
     imp = pc.fig_importance(ex.importance_from_shap(model))
     bee = pc.fig_beeswarm(ex.global_beeswarm(model))
     feats = ex.explainable_features(model) if ex.pdp_available(model) else []
     opts = [{"label": f, "value": f} for f in feats]
     if ex.shap_available(model):
-        status = (f"Global explanations for {model} · {len(feats)} features — rebuilt when you "
+        status = (f"Global explanations for {model} · {len(feats)} features  rebuilt when you "
                   "retrain the model (Update & Retraining). Click a booking above for its own "
                   "live SHAP.")
     else:
-        status = ("No global explanations built yet — retrain the model (Update & Retraining), "
+        status = ("No global explanations built yet  retrain the model (Update & Retraining), "
                   "or use 'Rebuild evaluation' on the Model Performance page. Per-booking SHAP "
                   "still works: click a booking in the table above.")
     return imp, bee, opts, (feats[0] if feats else None), status
@@ -592,7 +592,7 @@ def _update_xai_global(_version):
     Input("occ-xai-pdp-feature", "value"),
 )
 def _update_xai_pdp(feature):
-    # Reads the CACHED partial dependence (built on retrain) — never recomputed here.
+    # Reads the CACHED partial dependence (built on retrain)  never recomputed here.
     if not feature:
         return pc.fig_pdp({})
     try:
@@ -620,5 +620,5 @@ def _per_booking_shap(selected_rows):
     model = str(record.get("model_used") or _served_model())
     try:
         return se.explanation_panel(model, record, mini=False)
-    except Exception as e:  # noqa: BLE001 — a SHAP failure must not break the page
+    except Exception as e:  # noqa: BLE001  a SHAP failure must not break the page
         return dmc.Text(f"Could not compute SHAP for this booking: {e}", c="dimmed", size="sm")

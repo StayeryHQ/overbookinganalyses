@@ -1,5 +1,4 @@
 # dash_app/app.py
-# Dash application factory for the Stayery overbooking tool.
 #
 # Run locally:   uv run python -m dash_app.app
 # WSGI (prod):   gunicorn dash_app.app:server        (server is exposed below)
@@ -18,9 +17,7 @@ import dash_mantine_components as dmc
 from dash import Dash, _dash_renderer, dcc, html, page_container
 
 # dash-mantine-components 2.x renders against React 18. Dash 4.3.0 already ships
-# React 18 (default 18.3.1); we pin 18.2.0 explicitly - dmc's documented target and
-# part of Dash's bundled set - so dmc renders deterministically. dbc / dash-ag-grid
-# also support React 18, so this is safe for the existing Occupancy page.
+# React 18 (default 18.3.1); we pin 18.2.0 explicitly
 # NOTE: must run BEFORE the Dash() instance is created.
 _dash_renderer._set_react_version("18.2.0")
 
@@ -82,12 +79,7 @@ def _nav_links(pathname):
             for p in pages]
 
 
-# The layout MUST contain dash.page_container for Pages to render. It is wrapped in a
-# dmc.MantineProvider so dash-mantine-components get their theme context;
-# forceColorScheme="light" keeps the brand's white canvas regardless of OS dark mode.
-# The overbooking COST parameter lives here as ONE global dcc.Store persisted in the
-# browser (storage_type="local") - no page keeps its own copy; the Occupancy page's
-# cost callbacks own its schema.
+
 app.layout = dmc.MantineProvider(
     html.Div(
         [dcc.Location(id="app-url"),

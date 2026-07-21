@@ -30,3 +30,6 @@ reports
 !reports/tables/**/model_card.json
 
 .dash_cache/
+
+
+AUDIT_2026-07-17.md

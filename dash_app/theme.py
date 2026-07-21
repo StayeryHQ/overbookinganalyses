@@ -40,12 +40,6 @@ HEADING_FONT_FAMILY = ", ".join([_typ["display"], *_typ["display_fallback"]])
 CANCEL_SCALE = [[0.0, GREEN], [0.5, YELLOW], [1.0, RED]]
 
 # ---- dash-mantine-components theme -----------------------------------------
-# Seeded from the same brand config so dmc components match the notebooks/charts.
-# primaryColor "dark" => controls render near-black (STAYERY is black + yellow);
-# yellow is used as an explicit accent (KPI bar, highlights) rather than as the UI
-# primary, which keeps text-on-accent contrast readable. forceColorScheme="light"
-# is applied at the provider so the brand's white canvas is stable regardless of the
-# viewer's OS dark-mode setting.
 DMC_THEME = {
     "primaryColor": "dark",
     "defaultRadius": "md",
@@ -55,9 +49,6 @@ DMC_THEME = {
 }
 
 # ---- Stylesheets -----------------------------------------------------------
-# Plain CDN URLs - the dash-bootstrap-components PACKAGE is gone (dmc is the
-# component library), but the two stylesheets stay: FLATLY provides the base
-# CSS/utility classes some layouts use, bootstrap-icons the `bi bi-*` icons.
 EXTERNAL_STYLESHEETS = [
     "https://cdn.jsdelivr.net/npm/bootswatch@5.3.3/dist/flatly/bootstrap.min.css",
     "https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css",

@@ -66,13 +66,13 @@ def _download_df(query_job) -> pd.DataFrame:
 
     Prefers the fast BigQuery Storage API; on ANY failure (or when BQ_USE_STORAGE_API=0) it
     retries the plain REST download (`create_bqstorage_client=False`). So a missing route to
-    bigquerystorage.googleapis.com slows the pull down — it no longer breaks it.
+    bigquerystorage.googleapis.com slows the pull down  it no longer breaks it.
     """
     if not _USE_BQ_STORAGE:
         return query_job.to_dataframe(create_bqstorage_client=False)
     try:
         return query_job.to_dataframe()
-    except Exception as e:  # noqa: BLE001 — Storage endpoint unreachable etc.; fall back to REST
+    except Exception as e:  # noqa: BLE001  Storage endpoint unreachable etc.; fall back to REST
         logger.warning(
             f"BigQuery Storage API download failed ({e}); retrying via REST "
             "(create_bqstorage_client=False). Set BQ_USE_STORAGE_API=0 to skip this attempt."
@@ -89,7 +89,7 @@ BQ_TABLE: Final[str] = "reservations"
 # ---- BigQuery client (the ONE construction point) ---------------------------
 # THE key insight (learned the hard way): the JOB project and the DATA project
 # are different things. Queries reference fully-qualified tables
-# (`stayery-analytics.reporting.…`), so reading only needs dataViewer THERE —
+# (`stayery-analytics.reporting.…`), so reading only needs dataViewer THERE 
 # but the query JOB runs in the client's own project, where the caller needs
 # job-creation rights. Pinning the job project to the data project caused
 # `403 … serviceusage.services.use` for user accounts. So, like the sibling
@@ -106,10 +106,10 @@ def get_bigquery_client():
     """Build a BigQuery client from the first available credential source.
 
     VERBATIM copy of the sibling project's working method:
-      1. GCP_SERVICE_ACCOUNT_JSON_FILE  — service-account key file (client runs
+      1. GCP_SERVICE_ACCOUNT_JSON_FILE   service-account key file (client runs
          in the SA's own project)
-      2. GOOGLE_APPLICATION_CREDENTIALS — same handling
-      3. gcloud ADC — bare Client(), the SDK resolves project/quota exactly like
+      2. GOOGLE_APPLICATION_CREDENTIALS  same handling
+      3. gcloud ADC  bare Client(), the SDK resolves project/quota exactly like
          the sibling repo does. NO pinning, NO env juggling on top.
 
     Job project ≠ data project: queries name the tables fully qualified, so the
@@ -133,10 +133,10 @@ def get_bigquery_client():
         )
         return bigquery.Client(credentials=creds, project=creds.project_id)
 
-    # ADC (local gcloud login): enforce nothing — identical to the sibling repo.
+    # ADC (local gcloud login): enforce nothing  identical to the sibling repo.
     try:
         return bigquery.Client()
-    except Exception as e:  # noqa: BLE001 — translate into a fixable message
+    except Exception as e:  # noqa: BLE001  translate into a fixable message
         raise RuntimeError(
             "BigQuery client could not be built from gcloud ADC "
             f"({type(e).__name__}: {e}). Either log in:\n"
@@ -148,7 +148,7 @@ def get_bigquery_client():
 
 
 def bigquery_diagnose() -> list[str]:
-    """Every fact that decides WHERE BigQuery jobs run — one line each, best
+    """Every fact that decides WHERE BigQuery jobs run  one line each, best
     effort, never raises. This settles 403 mysteries in one glance: which
     credential source wins, what quota/config project rides along, and which
     project the client would actually create jobs in."""
@@ -156,22 +156,22 @@ def bigquery_diagnose() -> list[str]:
     for env in ("GCP_SERVICE_ACCOUNT_JSON_FILE", "GOOGLE_APPLICATION_CREDENTIALS"):
         v = os.environ.get(env)
         note = "" if not v else ("  (file exists)" if Path(v).exists() else "  (FILE MISSING!)")
-        lines.append(f"{env} = {v or '—'}{note}")
+        lines.append(f"{env} = {v or ''}{note}")
     for env in ("GOOGLE_CLOUD_PROJECT", "GOOGLE_CLOUD_QUOTA_PROJECT"):
-        lines.append(f"{env} = {os.environ.get(env) or '—'}")
+        lines.append(f"{env} = {os.environ.get(env) or ''}")
     try:
         import google.auth  # type: ignore[import-untyped]
         creds, adc_project = google.auth.default()
         lines.append(f"ADC credential type  = {type(creds).__name__}")
-        lines.append(f"ADC default project  = {adc_project or '—'}")
-        lines.append(f"ADC quota project    = {getattr(creds, 'quota_project_id', None) or '—'}")
+        lines.append(f"ADC default project  = {adc_project or ''}")
+        lines.append(f"ADC quota project    = {getattr(creds, 'quota_project_id', None) or ''}")
     except Exception as e:  # noqa: BLE001
         lines.append(f"ADC = ERROR: {type(e).__name__}: {str(e)[:200]}")
     try:
         import subprocess
         p = subprocess.run(["gcloud", "config", "get-value", "project"],
                            capture_output=True, text=True, timeout=10)
-        lines.append(f"gcloud config project = {p.stdout.strip() or '—'}")
+        lines.append(f"gcloud config project = {p.stdout.strip() or ''}")
     except Exception:  # noqa: BLE001
         lines.append("gcloud config project = (gcloud CLI not available)")
     try:
@@ -181,7 +181,7 @@ def bigquery_diagnose() -> list[str]:
             lines.append(
                 f"  ⚠ PROBLEM: jobs would run in the DATA project '{BQ_PROJECT}', where "
                 "this account may not create jobs (the classic 403). Point the quota/"
-                "config project at YOUR OWN project — see hints from bqcheck."
+                "config project at YOUR OWN project  see hints from bqcheck."
             )
     except Exception as e:  # noqa: BLE001
         lines.append(f"→ client build FAILED: {type(e).__name__}: {str(e)[:200]}")
@@ -190,7 +190,7 @@ def bigquery_diagnose() -> list[str]:
 
 def bigquery_healthcheck() -> dict:
     """Cheap end-to-end probe: build a client, COUNT(*) the reservations table
-    (metadata-only, effectively free). NEVER raises — returns {ok, project,
+    (metadata-only, effectively free). NEVER raises  returns {ok, project,
     detail}, on failure with an actionable hint. Used by `main.py bqcheck` and
     the Update page's connection test, so auth problems are visible in seconds
     instead of surfacing halfway through a refresh."""
@@ -199,16 +199,16 @@ def bigquery_healthcheck() -> dict:
         sql = f"SELECT COUNT(*) AS n FROM `{BQ_PROJECT}.{BQ_DATASET}.{BQ_TABLE}`"
         n = int(list(client.query(sql).result(timeout=30))[0][0])
         return {"ok": True, "project": client.project,
-                "detail": f"connected (project '{client.project}') — "
+                "detail": f"connected (project '{client.project}')  "
                           f"{n:,} rows visible in {BQ_DATASET}.{BQ_TABLE}"}
-    except Exception as e:  # noqa: BLE001 — a health check must never crash the caller
+    except Exception as e:  # noqa: BLE001  a health check must never crash the caller
         msg = str(e)
         low = msg.lower()
         if isinstance(e, (ImportError, ModuleNotFoundError)):
             hint = " → package missing: run `uv sync` (google-cloud-bigquery)."
         elif "serviceusage" in low or "to use project" in low or "quota" in low:
             hint = (" → the query JOB is trying to run in a project where you may not "
-                    "create jobs. Jobs do NOT need to run in the data project — point "
+                    "create jobs. Jobs do NOT need to run in the data project  point "
                     "them at your own: `gcloud auth application-default set-quota-project "
                     "<your-project>` or `export BQ_BILLING_PROJECT=<your-project>`.")
         elif "default credentials" in low or "no google credentials" in low:
@@ -349,7 +349,7 @@ def load_reservations(
 
 def load_reservations_upcoming_window(days: int = 14, quiet: bool = False) -> pd.DataFrame:
     """Pull ONLY the next `days` days of arrivals straight from BigQuery (PII stripped,
-    dtypes cleaned). Deliberately does NOT read or write the full-history cache — the
+    dtypes cleaned). Deliberately does NOT read or write the full-history cache  the
     caller (Occupancy scoring) wants fresh upcoming data and only a 14-day SQL scan.
     Fails loudly if BigQuery is unavailable (no cache fallback)."""
     if not quiet:
@@ -377,13 +377,13 @@ def load_clean_reservations() -> pd.DataFrame:
 
 
 # --- Clean/label pipeline (programmatic equivalent of notebook 00) -----------
-# Mirrors 00 §2.6/§3.0/§4.x/§7. Feature engineering REUSES src.scoring.build_features —
-# the SAME function used at serving — so training and serving cannot drift.
+# Mirrors 00 §2.6/§3.0/§4.x/§7. Feature engineering REUSES src.scoring.build_features 
+# the SAME function used at serving  so training and serving cannot drift.
 ARRIVAL_FLOOR: Final[pd.Timestamp] = pd.Timestamp("2022-08-01", tz="UTC")
 GRACE_DAYS: Final[int] = 2                     # today - GRACE_DAYS = arrival cutoff
 RESOLVED_STATUSES: Final[frozenset] = frozenset({"Canceled", "CheckedOut", "InHouse", "NoShow"})
 
-# Final clean schema (order + dtype) — matches Data/reservations_clean.parquet.
+# Final clean schema (order + dtype)  matches Data/reservations_clean.parquet.
 _CLEAN_DTYPES: Final[dict] = {
     "status": "int8", "property_name": "object", "ratePlan_isSubjectToCityTax": "boolean",
     "unitGroup_name": "object", "channelCode": "string", "guaranteeType": "object",
@@ -406,10 +406,10 @@ def build_clean_reservations(raw: pd.DataFrame, *, write_roster: bool = False) -
 
     Validated to reproduce the clean cache's feature columns + target exactly. Feature
     engineering reuses src.scoring.build_features (the serving function), so there is ONE
-    definition — training and serving cannot drift.
+    definition  training and serving cannot drift.
 
     The ratePlan_category map is fit here (on the SAME arrival-window population the
-    notebook uses) and handed to build_features explicitly — so this runs WITHOUT a
+    notebook uses) and handed to build_features explicitly  so this runs WITHOUT a
     pre-existing feature_roster.json. If `write_roster` is True (or no roster exists yet),
     it also (re)writes Data/feature_roster.json, so a fresh deploy can self-heal instead
     of hard-failing on a missing roster (was: notebook-only artifact).
@@ -425,7 +425,7 @@ def build_clean_reservations(raw: pd.DataFrame, *, write_roster: bool = False) -
     cre0 = pd.to_datetime(df["created"], utc=True, errors="coerce")
     ct = pd.to_datetime(df.get("cancellationTime"), utc=True, errors="coerce")
 
-    # §2.6 arrival window — RUN_TIMESTAMP anchored on the data (reproducible), not wall-clock.
+    # §2.6 arrival window  RUN_TIMESTAMP anchored on the data (reproducible), not wall-clock.
     cutoff = cre0.max().normalize() - pd.Timedelta(days=GRACE_DAYS)
     # §4.2 negative-lead clip: created := arrival (booking can't be made after arrival).
     neg = (cre0 > arr).fillna(False)
@@ -447,7 +447,7 @@ def build_clean_reservations(raw: pd.DataFrame, *, write_roster: bool = False) -
     )
     d = df[keep].copy()
 
-    # ratePlan_category map — fit on the SAME arrival-window population the notebook uses
+    # ratePlan_category map  fit on the SAME arrival-window population the notebook uses
     # ([ARRIVAL_FLOOR, cutoff)), so the rare-bucket collapse reproduces the committed map.
     window_mask = (arr >= ARRIVAL_FLOOR) & (arr < cutoff)
     rp_map = build_rateplan_category_map(df[window_mask])
@@ -456,7 +456,7 @@ def build_clean_reservations(raw: pd.DataFrame, *, write_roster: bool = False) -
     cdba = pd.to_numeric(d["cancel_days_before_arrival"], errors="coerce")
     is_cba = (d["status"].eq("Canceled") & cdba.ge(0)).astype("int8")
 
-    feat = build_features(d, rateplan_category_map=rp_map)   # §3.0 features — shared with serving
+    feat = build_features(d, rateplan_category_map=rp_map)   # §3.0 features  shared with serving
     feat = wf.add_outcome_known_date(feat)    # §7 split metadata
     feat["cancel_days_before_arrival"] = d["cancel_days_before_arrival"].to_numpy()
     feat["is_canceled_by_arrival"] = is_cba.to_numpy()
@@ -543,7 +543,7 @@ def clean_dtypes(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _reservations_query(client, *, limit: int | None = None):
-    """(sql, n_pii) for THE full-history reservations pull — PII excluded in SQL.
+    """(sql, n_pii) for THE full-history reservations pull  PII excluded in SQL.
     Used for the history views + retraining. Scoring the upcoming window uses the
     windowed variant below (_reservations_window_query).
     """
@@ -588,7 +588,7 @@ def _reservations_window_query(client, *, days: int = 14):
 
 def _query_bigquery_window(days: int = 14) -> pd.DataFrame:
     """Run the forward-windowed reservations query (next `days` days of arrivals).
-    Fails LOUDLY: no cache fallback — the caller explicitly wants FRESH upcoming data.
+    Fails LOUDLY: no cache fallback  the caller explicitly wants FRESH upcoming data.
     BigQuery imports lazily so the module works without the package installed."""
     try:
         from google.cloud import bigquery  # type: ignore[import-untyped]  # noqa: F401
@@ -626,7 +626,7 @@ def _query_bigquery_window(days: int = 14) -> pd.DataFrame:
 
 def _query_bigquery(limit: int | None = None) -> pd.DataFrame:
     """Run the full-history reservations query. Fails LOUDLY: no cache fallback
-    here — callers that want the cache read it explicitly via load_reservations.
+    here  callers that want the cache read it explicitly via load_reservations.
     BigQuery imports lazily so the module works without the package installed."""
     try:
         from google.cloud import bigquery  # type: ignore[import-untyped]  # noqa: F401
@@ -686,7 +686,7 @@ def _validate_schema(df: pd.DataFrame) -> None:
 
 
 # =============================================================================
-# Property performance (occupancy / daily operations) — second BigQuery table
+# Property performance (occupancy / daily operations)  second BigQuery table
 # =============================================================================
 # `reporting.property_performance_daily` holds one row per property per business
 # day. Live schema (confirmed 2026-07-02):
@@ -703,7 +703,7 @@ def _validate_schema(df: pd.DataFrame) -> None:
 PROPERTY_PERF_TABLE: Final[str] = "property_performance_daily"
 PROPERTY_PERF_CACHE: Final[str] = "property_performance_daily.parquet"
 
-# Allow-list — the ONLY columns we select from the table (operational + ADR).
+# Allow-list  the ONLY columns we select from the table (operational + ADR).
 PROP_PERF_COLUMNS: Final[tuple[str, ...]] = (
     "businessDay",
     "houseCount",
@@ -719,7 +719,7 @@ PROP_PERF_COLUMNS: Final[tuple[str, ...]] = (
 )
 # Remaining revenue columns present in the table but DELIBERATELY excluded
 # (documentation only; never referenced by the query). Keep in sync with the live
-# schema above. NOTE: netAdr_amount is intentionally NOT here — see above.
+# schema above. NOTE: netAdr_amount is intentionally NOT here  see above.
 PROP_PERF_REVENUE_EXCLUDED: Final[tuple[str, ...]] = (
     "netUnitRevenue_amount",
     "netAccommodationRevenue_amount",
@@ -824,7 +824,7 @@ def _query_property_performance(limit: int | None = None) -> pd.DataFrame:
 
 
 def property_universe(force_refresh: bool = False) -> pd.DataFrame:
-    """Location universe from the performance table — replaces configs/locations.yaml.
+    """Location universe from the performance table  replaces configs/locations.yaml.
 
     Returns one row per propertyId with `units` = the most recent houseCount
     (the property's bookable unit count). New properties appear automatically.
@@ -833,7 +833,7 @@ def property_universe(force_refresh: bool = False) -> pd.DataFrame:
     """
     try:
         perf = load_property_performance(force_refresh=force_refresh, quiet=True)
-    except Exception as e:  # noqa: BLE001 — no creds / no table / offline
+    except Exception as e:  # noqa: BLE001  no creds / no table / offline
         logger.warning(
             f"property_universe: performance table unavailable ({e}); empty universe"
         )
@@ -856,7 +856,7 @@ def property_universe(force_refresh: bool = False) -> pd.DataFrame:
 def average_room_rate_by_property(
     force_refresh: bool = False, lookback_days: int | None = 90
 ) -> dict[str, float]:
-    """Mean ADR (`netAdr_amount`) per propertyId — used to PRE-FILL the empty-room
+    """Mean ADR (`netAdr_amount`) per propertyId  used to PRE-FILL the empty-room
     cost in the Occupancy dashboard.
 
     `lookback_days` restricts the average to the most recent N business days per

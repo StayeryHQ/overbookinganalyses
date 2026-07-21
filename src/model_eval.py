@@ -5,11 +5,11 @@
 # Why this module exists
 # ----------------------
 # The page must compare each model to the naive historical-average baseline on the
-# SAME estimand — P(cancel by arrival), scored at the decision horizon d = min(lead, H) —
+# SAME estimand  P(cancel by arrival), scored at the decision horizon d = min(lead, H) 
 # and break the result down per location. The four models emit different things natively
 # (static classifiers -> predict_proba; hazard -> survival product), but src.scoring /
 # src.hazard already collapse both to that one scalar. This module runs the decision-time
-# walk-forward (src.walkforward.make_folds — the SINGLE eval regime for every model) once
+# walk-forward (src.walkforward.make_folds  the SINGLE eval regime for every model) once
 # per model, refitting LEAK-FREE per fold with the FROZEN card hyperparameters (calibrated),
 # and pools the out-of-time predictions into ONE artifact per model:
 #
@@ -23,15 +23,15 @@
 # base_global / base_property are the LEAK-FREE naive baseline: each test booking's
 # baseline "prediction" is the TRAIN base rate of its fold (overall, and for its own
 # property). The historical-average baseline is a CONSTANT predictor, so it is only
-# meaningful for calibration / Brier / log-loss / cost — NEVER for ROC-AUC (0.5 by
+# meaningful for calibration / Brier / log-loss / cost  NEVER for ROC-AUC (0.5 by
 # construction). The page enforces that distinction (baseline shown at 4.2/4.3/4.9, not 4.1).
 #
 # DRY note: modeling logic is NOT duplicated here. The fold loop reuses the exact tested
-# building blocks — training.build_pipeline / _card_hp / _family_feature_lists and
-# hazard.fit_hazard / survival_cancel_proba — mirroring training.bakeoff_walk_forward.
+# building blocks  training.build_pipeline / _card_hp / _family_feature_lists and
+# hazard.fit_hazard / survival_cancel_proba  mirroring training.bakeoff_walk_forward.
 #
 # Compute: one artifact per model, cached. Static models are cheap; the HAZARD refit
-# (person-period RandomizedSearch per fold) is the slow one — pre-warm it offline
+# (person-period RandomizedSearch per fold) is the slow one  pre-warm it offline
 # (`python main.py eval --model hazard`) so the running app only ever READS the parquet.
 # ---------------------------------------------------------------------------
 
@@ -85,7 +85,7 @@ def eval_available(model_name: str) -> bool:
 
 
 # =============================================================================
-# Leak-free naive baseline (pure — unit-testable without sklearn)
+# Leak-free naive baseline (pure  unit-testable without sklearn)
 # =============================================================================
 def property_baseline(y_train, prop_train, prop_test,
                       *, min_n: int = BASELINE_MIN_N) -> tuple[float, np.ndarray]:
@@ -94,7 +94,7 @@ def property_baseline(y_train, prop_train, prop_test,
     The per-property rate is the TRAIN cancel rate for that property; properties with
     fewer than `min_n` train bookings (or unseen at train time) fall back to the global
     train rate. Everything is derived from TRAIN only, so it is leak-free by construction.
-    Pure numpy/pandas — testable without the model stack.
+    Pure numpy/pandas  testable without the model stack.
     """
     y = np.asarray(y_train, dtype=float)
     global_rate = float(y.mean()) if y.size else float("nan")
@@ -136,7 +136,7 @@ def _decision_horizon(rows: pd.DataFrame, horizon_days: int) -> np.ndarray:
 
 
 def _hazard_hp() -> dict | None:
-    """Frozen hazard hyperparameters — delegates to hazard.card_hp() (the SINGLE source),
+    """Frozen hazard hyperparameters  delegates to hazard.card_hp() (the SINGLE source),
     so the Model-Performance page and the notebook bake-offs fit the hazard identically.
     None (=> full search) if no card exists yet."""
     from . import hazard as hz
@@ -198,7 +198,7 @@ def _predict_one_model(model_name: str, *, n_folds: int, horizon_days: int,
         if is_hazard:
             hzm = hz.fit_hazard(df.iloc[f.train_idx], seed=seed, fixed_hp=_hazard_hp())
             p_te, d_te = _hazard_score(hz, hzm, te, horizon_days)
-            # Train-metric (diagnostic only) on a SAMPLE — scoring all train via the survival
+            # Train-metric (diagnostic only) on a SAMPLE  scoring all train via the survival
             # product is costly and the overfitting gap doesn't need the full set.
             tr_rows = df.iloc[f.train_idx]
             if len(tr_rows) > TRAIN_METRIC_SAMPLE:

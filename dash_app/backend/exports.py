@@ -1,15 +1,15 @@
 # dash_app/backend/exports.py
 # Excel export for the Occupancy & Predictions page. Two sheets, both read-only from the
 # local caches (no BigQuery, no re-scoring):
-#   1) "Predictions (shown)"  — exactly the bookings currently shown in the page table
+#   1) "Predictions (shown)"   exactly the bookings currently shown in the page table
 #      (same rows as panels.booking_row_data, honouring the property filter + heatmap cell).
-#   2) "Backtest"             — the served model's leak-free walk-forward predictions vs the
+#   2) "Backtest"              the served model's leak-free walk-forward predictions vs the
 #      REAL outcome (model_performance eval artifact), so predictions can be reconciled
 #      against what actually happened. Falls back to a short note sheet if that artifact
 #      has not been built yet (Model Performance → Rebuild evaluation / `python main.py eval`).
 #
 # openpyxl is a project dependency (see pyproject); the workbook is streamed straight into
-# the buffer dcc.Download hands us — nothing is written to disk.
+# the buffer dcc.Download hands us  nothing is written to disk.
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ import pandas as pd
 from dash_app.backend import data_access as da
 from dash_app.backend import model_performance as mp
 
-# Friendly headers for the "shown" sheet — mirror the on-screen table columns.
+# Friendly headers for the "shown" sheet  mirror the on-screen table columns.
 _SHOWN_RENAME = {
     "id": "Booking", "property_name": "Property", "arrival": "Arrival",
     "los_nights": "LoS (nights)", "channelCode": "Channel",

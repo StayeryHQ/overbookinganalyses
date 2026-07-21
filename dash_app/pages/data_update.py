@@ -66,7 +66,7 @@ _HP_HELP = {
     "learning_rate_init": "Initial learning rate.",
 }
 _METRIC_HELP = {
-    "auc": "ROC-AUC on the leak-free walk-forward — ranking quality (0.5 = coin flip, 1 = perfect).",
+    "auc": "ROC-AUC on the leak-free walk-forward  ranking quality (0.5 = coin flip, 1 = perfect).",
     "ap": "Average precision (area under precision–recall). At a ~20% cancel base rate, "
           "values well below 1 are normal.",
     "brier": "Mean squared error of the predicted probabilities. Lower = better calibrated.",
@@ -74,7 +74,7 @@ _METRIC_HELP = {
     "val_ap_person_period": "Average precision for the HAZARD model, computed on person-period "
         "rows (one row per booking per day-until-arrival). On any single day a booking cancels "
         "on only a few of its many days, so the base rate per row is tiny and AP here is "
-        "naturally small (≈0.05–0.10). Don't read it as 'bad' — judge the hazard model by its "
+        "naturally small (≈0.05–0.10). Don't read it as 'bad'  judge the hazard model by its "
         "calibration and the aggregate per-night cancellation forecast, not this number alone.",
 }
 
@@ -82,7 +82,7 @@ _METRIC_HELP = {
 def _train_rows_panel(rows: list[dict]):
     """Bar list of bookings-per-property in the cleaned training set (a quick comparison)."""
     if not rows:
-        return dmc.Text("No cleaned training data yet — build it on the Cancellation "
+        return dmc.Text("No cleaned training data yet  build it on the Cancellation "
                         "History page.", size="sm", c="dimmed")
     mx = max((r["rows"] for r in rows), default=1) or 1
     items = []
@@ -212,7 +212,7 @@ def layout(**_kwargs):
 
     trainrows_card = dmc.Card([
         dmc.Group([dmc.Text("Training set by location", fw=600, size="sm"),
-                   ui.info_icon("Bookings per location in the cleaned training set — a quick "
+                   ui.info_icon("Bookings per location in the cleaned training set  a quick "
                                 "comparison of how much history each location contributes. "
                                 "Rebuild it on the Cancellation History page.")], gap=6),
         dmc.Space(h=8),
@@ -227,7 +227,7 @@ def layout(**_kwargs):
                                 "cancelled once started; it runs to completion (or error) and "
                                 "survives page changes.")], gap=6),
         dmc.Text("Default keeps the frozen hyperparameters; re-estimating searches them "
-                 "again (slower). Trains on the cleaned history — rebuild that on the "
+                 "again (slower). Trains on the cleaned history  rebuild that on the "
                  "Cancellation History page first if you need fresh data.",
                  size="xs", c="dimmed"),
         dmc.Group([
@@ -308,7 +308,7 @@ def _confirm_retrain(_n, model, retune):
                  size="sm"),
         dmc.Text(f"Mode: {mode}. Last retrained: {st.get('retrained_at') or 'never'}.",
                  size="sm", c="dimmed"),
-        dmc.Text("You can cancel it — it stops at the next stage and the previous model "
+        dmc.Text("You can cancel it  it stops at the next stage and the previous model "
                  "stays in place (a fit already running finishes that step first). "
                  "It also survives page changes.", size="xs", c="dimmed"),
     ], gap=6)
@@ -373,7 +373,7 @@ def _poll(_n, _kick, seen, info_v):
         return r1, p1, r2, p2, msg, wrap, no_update, _err_alert(st.get("error", "unknown error")), False, new_info, seen
     if status == "cancelled":
         return (r1, p1, r2, p2, msg, wrap, no_update,
-                dmc.Alert("Retrain cancelled — the previous model is still in place.",
+                dmc.Alert("Retrain cancelled  the previous model is still in place.",
                           color="gray", variant="light", icon=html.I(className="bi bi-x-circle")),
                 False, new_info, seen)
     if status == "done":

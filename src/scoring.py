@@ -124,7 +124,7 @@ def load_model_card(name: str) -> dict:
 # ---- Model selection: AP primary, calibration (Brier) gate ----------------
 # One rule for "which static model is the fallback": rank by walk-forward AP
 # (the right metric at ~20% prevalence), but only among models whose Brier is
-# within `brier_tol` of the best — a sharp but miscalibrated ranker must never
+# within `brier_tol` of the best  a sharp but miscalibrated ranker must never
 # feed the overbooking decision. Reads the walk-forward block of the model card
 # (the cards written by retrain() no longer carry `test_metrics`).
 BRIER_TOL: Final[float] = 0.005
@@ -145,21 +145,21 @@ def _card_walkforward(name: str) -> dict:
 def best_model(brier_tol: float = BRIER_TOL) -> str:
     """Best available STATIC model: highest walk-forward AP among those whose
     Brier is within `brier_tol` of the best. The hazard model is excluded on
-    purpose — it is the default scorer and is judged on its own estimand."""
+    purpose  it is the default scorer and is judged on its own estimand."""
     avail = [n for n in list_available_models() if n in _models_of_kind("static")]
     if not avail:
-        raise RuntimeError("no static model on disk — need 02_xgboost_model.joblib.")
+        raise RuntimeError("no static model on disk  need 02_xgboost_model.joblib.")
     cards = {}
     for name in avail:
         try:
             m = _card_walkforward(name)
-        except Exception:  # noqa: BLE001 — no card yet
+        except Exception:  # noqa: BLE001  no card yet
             continue
         if m.get("ap") is not None:
             cards[name] = m
     if not cards:
         raise RuntimeError(
-            "no static model card carries walk-forward metrics — retrain first "
+            "no static model card carries walk-forward metrics  retrain first "
             "(python main.py retrain --model xgboost)."
         )
     briers = [m["brier"] for m in cards.values() if m.get("brier") is not None]
@@ -173,7 +173,7 @@ def best_model(brier_tol: float = BRIER_TOL) -> str:
 
 
 # =============================================================================
-# Cost-based operating point (shared definition — notebooks, scoring, app)
+# Cost-based operating point (shared definition  notebooks, scoring, app)
 # =============================================================================
 def cost_threshold_from_scores(y_true, y_prob,
                                c_walk: float = COST_WALK,
@@ -287,7 +287,7 @@ def operating_threshold(name: str, c_walk: float = COST_WALK,
 # =============================================================================
 # Feature engineering (serving side)
 # =============================================================================
-# Feature LISTS always come from Data/feature_roster.json (written by 00 §11) —
+# Feature LISTS always come from Data/feature_roster.json (written by 00 §11) 
 # a hardcoded copy here is exactly the drift that once broke scoring. Loading is
 # lazy so `import src` works before the artifact exists.
 
@@ -344,13 +344,13 @@ def build_features(df: pd.DataFrame, today: pd.Timestamp | None = None,
         The STATIC features do not depend on `today`.
 
     Returns a NEW dataframe with all static + dynamic feature columns added;
-    does not mutate. Drops nothing — the caller decides whether to drop NaNs.
+    does not mutate. Drops nothing  the caller decides whether to drop NaNs.
     """
     out = df.copy()
 
-    # ---- Channel merge (mirror 00 §3.0.a) — fold `source` into ChannelManager rows,
+    # ---- Channel merge (mirror 00 §3.0.a)  fold `source` into ChannelManager rows,
     # then apply the OTA renames. Serving MUST match training here: otherwise a live
-    # booking arrives as "ChannelManager" (a category the model never saw — training
+    # booking arrives as "ChannelManager" (a category the model never saw  training
     # remapped it to e.g. "Airbnb") and its channel signal is silently dropped.
     if "channelCode" in out.columns:
         chan = out["channelCode"].astype("string")
@@ -368,7 +368,7 @@ def build_features(df: pd.DataFrame, today: pd.Timestamp | None = None,
         today = pd.Timestamp.now("UTC").normalize()
 
     # ---- Static features (mirror notebook 00 §3.0) -------------------------
-    # lead_time_days is the FRACTIONAL day gap (00 §3.0.b), clipped at 0 — NOT rounded
+    # lead_time_days is the FRACTIONAL day gap (00 §3.0.b), clipped at 0  NOT rounded
     # to whole days. Training and serving must use the identical formula, or the model
     # sees systematically different lead values than it learnt on.
     out["lead_time_days"]     = ((arrival - created)
@@ -399,14 +399,14 @@ def build_features(df: pd.DataFrame, today: pd.Timestamp | None = None,
     cf = pd.to_numeric(out.get("cancellationFee_fee_amount"), errors="coerce")
     out["diff_gross_cancellation_fee"] = gross - cf
 
-    # Log twins (LINEAR family) — mirror 00 §3.0.i so the linear model is scoreable
+    # Log twins (LINEAR family)  mirror 00 §3.0.i so the linear model is scoreable
     # on upcoming bookings (trees use the raw columns; the roster picks per family).
     for _b, _l in [("los_nights", "los_nights_log"), ("lead_time_days", "lead_time_days_log"),
                    ("gross_per_night", "gross_per_night_log"),
                    ("diff_gross_cancellation_fee", "diff_gross_cancellation_fee_log")]:
         out[_l] = np.log1p(pd.to_numeric(out[_b], errors="coerce").clip(lower=0))
 
-    # has_children — mirrors 00 §3.0.g (roster feature).
+    # has_children  mirrors 00 §3.0.g (roster feature).
     out["has_children"] = (
         (pd.to_numeric(out.get("children"), errors="coerce").fillna(0) > 0)
         | (_to_str_nz(out.get("childrenAges"), out.index).str.len() > 0)
@@ -427,7 +427,7 @@ def build_features(df: pd.DataFrame, today: pd.Timestamp | None = None,
     # NOTE: property_name / channelCode / guaranteeType / unitGroup_name /
     # cancellationFee_name are raw pass-through columns and need no engineering.
 
-    # ---- Dynamic features — POINT-IN-TIME relative to `today` --------------
+    # ---- Dynamic features  POINT-IN-TIME relative to `today` --------------
     # Live = wall-clock now; replay/eval/training MUST pass the simulated date S
     # (else these leak). Consumed by the hazard model's day-axis at serving; NOT in
     # the static roster by default (see roster `dynamic_numeric`).
@@ -444,7 +444,7 @@ def build_features(df: pd.DataFrame, today: pd.Timestamp | None = None,
 
 def apply_scoring_bounds(df: pd.DataFrame) -> pd.DataFrame:
     """Light cleaning at scoring time: drop rows where essential features are
-    impossible to compute. Crucially does NOT filter on `status` — at scoring
+    impossible to compute. Crucially does NOT filter on `status`  at scoring
     time most upcoming bookings are 'Confirmed' and that's the whole point.
     """
     keep = (
@@ -467,14 +467,14 @@ def bucketize(prob: float | np.ndarray,
               threshold: float,
               high_cut: float | None = None) -> np.ndarray | str:
     """Map probability -> 'low' / 'medium' / 'high' using THE one cost-based rule
-    (the same rule behind the UI's Low/Medium/High label — src.utils.risk_label_cost):
+    (the same rule behind the UI's Low/Medium/High label  src.utils.risk_label_cost):
         p <  threshold          -> low
         threshold <= p < high_cut -> medium
         p >= high_cut           -> high
     `threshold` is the cost-optimal decision threshold; `high_cut` defaults to the
     fixed High cutoff (src.utils.HIGH_RISK_CUTOFF = 0.85).
 
-    Scalars return a str, arrays a plain numpy array — deliberately NOT an
+    Scalars return a str, arrays a plain numpy array  deliberately NOT an
     indexed Series: assigning a fresh-index Series to a filtered frame once
     silently produced all-<NA> buckets.
     """
@@ -510,10 +510,10 @@ def resolve_model(model_name: str | None = None) -> str:
     if DEFAULT_MODEL in avail:
         return DEFAULT_MODEL
     if FALLBACK_MODEL in avail:
-        logger.warning("hazard artifact missing — falling back to '%s'.", FALLBACK_MODEL)
+        logger.warning("hazard artifact missing  falling back to '%s'.", FALLBACK_MODEL)
         return FALLBACK_MODEL
     raise RuntimeError(
-        "no scoring model available — need 08_hazard_model.joblib (standard) or "
+        "no scoring model available  need 08_hazard_model.joblib (standard) or "
         "02_xgboost_model.joblib (fallback) in the Data folder."
     )
 
@@ -547,7 +547,7 @@ def cancel_proba(model_name: str, feat: pd.DataFrame) -> np.ndarray:
 
     # Static sklearn pipeline (xgboost in the MVP). The pipeline's ColumnTransformer
     # selects the columns it was trained on by name, so passing the roster superset
-    # (numeric incl. log twins) is safe — the extras are dropped by the transformer.
+    # (numeric incl. log twins) is safe  the extras are dropped by the transformer.
     pipeline = load_model(model_name)
     num, cat = model_feature_lists()           # from the roster (single source of truth)
     needed = num + cat
@@ -566,7 +566,7 @@ def _apply_recalibration(name: str, p: np.ndarray) -> np.ndarray:
 
     The pipeline is isotonic-calibrated on the RESOLVED population (base ~20%),
     but consumed on the DECISION-TIME population ("still open at the decision
-    date", base ~12%) — survivorship selection makes it overpredict there ~2x.
+    date", base ~12%)  survivorship selection makes it overpredict there ~2x.
     training.retrain() fits a second isotonic map on the pooled decision-time
     walk-forward predictions (Data/NN_<name>_calibration.joblib); applying it
     here puts the served probabilities on the population they are used for.
@@ -579,7 +579,7 @@ def _apply_recalibration(name: str, p: np.ndarray) -> np.ndarray:
     try:
         iso = joblib.load(path)
         return np.asarray(iso.predict(p), dtype=float)
-    except Exception as e:  # noqa: BLE001 — a broken map must not break scoring
+    except Exception as e:  # noqa: BLE001  a broken map must not break scoring
         logger.warning("recalibration map for %s unreadable (%s); serving raw probs", name, e)
         return p
 
@@ -602,10 +602,10 @@ def score_reservations(
     apply_bounds: bool = True,
     save_as: str | None = None,
 ) -> pd.DataFrame:
-    """Score an arbitrary set of (raw, PII-stripped) reservations — THE entry point.
+    """Score an arbitrary set of (raw, PII-stripped) reservations  THE entry point.
 
     Builds features, optionally applies the light scoring bounds, then scores via
-    `cancel_proba` (hazard by default, xgboost fallback — see resolve_model). Returns
+    `cancel_proba` (hazard by default, xgboost fallback  see resolve_model). Returns
     a NEW frame with the engineered features plus: cancel_proba, pred_cancel,
     cancel_threshold, risk_bucket, model_used, scored_at.
 
@@ -663,13 +663,13 @@ def score_upcoming(
     save: bool = True,
     threshold: float | None = None,
 ) -> pd.DataFrame:
-    """Score upcoming (future-arrival) bookings — thin wrapper over score_reservations.
+    """Score upcoming (future-arrival) bookings  thin wrapper over score_reservations.
 
     Loads the upcoming bookings from the reservations cache (force_refresh re-pulls
     BigQuery), scores them with the chosen model (hazard by default), and by default
     writes Data/scored_upcoming.parquet.
 
-    Already-CANCELLED bookings are excluded before scoring — a cancelled booking has
+    Already-CANCELLED bookings are excluded before scoring  a cancelled booking has
     no bearing on future occupancy or cancellation risk, so it must never enter the
     scored set (the app's data layer filters again defensively).
     """
@@ -687,7 +687,7 @@ def refresh_and_score(model_name: str | None = None, *, days: int = 14,
     """THE combined data update: one strict BigQuery pull per table, then score
     the next `days` days from the fresh data.
 
-    Replaces the old fast(window-query)/slow(full-refresh) split — the full pull
+    Replaces the old fast(window-query)/slow(full-refresh) split  the full pull
     already contains the upcoming bookings, so ONE query per table serves both
     the history views and the scoring. There is deliberately NO cache fallback:
     if BigQuery fails, this raises and the data is explicitly NOT fresh.
@@ -705,7 +705,7 @@ def refresh_and_score(model_name: str | None = None, *, days: int = 14,
     _p("BigQuery: pulling full reservations history…", 0.05)
     resv = load_reservations(force_refresh=True, quiet=True)
     if resv.empty:
-        raise RuntimeError("BigQuery returned 0 reservations — refusing to overwrite the cache.")
+        raise RuntimeError("BigQuery returned 0 reservations  refusing to overwrite the cache.")
 
     _p("BigQuery: pulling property performance…", 0.45)
     perf = load_property_performance(force_refresh=True, quiet=True)
