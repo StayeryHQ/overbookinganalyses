@@ -1,0 +1,1 @@
+{"status": "done", "progress": 1.0, "message": "done", "started": 1784643548.038506, "finished": 1784643659.747343, "result": {"clean_rows": 184392, "raw_rows": 221349, "base_rate": 0.1974, "span_start": "2022-08-01", "span_end": "2026-07-18", "elapsed_s": 111.6, "finished": "Jul 21, 2026, 16:20 CEST"}, "error": null}
