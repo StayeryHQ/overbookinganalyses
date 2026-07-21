@@ -1,21 +1,21 @@
 # dash_app/backend/cancellation_history.py
 # Read-only aggregators for Page 3 (Cancellation History). EVERYTHING here reads the
-# cleaned reservations cache (Data/reservations_clean.parquet) — the same file the
-# models train on — via src.load_clean_reservations(). No live BigQuery, ever.
+# cleaned reservations cache (Data/reservations_clean.parquet)  the same file the
+# models train on  via src.load_clean_reservations(). No live BigQuery, ever.
 #
 # CORRECTNESS NOTE (differs from the Occupancy page):
 #   On this HISTORICAL page a cancellation is the thing we MEASURE, so cancelled
 #   bookings are the NUMERATOR and must NOT be dropped. `status` in the clean cache is
-#   the encoded target — 1 = cancel-before-arrival (positive class), 0 = stayed
+#   the encoded target  1 = cancel-before-arrival (positive class), 0 = stayed
 #   (CheckedOut/NoShow/InHouse that did not cancel before arrival). Base rate ≈ 0.198.
 #   (The Occupancy page excludes cancelled bookings because it is forward-looking; that
 #   rule is deliberately NOT applied here.)
 #
 # Every public function accepts an optional `properties` filter (None/empty => all 11
 # locations) so a single global filter drives every chart on the page. Functions return
-# small, already-aggregated frames (server-side aggregation — never ship raw rows to the
+# small, already-aggregated frames (server-side aggregation  never ship raw rows to the
 # client). Rates computed over too few bookings are masked to NaN (min-sample guards
-# below) rather than drawn as confident signal — matches the experiment notebooks.
+# below) rather than drawn as confident signal  matches the experiment notebooks.
 
 from __future__ import annotations
 
@@ -41,6 +41,7 @@ MIN_N_MONTH = 50        # monthly line points (matches experiments/cancellation_
 MIN_N_CELL = 30         # property × month heatmap cells
 MIN_N_CHANNEL = 200     # channel-deviation bars
 MIN_N_KPI = 100         # "highest-rate location" KPI guard
+MIN_N_DAILY = 50        # per-day lead / per-night stay points (daily-granularity charts)
 
 
 # ---- Loading / preparation -------------------------------------------------
@@ -51,7 +52,7 @@ def _load_clean_df() -> pd.DataFrame:
     try:
         from src import load_clean_reservations
         return load_clean_reservations()
-    except Exception:  # noqa: BLE001 — heavy src deps may be unavailable; use the file.
+    except Exception:  # noqa: BLE001  heavy src deps may be unavailable; use the file.
         p = Path(__file__).resolve().parents[2] / "Data" / "reservations_clean.parquet"
         return pd.read_parquet(p) if p.exists() else pd.DataFrame()
 
@@ -77,12 +78,23 @@ def _clean() -> pd.DataFrame:
     return _prepare(_load_clean_df())
 
 
-def _filtered(properties: list[str] | None) -> pd.DataFrame:
-    """Clean frame limited to the selected properties (None/empty => all)."""
+def _filtered(properties: list[str] | None,
+              window_months: int | None = None) -> pd.DataFrame:
+    """Clean frame limited to the selected properties (None/empty => all) and,
+    optionally, to the last `window_months` months of arrivals (None => full history).
+    This is the single choke point the page's global location + time-window filters both
+    flow through, so every chart stays consistent. The window is anchored on the newest
+    month in the FULL cache, so it means the same span regardless of the location selection."""
     df = _clean()
-    if df.empty or not properties:
+    if df.empty:
         return df
-    return df[df["property_name"].isin(properties)]
+    if properties:
+        df = df[df["property_name"].isin(properties)]
+    if window_months:
+        last = _clean()["month"].max()
+        start = (last.to_period("M") - (int(window_months) - 1)).to_timestamp()
+        df = df[df["month"] >= start]
+    return df
 
 
 @lru_cache(maxsize=1)
@@ -98,6 +110,14 @@ def property_list() -> list[str]:
 def base_rate() -> float | None:
     """Global cancel rate across ALL locations (the fixed reference line)."""
     df = _clean()
+    return float(df[TARGET].mean()) if not df.empty else None
+
+
+def selection_rate(properties: list[str] | None = None,
+                   window_months: int | None = None) -> float | None:
+    """Overall cancel rate for the current selection (the dashed reference on the
+    breakdown charts). Cheaper than kpis() when only this one number is needed."""
+    df = _filtered(properties, window_months)
     return float(df[TARGET].mean()) if not df.empty else None
 
 
@@ -129,9 +149,9 @@ def _monthly(df: pd.DataFrame, per_property: bool = False) -> pd.DataFrame:
     return g.sort_values(keys).reset_index(drop=True)
 
 
-def monthly_rate(properties: list[str] | None = None,
-                 per_property: bool = False) -> pd.DataFrame:
-    return _monthly(_filtered(properties), per_property)
+def monthly_rate(properties: list[str] | None = None, per_property: bool = False,
+                 window_months: int | None = None) -> pd.DataFrame:
+    return _monthly(_filtered(properties, window_months), per_property)
 
 
 # ---- 2) Property × month heatmap matrix ------------------------------------
@@ -150,16 +170,18 @@ def _property_month(df: pd.DataFrame, months_back: int = 12,
     return g.sort_values(["property_name", "month"]).reset_index(drop=True)
 
 
-def property_month_matrix(properties: list[str] | None = None,
-                          months_back: int = 12) -> pd.DataFrame:
-    return _property_month(_filtered(properties), months_back)
+def property_month_matrix(properties: list[str] | None = None, months_back: int = 12,
+                          window_months: int | None = None) -> pd.DataFrame:
+    # `months_back` = how many months the heatmap DISPLAYS; `window_months` = the page's
+    # global time filter applied first. The heatmap shows whichever is the tighter span.
+    return _property_month(_filtered(properties, window_months), months_back)
 
 
 def flag_anomalies(properties: list[str] | None = None, months_back: int = 12,
-                   factor: float = 1.5) -> pd.DataFrame:
+                   factor: float = 1.5, window_months: int | None = None) -> pd.DataFrame:
     """Property-months whose cancel rate exceeds the global base rate by >= `factor`×
     (and clears the min-sample guard). Drives the 'unusually high' warnings/badges."""
-    g = property_month_matrix(properties, months_back).dropna(subset=["cancel_rate"])
+    g = property_month_matrix(properties, months_back, window_months).dropna(subset=["cancel_rate"])
     base = _clean()[TARGET].mean() if not _clean().empty else np.nan
     if g.empty or not np.isfinite(base):
         return g.assign(base_rate=base).iloc[0:0]
@@ -184,8 +206,9 @@ def _channel_dev(df: pd.DataFrame, min_n: int = MIN_N_CHANNEL) -> tuple[pd.DataF
     return g.sort_values("deviation").reset_index(drop=True), base
 
 
-def channel_deviation(properties: list[str] | None = None) -> tuple[pd.DataFrame, float]:
-    return _channel_dev(_filtered(properties))
+def channel_deviation(properties: list[str] | None = None,
+                      window_months: int | None = None) -> tuple[pd.DataFrame, float]:
+    return _channel_dev(_filtered(properties, window_months))
 
 
 # ---- 4a) Stay-segment (length of stay) rate --------------------------------
@@ -199,8 +222,9 @@ def _stay_segment(df: pd.DataFrame) -> pd.DataFrame:
     return g.sort_values("order").drop(columns="order").reset_index(drop=True)
 
 
-def stay_segment_rate(properties: list[str] | None = None) -> pd.DataFrame:
-    return _stay_segment(_filtered(properties))
+def stay_segment_rate(properties: list[str] | None = None,
+                      window_months: int | None = None) -> pd.DataFrame:
+    return _stay_segment(_filtered(properties, window_months))
 
 
 # ---- 4b) Lead-time bucket rate ---------------------------------------------
@@ -217,8 +241,70 @@ def _leadtime(df: pd.DataFrame) -> pd.DataFrame:
     return g.sort_values("bucket").reset_index(drop=True)
 
 
-def leadtime_bucket_rate(properties: list[str] | None = None) -> pd.DataFrame:
-    return _leadtime(_filtered(properties))
+def leadtime_bucket_rate(properties: list[str] | None = None,
+                         window_months: int | None = None) -> pd.DataFrame:
+    return _leadtime(_filtered(properties, window_months))
+
+
+# ---- 4c) Length-of-stay per NIGHT (daily granularity, coloured by segment) --
+def _stay_segment_of(night: int) -> str:
+    """Which short/mid/long bucket a night count belongs to (colour only)."""
+    return "short" if night <= 2 else "mid" if night <= 6 else "long"
+
+
+def _stay_daily(df: pd.DataFrame, max_night: int = 14,
+                min_n: int = MIN_N_DAILY) -> pd.DataFrame:
+    """[night, label, segment, n, cancel_rate]  one row per exact stay length in nights.
+    Stays of >= max_night nights are pooled into a single 'max_night+' bin (individually
+    too thin). `segment` is the short(1–2)/mid(3–6)/long(7+) bucket the length falls in,
+    used only to colour the bars. Rates over < min_n bookings are masked to NaN."""
+    cols = ["night", "label", "segment", "n", "cancel_rate"]
+    if df.empty or "los_nights" not in df.columns:
+        return pd.DataFrame(columns=cols)
+    los = pd.to_numeric(df["los_nights"], errors="coerce").astype("Int64")
+    night = los.clip(lower=1, upper=max_night)
+    tmp = pd.DataFrame({"night": night, TARGET: df[TARGET].to_numpy()}).dropna(subset=["night"])
+    g = (tmp.groupby("night")[TARGET].agg(["size", "mean"]).reset_index()
+           .rename(columns={"size": "n", "mean": "cancel_rate"}))
+    g["night"] = g["night"].astype(int)
+    g["cancel_rate"] = g["cancel_rate"].where(g["n"] >= min_n)
+    g["segment"] = g["night"].map(_stay_segment_of)
+    g["label"] = g["night"].map(lambda x: f"{x}+" if x >= max_night else str(x))
+    return g.sort_values("night").reset_index(drop=True)
+
+
+def stay_daily_rate(properties: list[str] | None = None, max_night: int = 14,
+                    window_months: int | None = None) -> pd.DataFrame:
+    return _stay_daily(_filtered(properties, window_months), max_night)
+
+
+# ---- 4d) Lead-time per DAY (daily granularity, optional length-of-stay split) --
+def _leadtime_daily(df: pd.DataFrame, by_stay: bool = False, max_day: int = 45,
+                    min_n: int = MIN_N_DAILY) -> pd.DataFrame:
+    """[lead_day(, stay_bucket), n, cancel_rate]  one row per whole lead-time day
+    0..max_day. `lead_time_days` is fractional, rounded to the nearest whole day; days
+    beyond max_day are dropped (the near term is the story  default 45 days). When
+    by_stay is set the rate is additionally split by the short/mid/long stay bucket
+    (three series). Points over < min_n bookings are masked to NaN."""
+    cols = ["lead_day"] + (["stay_bucket"] if by_stay else []) + ["n", "cancel_rate"]
+    if df.empty or "lead_time_days" not in df.columns:
+        return pd.DataFrame(columns=cols)
+    day = pd.to_numeric(df["lead_time_days"], errors="coerce").round()
+    tmp = pd.DataFrame({"lead_day": day, TARGET: df[TARGET].to_numpy()})
+    if by_stay:
+        tmp["stay_bucket"] = df["stay_bucket"].to_numpy()
+    tmp = tmp[(tmp["lead_day"] >= 0) & (tmp["lead_day"] <= max_day)].dropna(subset=["lead_day"])
+    keys = ["lead_day"] + (["stay_bucket"] if by_stay else [])
+    g = (tmp.groupby(keys)[TARGET].agg(["size", "mean"]).reset_index()
+           .rename(columns={"size": "n", "mean": "cancel_rate"}))
+    g["lead_day"] = g["lead_day"].astype(int)
+    g["cancel_rate"] = g["cancel_rate"].where(g["n"] >= min_n)
+    return g.sort_values(keys).reset_index(drop=True)
+
+
+def leadtime_daily_rate(properties: list[str] | None = None, by_stay: bool = False,
+                        max_day: int = 45, window_months: int | None = None) -> pd.DataFrame:
+    return _leadtime_daily(_filtered(properties, window_months), by_stay, max_day)
 
 
 # ---- 5) Cancel-timing curve (WHEN do cancellations land?) ------------------
@@ -227,7 +313,7 @@ def _cancel_timing(df: pd.DataFrame, max_days: int = 90) -> tuple[pd.DataFrame, 
 
     Among cancelled bookings only, using the real `cancel_days_before_arrival` field:
     cum_share_within[d] = fraction of cancellations that occurred within d days before
-    arrival. Monotonic 0→1. Answers "how late can rooms still free up?" — e.g. the
+    arrival. Monotonic 0→1. Answers "how late can rooms still free up?"  e.g. the
     median cancellation lands ≈7 days out, so half of all freed rooms appear inside the
     final week. Cancellations further out than `max_days` collapse into the last point.
     """
@@ -244,9 +330,194 @@ def _cancel_timing(df: pd.DataFrame, max_days: int = 90) -> tuple[pd.DataFrame, 
     return pd.DataFrame({"days_before": grid, "cum_share_within": cum}), n
 
 
-def cancel_timing_curve(properties: list[str] | None = None,
-                        max_days: int = 90) -> tuple[pd.DataFrame, int]:
-    return _cancel_timing(_filtered(properties), max_days)
+def cancel_timing_curve(properties: list[str] | None = None, max_days: int = 90,
+                        window_months: int | None = None) -> tuple[pd.DataFrame, int]:
+    return _cancel_timing(_filtered(properties, window_months), max_days)
+
+
+# ---- 6) Lead × stay cancel-rate grid (the "blend" heatmap) ------------------
+def _leadtime_stay_grid(df: pd.DataFrame, min_n: int = MIN_N_CELL) -> pd.DataFrame:
+    """[stay_bucket, lead_bucket, n, cancel_rate]  cancel rate for every lead-bucket ×
+    stay-bucket cell. Cells over < min_n bookings are masked to NaN. Feeds the heatmap
+    that shows how lead time and length of stay COMBINE to drive cancellation."""
+    cols = ["stay_bucket", "lead_bucket", "n", "cancel_rate"]
+    if df.empty or "lead_time_days" not in df.columns or "stay_bucket" not in df.columns:
+        return pd.DataFrame(columns=cols)
+    lead = pd.to_numeric(df["lead_time_days"], errors="coerce")
+    lb = pd.cut(lead, bins=LEAD_BINS, labels=LEAD_LABELS)
+    tmp = pd.DataFrame({"stay_bucket": df["stay_bucket"].to_numpy(), "lead_bucket": lb,
+                        TARGET: df[TARGET].to_numpy()})
+    g = (tmp.groupby(["stay_bucket", "lead_bucket"], observed=True)[TARGET]
+           .agg(["size", "mean"]).reset_index()
+           .rename(columns={"size": "n", "mean": "cancel_rate"}))
+    g["cancel_rate"] = g["cancel_rate"].where(g["n"] >= min_n)
+    g["stay_bucket"] = pd.Categorical(g["stay_bucket"], categories=STAY_ORDER, ordered=True)
+    g["lead_bucket"] = pd.Categorical(g["lead_bucket"], categories=LEAD_LABELS, ordered=True)
+    return g.sort_values(["stay_bucket", "lead_bucket"]).reset_index(drop=True)
+
+
+def leadtime_stay_grid(properties: list[str] | None = None,
+                       window_months: int | None = None) -> pd.DataFrame:
+    return _leadtime_stay_grid(_filtered(properties, window_months))
+
+
+# ---- 7) Cancel-timing near-window heatmap (days-before × stay/lead) ---------
+CANCEL_TIMING_MAX_DAY = 14      # near-arrival window shown day-by-day; rest pools into 15+
+
+
+def _cancel_timing_grid(df: pd.DataFrame, dim: str = "stay",
+                        max_day: int = CANCEL_TIMING_MAX_DAY,
+                        min_bookings: int = 100) -> pd.DataFrame:
+    """[row, day, day_order, n_cancel, n_atrisk, rate]  near-arrival cancellation HAZARD.
+
+    For each whole day d before arrival (0 = arrival day … max_day):
+      n_cancel  = bookings in the segment that cancelled exactly d days before arrival
+      n_atrisk  = bookings in the segment that were STILL DUE TO ARRIVE at day d  i.e.
+                  booked at least d days ahead (lead ≥ d) AND not yet cancelled by then
+      rate      = n_cancel / n_atrisk
+
+    So `rate` answers "of the bookings still due to arrive d days out, what share cancel
+    that day"  a proper per-day cancel rate (a discrete hazard), NOT a share of all
+    bookings. That is why a row does not sum to the segment's overall cancel rate, and why
+    e.g. a 0–7 day lead bucket is simply empty past day 7 (those bookings never existed
+    that far out). Rows are stay segments (dim='stay') or lead buckets (dim='lead').
+    Segments with < min_bookings total bookings are dropped."""
+    cols = ["row", "day", "day_order", "n_cancel", "n_atrisk", "rate"]
+    if (df.empty or "cancel_days_before_arrival" not in df.columns
+            or "lead_time_days" not in df.columns):
+        return pd.DataFrame(columns=cols)
+    d = df.reset_index(drop=True)
+    if dim == "lead":
+        rowkey = pd.cut(pd.to_numeric(d["lead_time_days"], errors="coerce"),
+                        bins=LEAD_BINS, labels=LEAD_LABELS).astype("object")
+    else:
+        rowkey = d["stay_bucket"].astype("object").map(STAY_LABELS)
+    rowkey = pd.Series(rowkey, index=d.index)
+    lead = pd.to_numeric(d["lead_time_days"], errors="coerce").to_numpy()
+    status = pd.to_numeric(d[TARGET], errors="coerce").to_numpy()
+    cday = np.floor(pd.to_numeric(d["cancel_days_before_arrival"], errors="coerce").to_numpy())
+
+    out = []
+    for seg, idx in rowkey.groupby(rowkey).groups.items():
+        pos = np.asarray(idx)
+        Ls, sts, cds = lead[pos], status[pos], cday[pos]
+        if len(Ls) < min_bookings:
+            continue
+        arr_L = Ls[sts == 0]                       # arrived: survive to arrival
+        can_L, can_cd = Ls[sts == 1], cds[sts == 1]
+        for day in range(max_day + 1):
+            num = int(np.sum(can_cd == day))
+            # at-risk at day = arrivals still ahead (lead ≥ day) + cancellations that are
+            # still active at day (booked ≥ day ahead and cancel at day or closer to arrival)
+            den = int(np.sum(arr_L >= day) + np.sum((can_cd <= day) & (can_L >= day)))
+            out.append((str(seg), str(day), day, num, den,
+                        (num / den) if den > 0 else np.nan))
+    if not out:
+        return pd.DataFrame(columns=cols)
+    return pd.DataFrame(out, columns=cols)
+
+
+def cancel_timing_grid(properties: list[str] | None = None, dim: str = "stay",
+                       window_months: int | None = None) -> pd.DataFrame:
+    return _cancel_timing_grid(_filtered(properties, window_months), dim)
+
+
+# ---- 8) No-shows (RAW resolved arrivals  the clean target hides them in 0) --
+# A no-show is a booking that did NOT cancel before arrival but never checked in. The
+# cleaned modelling cache collapses it into the "stayed" class, so no-shows are only
+# visible in the raw reservations `status` string. Denominator = resolved arrivals
+# (CheckedOut / NoShow / InHouse)  i.e. bookings that were actually due to arrive.
+NOSHOW_ARRIVED = ("CheckedOut", "NoShow", "InHouse")
+
+
+@lru_cache(maxsize=1)
+def _noshow_prepared() -> pd.DataFrame:
+    """Raw resolved arrivals with a no_show flag, arrival month, LoS and stay bucket."""
+    p = Path(__file__).resolve().parents[2] / "Data" / "reservations_raw_no_pii.parquet"
+    if not p.exists():
+        return pd.DataFrame()
+    raw = pd.read_parquet(p)
+    if raw.empty or "status" not in raw.columns or "arrival" not in raw.columns:
+        return pd.DataFrame()
+    df = raw[raw["status"].astype("string").isin(NOSHOW_ARRIVED)].copy()
+    if df.empty:
+        return df
+    arr = pd.to_datetime(df["arrival"], utc=True, errors="coerce")
+    df["arrival"] = arr
+    df["month"] = arr.dt.tz_localize(None).dt.to_period("M").dt.to_timestamp()
+    df["no_show"] = (df["status"].astype("string") == "NoShow").astype(int)
+    dep = pd.to_datetime(df.get("departure"), utc=True, errors="coerce")
+    los = (dep.dt.normalize() - arr.dt.normalize()) / pd.Timedelta(days=1)
+    df["los_nights"] = los.clip(lower=1)
+    df["stay_bucket"] = pd.cut(df["los_nights"], bins=[0, 2, 6, np.inf],
+                               labels=STAY_ORDER).astype("object")
+    return df[df["month"].notna()]
+
+
+def _noshow_filtered(properties: list[str] | None,
+                     window_months: int | None = None) -> pd.DataFrame:
+    df = _noshow_prepared()
+    if df.empty:
+        return df
+    if properties:
+        df = df[df["property_name"].isin(properties)]
+    if window_months:
+        last = _noshow_prepared()["month"].max()
+        start = (last.to_period("M") - (int(window_months) - 1)).to_timestamp()
+        df = df[df["month"] >= start]
+    return df
+
+
+def _noshow_agg(df: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
+    """[*keys, n, n_noshow, rate]  n = resolved arrivals (denominator), n_noshow = count,
+    rate = no-show rate. Both the count AND the rate travel so every chart can show n."""
+    g = (df.groupby(keys, observed=True)["no_show"].agg(["size", "sum", "mean"])
+           .reset_index().rename(columns={"size": "n", "sum": "n_noshow", "mean": "rate"}))
+    return g
+
+
+def noshow_overall_rate(properties: list[str] | None = None,
+                        window_months: int | None = None) -> float | None:
+    df = _noshow_filtered(properties, window_months)
+    return float(df["no_show"].mean()) if not df.empty else None
+
+
+def noshow_monthly_rate(properties: list[str] | None = None,
+                        window_months: int | None = None) -> pd.DataFrame:
+    cols = ["month", "n", "n_noshow", "rate"]
+    df = _noshow_filtered(properties, window_months)
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+    g = _noshow_agg(df, ["month"])
+    g["rate"] = g["rate"].where(g["n"] >= MIN_N_MONTH)      # thin months = noise
+    return g.sort_values("month").reset_index(drop=True)
+
+
+def noshow_property_month_matrix(properties: list[str] | None = None, months_back: int = 12,
+                                 window_months: int | None = None) -> pd.DataFrame:
+    cols = ["property_name", "month", "n", "n_noshow", "rate"]
+    df = _noshow_filtered(properties, window_months)
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+    last = df["month"].max()
+    start = (last.to_period("M") - (months_back - 1)).to_timestamp()
+    g = _noshow_agg(df[df["month"] >= start], ["property_name", "month"])
+    g["rate"] = g["rate"].where(g["n"] >= MIN_N_CELL)
+    return g.sort_values(["property_name", "month"]).reset_index(drop=True)
+
+
+def noshow_stay_rate(properties: list[str] | None = None,
+                     window_months: int | None = None) -> pd.DataFrame:
+    cols = ["stay_bucket", "label", "n", "n_noshow", "rate"]
+    df = _noshow_filtered(properties, window_months)
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+    g = _noshow_agg(df.dropna(subset=["stay_bucket"]), ["stay_bucket"])
+    g["order"] = g["stay_bucket"].map({k: i for i, k in enumerate(STAY_ORDER)})
+    g["label"] = g["stay_bucket"].map(STAY_LABELS)
+    return g.sort_values("order").drop(columns="order").reset_index(drop=True)
+
+
 
 
 # ---- Drill-down slices (feed the right-side detail Drawer) -----------------
@@ -298,13 +569,16 @@ def drill_month(properties: list[str] | None, month_iso: str) -> dict | None:
 
 
 # ---- KPI headline numbers --------------------------------------------------
-def kpis(properties: list[str] | None = None) -> dict:
+def kpis(properties: list[str] | None = None,
+         window_months: int | None = None) -> dict:
     """Headline figures for the KPI strip. Any value not backed by enough real data is
-    returned as None so the UI can show 'unavailable' rather than fabricate a number."""
+    returned as None so the UI can show 'unavailable' rather than fabricate a number.
+    `base_rate` stays the FULL-history global reference; everything else honours the
+    location + time-window selection."""
     out = {"n_bookings": None, "overall_rate": None, "base_rate": None,
            "latest_month": None, "latest_rate": None, "delta_vs_base": None,
            "top_property": None, "top_rate": None, "span": date_span()}
-    df = _filtered(properties)
+    df = _filtered(properties, window_months)
     if df.empty:
         return out
     full = _clean()

@@ -1,0 +1,1 @@
+{"status": "error", "progress": 0.2, "message": "Computing SHAP over the scored bookings \u00b7 Hazard (survival)\u2026", "started": 1784194023.823309, "finished": 1784194505.238288, "result": null, "error": "The app was restarted (or the worker died) while this job was running. Start it again."}

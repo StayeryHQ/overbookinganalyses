@@ -1,6 +1,6 @@
 """Diagnose the Model-Performance calibration/Brier vs the notebook.
 
-Run in the project venv:   uv run python diagnose_calibration.py [--model xgboost]
+Run in the project venv:   uv run python tests/diagnose_calibration.py [--model xgboost]
 
 It answers ONE question: is the page's eval artifact doing the same thing as the
 notebook's own decision-time walk-forward (src.training.walk_forward_predict), or does my
@@ -88,7 +88,7 @@ def main() -> int:
             print(f"  (built with n_folds_requested={meta.get('n_folds_requested')}, "
                   f"n_folds_used={meta.get('n_folds_used')})")
     else:
-        print("  not built yet — run `python main.py eval --model %s`." % m)
+        print("  not built yet  run `python main.py eval --model %s`." % m)
 
     print("\nInterpretation: compare C to A (same regime). Match => no harness bug, it's the "
           "fold window/recency (compare A vs B). Divergence => tell me, I'll fix the harness.")

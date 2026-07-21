@@ -1,17 +1,17 @@
 {
   "model": "hazard",
-  "retrained_at": "2026-07-03T20:26:08.938746+00:00",
-  "asof": "2026-06-28",
-  "val_ap": 0.07576124367926391,
+  "retrained_at": "2026-07-15T19:08:52.789218+00:00",
+  "asof": "2026-07-12",
+  "val_ap": 0.07656059228430237,
   "hyperparams": {
-    "max_depth": 8,
-    "learning_rate": 0.047753845433560704,
+    "max_depth": 6,
+    "learning_rate": 0.05,
     "min_child_weight": 5,
-    "reg_lambda": 4.141740558517077,
-    "subsample": 0.7999652429288138,
-    "colsample_bytree": 0.7116664158034038
+    "reg_lambda": 1.0,
+    "subsample": 0.8,
+    "colsample_bytree": 0.8
   },
-  "n_train_person_period": 1226986,
+  "n_train_person_period": 1250489,
   "snap": [
     1,
     2,
@@ -42,19 +42,15 @@
     "arrival_dow",
     "arrival_month",
     "diff_gross_cancellation_fee",
-    "diff_gross_cancellation_fee_log",
     "gross_per_night",
-    "gross_per_night_log",
     "has_children",
     "has_corporate_code",
     "has_group",
     "has_promo",
     "is_weekend_arrival",
     "lead_time_days",
-    "lead_time_days_log",
     "log_gross_amount",
     "los_nights",
-    "los_nights_log",
     "ratePlan_isSubjectToCityTax"
   ],
   "features_categorical": [

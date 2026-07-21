@@ -1,17 +1,18 @@
 # ---------------------------------------------------------------------------
-# Shared feature engineering — identical in training and serving.
+# Shared feature engineering  identical in training and serving.
 #
 # Two jobs: (1) stateless transforms both sides apply the same way
 # (country -> region), (2) generator + loader for the feature roster.
 #
 # WHICH columns are model features is decided once, at the end of notebook 00,
-# and persisted to Data/feature_roster.json — everything loads that artifact.
+# and persisted to Data/feature_roster.json  everything loads that artifact.
 # FEATURE_EXCLUSIONS below is the single list of what is NOT a feature and why.
 # ---------------------------------------------------------------------------
 
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Final
 
@@ -24,7 +25,7 @@ REGION_COL:       Final[str] = "guest_country_region"
 
 # Region taxonomy: DE/AT/CH explicit, GB separate (distinct market, cancels more
 # than DACH), rest of EU/EEA -> EU_other, everything else -> RoW, blank -> Unknown.
-# Diagnostics only — the region column is excluded from the model roster.
+# Diagnostics only  the region column is excluded from the model roster.
 
 DACH: Final[frozenset[str]] = frozenset({"DE", "AT", "CH"})
 EU_EEA: Final[frozenset[str]] = frozenset({
@@ -126,7 +127,7 @@ FEATURE_EXCLUSIONS: Final[dict[str, list[str]]] = {
 
 
 def excluded_columns() -> dict[str, str]:
-    """Flatten FEATURE_EXCLUSIONS to `{column: reason}` — the roster audit trail."""
+    """Flatten FEATURE_EXCLUSIONS to `{column: reason}`  the roster audit trail."""
     return {col: reason for reason, cols in FEATURE_EXCLUSIONS.items() for col in cols}
 
 
@@ -234,3 +235,138 @@ def roster_features(path: str | Path | None = None, *, include_dynamic: bool = F
     if include_dynamic:
         numeric = numeric + list(r.get("dynamic_numeric", []))
     return numeric, list(r.get("categorical", []))
+
+
+# ---------------------------------------------------------------------------
+# Roster GENERATOR at RUNTIME (the src twin of notebook 00 §11)
+# ---------------------------------------------------------------------------
+# WHY: previously the roster (Data/feature_roster.json) was ONLY written by
+# notebook 00. A fresh deploy / rebuilt cache therefore had no roster, and
+# load_feature_roster() -> FileNotFoundError broke build_features / scoring /
+# retraining with no way to self-heal. These helpers let the runtime regenerate
+# the exact same artifact (verified byte-for-byte against the notebook's output
+# for numeric / categorical / log_twins / excluded / ratePlan_category_map).
+
+# Dynamic (scoring-time) features: point-in-time per (booking, scoring-date),
+# built in src.scoring.build_features. NEVER static roster features.
+DYNAMIC_NUMERIC: Final[list[str]] = [
+    "days_until_arrival", "days_since_booking",
+    "pct_lead_time_elapsed", "is_within_7d_of_arrival",
+]
+
+# --- ratePlan_category map (verbatim port of notebook 00 §3.0.d) ------------
+_NONREF_RE: Final = re.compile(
+    r"\bnon[_\-\s]*ref|\bnrf\b|\bprepaid\b|nicht.*erstatt|non.*erstatt", re.IGNORECASE)
+_PROMO_KEYWORDS: Final[tuple[str, ...]] = (
+    "special", "promo", "stay again", "family & friends", "opening", "-%", "%")
+_MIN_CATEGORY_COUNT: Final[int] = 50
+
+
+def _classify_rate_plan(value) -> tuple[str, int, str]:
+    """(normalized_name, is_nonref, coarse_type)  verbatim port of nb00 §3.0.d."""
+    if value is None or pd.isna(value):
+        return "", 0, "unknown"
+    n = re.sub(r"\s+", " ", str(value).strip().lower())
+    if not n:
+        return "", 0, "unknown"
+    is_nf = bool(_NONREF_RE.search(n))
+    if is_nf:
+        t = "nonref"
+    elif n == "comp" or n.startswith("comp "):
+        t = "comp"
+    elif ("corporate" in n or "firmenrate" in n or "consortia" in n or "hrs" in n):
+        t = "corporate"
+    elif any(k in n for k in _PROMO_KEYWORDS):
+        t = "promo"
+    elif ("flexible" in n or "midstay" in n or "shortstay" in n
+          or "longstay" in n or "airbnb" in n):
+        t = "flexible"
+    else:
+        t = "other"
+    return n, int(is_nf), t
+
+
+def build_rateplan_category_map(windowed: pd.DataFrame, *, name_col: str = "ratePlan_name",
+                                arrival_col: str = "arrival",
+                                min_count: int = _MIN_CATEGORY_COUNT) -> dict:
+    """Fit the `normalized ratePlan_name -> ratePlan_category` map (nb00 §3.0.d).
+
+    `windowed` MUST be the SAME arrival-window population the cleaner filters to
+    ([ARRIVAL_FLOOR, cutoff)); the rare-bucket collapse is population-dependent, so
+    the caller (data_loader.build_clean_reservations) passes exactly that slice 
+    this reproduces the committed map byte-for-byte. Rare buckets (< `min_count` in
+    the >28-days-before-max training slice) collapse to 'other'.
+    """
+    if name_col not in windowed.columns:
+        return {}
+    raw_s = windowed[name_col].astype("string")
+    lookup = {u: _classify_rate_plan(u) for u in raw_s.dropna().unique().tolist()}
+    norm_map = {u: v[0] for u, v in lookup.items()}
+    nref_map = {u: v[1] for u, v in lookup.items()}
+    name = raw_s.map(norm_map).fillna("").astype("string")
+    isnr = raw_s.map(nref_map).fillna(0).astype("Int64")
+    cat = name.where(name.str.len() > 0, "unknown").mask(isnr == 1, "nonref")
+    arr = pd.to_datetime(windowed[arrival_col], utc=True, errors="coerce")
+    train_m = arr < (arr.max() - pd.Timedelta(days=28))
+    counts = cat[train_m].value_counts()
+    protected = {"nonref", "unknown", "other"}
+    small = counts[counts < min_count].index.difference(protected)
+    cat = cat.where(~cat.isin(small), "other").astype("string")
+    return (pd.DataFrame({"ratePlan_name": name, "ratePlan_category": cat}).dropna()
+            .drop_duplicates("ratePlan_name")
+            .set_index("ratePlan_name")["ratePlan_category"].astype(str).to_dict())
+
+
+def build_feature_roster(clean: pd.DataFrame, *, rateplan_category_map: dict | None = None) -> dict:
+    """Assemble the feature-roster dict from a CLEAN reservations frame  the runtime
+    twin of notebook 00 §11, so the roster can be regenerated WITHOUT the notebook.
+
+    Uses the same column-classification helpers the notebook uses
+    (`model_feature_roster`, `log_twin_map`, `excluded_columns`) plus the fixed
+    `DYNAMIC_NUMERIC` list and the passed-in ratePlan map. Raises on a degenerate
+    roster (missing must-have categoricals, dynamic leak, too few numerics)  the
+    same guard rails as nb00 §11.
+    """
+    numeric, categorical = model_feature_roster(clean)
+    log_twins = log_twin_map(numeric)
+    excluded = excluded_columns()
+
+    leaked = set(DYNAMIC_NUMERIC) & (set(numeric) | set(categorical))
+    if leaked:
+        raise AssertionError(f"dynamic features leaked into the static roster: {sorted(leaked)}")
+    must_cat = {"property_name", "unitGroup_name", "channelCode", "ratePlan_category",
+                "guaranteeType", "cancellationFee_name"}
+    missing = must_cat - set(categorical)
+    if missing:
+        raise AssertionError(f"degenerate roster - expected categoricals missing: {sorted(missing)}")
+    if len(numeric) < 8:
+        raise AssertionError(f"suspiciously few numeric features: {sorted(numeric)}")
+
+    return {
+        "generated_by": "src.features.build_feature_roster",
+        "generated_at_utc": pd.Timestamp.now(tz="UTC").isoformat(),
+        "clean_parquet_rows": int(len(clean)),
+        "clean_parquet_cols": int(clean.shape[1]),
+        "split": "walk_forward_arrival_anchored_H14 (src.walkforward)",
+        "target": "status",
+        "numeric": sorted(numeric),
+        "categorical": sorted(categorical),
+        "log_twins": log_twins,
+        "dynamic_numeric": list(DYNAMIC_NUMERIC),
+        "excluded": excluded,
+        "n_numeric": len(numeric),
+        "n_categorical": len(categorical),
+        "ratePlan_category_map": dict(rateplan_category_map or {}),
+    }
+
+
+def write_feature_roster(clean: pd.DataFrame, *, rateplan_category_map: dict | None = None,
+                         path: str | Path | None = None) -> Path:
+    """Build and persist Data/feature_roster.json from a clean frame + rate-plan map.
+    Returns the written path. The runtime bootstrap used by build_clean_reservations."""
+    p = Path(path) if path is not None else _default_roster_path()
+    roster = build_feature_roster(clean, rateplan_category_map=rateplan_category_map)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("w") as fh:
+        json.dump(roster, fh, indent=2)
+    return p

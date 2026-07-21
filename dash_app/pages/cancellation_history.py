@@ -15,8 +15,53 @@ from dash import Input, Output, State, callback, ctx, dcc, html, no_update
 
 from dash_app import theme
 from dash_app.backend import cancellation_history as ch
+from dash_app.backend import jobs                       # file-backed job runner
+from dash_app.backend import model_ops as mo
 from dash_app.components import history_charts as hc
 from dash_app.components import ui
+
+_HIDDEN = {"display": "none"}
+_SHOWN = {"display": "block"}
+
+
+def _history_update_card() -> dmc.Paper:
+    """Green 'update history' card (mirrors the Occupancy scoring card): pulls the full
+    reservations history and rebuilds the cleaned cache on the file-backed job runner."""
+    return dmc.Paper(dmc.Stack([
+        dmc.Group([
+            dmc.Stack([
+                dmc.Text("Update cancellation history", fw=600, size="sm"),
+                dmc.Text("Pulls the full reservations history from BigQuery and rebuilds "
+                         "the cleaned dataset behind these charts. Runs in the background; "
+                         "progress survives page changes.", size="xs", c="dimmed"),
+            ], gap=2),
+            dmc.Button("Update history", id="cxl-upd-btn", size="sm", variant="filled",
+                       leftSection=html.I(className="bi bi-arrow-clockwise")),
+        ], justify="space-between", align="center", wrap="wrap"),
+        ui.job_loader("cxl-upd"),
+        html.Div(id="cxl-upd-result"),
+    ], gap="xs"), p="md", radius="lg", withBorder=True)
+
+
+def _history_result(res: dict) -> dmc.Alert:
+    return dmc.Alert(dmc.Stack([
+        dmc.Text(f"History rebuilt: {res.get('clean_rows', 0):,} cleaned bookings from "
+                 f"{res.get('raw_rows', 0):,} raw rows in {res.get('elapsed_s', '?')}s.",
+                 fw=600, size="sm"),
+        dmc.Text(f"Cancel base rate {res.get('base_rate', 0) * 100:.1f}% · history "
+                 f"{res.get('span_start', '?')} → {res.get('span_end', '?')}.",
+                 size="xs", c="dimmed"),
+    ], gap=6), color="green", variant="light", icon=html.I(className="bi bi-check-circle"))
+
+
+def _err_alert(text: str) -> dmc.Alert:
+    return dmc.Alert(dmc.Text(str(text), size="sm"), color="red", variant="light",
+                     title="Update failed", icon=html.I(className="bi bi-exclamation-triangle"))
+
+
+def _cancelled_alert() -> dmc.Alert:
+    return dmc.Alert("History update cancelled  previous data kept.", color="gray",
+                     variant="light", icon=html.I(className="bi bi-x-circle"))
 
 dash.register_page(__name__, path="/cancellation-history", name="Cancellation History",
                    order=2, title="STAYERY · Cancellation History")
@@ -36,19 +81,53 @@ _INFO = {
     "channel": "How each booking channel's cancellation rate compares to the current "
                "selection's base rate. Red = cancels more than average, green = less. "
                "Channels with fewer than 200 bookings are omitted.",
-    "stay": "Cancellation rate by length of stay. Short = 1–2 nights, Mid = 3–6, "
-            "Long = 7+ nights.",
-    "lead": "Cancellation rate by lead time - the gap between when a booking was made "
-            "and the arrival date.",
+    "stay": "Cancellation rate by exact length of stay, night by night (stays of 14+ "
+            "nights are pooled into one bar). Bar colour marks the segment: green = "
+            "short (1–2 nights), amber = mid (3–6), red = long (7+). Bars over fewer "
+            "than 50 bookings are hidden as too noisy.",
+    "lead": "Cancellation rate by lead time  the gap in days between when a booking was "
+            "made and the arrival date  shown day by day (longer lead almost always "
+            "cancels more). Use 'by length of stay' to split the curve into short / mid "
+            "/ long, and the day toggle to extend the window. Days over fewer than 50 "
+            "bookings are hidden.",
     "timing": "Of the bookings that cancelled, the cumulative share that had cancelled "
               "by a given number of days before arrival. Shows how late rooms typically "
               "free up.",
+    "timewin": "Filters every chart on this page to the last 6 / 12 / 24 months of "
+               "arrivals (or the full history). The dashed base-rate reference always "
+               "stays the full-history average, so a window is easy to compare against it.",
+    "blend": "Cancellation rate for each combination of lead time and length of stay  "
+             "the two biggest drivers blended into one grid. Green = low, red = high. "
+             "Top-right (long stays booked far ahead) is the riskiest mix. Cells under "
+             "30 bookings are hidden.",
+    "ct_grid": "Cancellations in the last 14 days before arrival, day by day (0 = arrival "
+               "day). In 'Cancel rate' mode each cell is a per-day rate: cancellations "
+               "that day ÷ the bookings that were still due to arrive that day (booked at "
+               "least that far ahead and not yet cancelled)  so it answers 'of the "
+               "bookings still due to arrive d days out, what share cancel that day', not "
+               "a share of all bookings. A row therefore does NOT sum to the segment's "
+               "overall cancel rate, and a 0–7 day lead bucket is simply empty past day 7. "
+               "'Count' mode shows the raw number of cancellations. Rows switch between "
+               "length of stay and lead time; both count and base are always in the hover.",
+    "ns_monthly": "Share of resolved arrivals (guests who did NOT cancel before arrival) "
+                  "that were no-shows, per arrival month. Based on the raw reservations "
+                  "history. Months with fewer than 50 arrivals are hidden. Hover shows the "
+                  "no-show count and the arrivals base.",
+    "ns_heatmap": "No-show rate per location and arrival month. Blank cells have fewer "
+                  "than 30 resolved arrivals. Hover shows the no-show count and arrivals.",
+    "ns_stay": "No-show rate by length of stay (short 1–2, mid 3–6, long 7+ nights). "
+               "Each bar is labelled with the absolute number of no-shows.",
 }
 
 
 def _sel(value) -> list[str] | None:
     """Normalise the MultiSelect value; an empty selection means 'all locations'."""
     return list(value) if value else None
+
+
+def _win(value) -> int | None:
+    """Normalise the time-window control; 'all'/empty means the full history."""
+    return None if not value or value == "all" else int(value)
 
 
 # ---------------------------------------------------------------------------
@@ -73,11 +152,63 @@ def layout(**_kwargs):
     heatmap_extra = dmc.SegmentedControl(id="cxl-window", data=_WINDOW_DATA, value="12",
                                          size="xs", radius="md")
 
+    # Channel + Length-of-stay stay side by side; Lead time gets its own full-width row
+    # (below) so the day-by-day curve has room to breathe.
     breakdowns = dmc.SimpleGrid(
         [ui.chart_card("Channel risk", "cxl-channel", info=_INFO["channel"], height=300),
-         ui.chart_card("Length of stay", "cxl-stay", info=_INFO["stay"], height=300),
-         ui.chart_card("Lead time", "cxl-lead", info=_INFO["lead"], height=300)],
-        cols={"base": 1, "md": 3}, spacing="md")
+         ui.chart_card("Length of stay", "cxl-stay", info=_INFO["stay"], height=300)],
+        cols={"base": 1, "md": 2}, spacing="md")
+
+    # Lead-time card controls: window (focus first 30 days, extend to 60) + split toggle.
+    lead_extra = dmc.Group([
+        dmc.SegmentedControl(id="cxl-lead-range", value="30", size="xs", radius="md",
+                             data=[{"label": "30 d", "value": "30"},
+                                   {"label": "60 d", "value": "60"}]),
+        dmc.SegmentedControl(id="cxl-lead-split", value="all", size="xs", radius="md",
+                             data=[{"label": "Overall", "value": "all"},
+                                   {"label": "By length of stay", "value": "stay"}]),
+    ], gap="xs", wrap="nowrap")
+    lead_card = ui.chart_card(
+        "Lead time", "cxl-lead", info=_INFO["lead"], height=360, header_extra=lead_extra,
+        subtitle="Cancellation rate day by day before arrival · toggle the split by "
+                 "length of stay to see how short / mid / long stays differ.")
+
+    # Standmixer: lead × stay cancel-rate heatmap (the two drivers blended).
+    blend_card = ui.chart_card(
+        "Lead time × length of stay", "cxl-blend", info=_INFO["blend"], height=300,
+        subtitle="Where the two drivers combine  the darkest cell is the riskiest mix.")
+
+    # Cancel-timing near-window heatmap: days-before × (stay or lead), rate or count.
+    ct_extra = dmc.Group([
+        dmc.SegmentedControl(id="cxl-ct-dim", value="stay", size="xs", radius="md",
+                             data=[{"label": "By length of stay", "value": "stay"},
+                                   {"label": "By lead time", "value": "lead"}]),
+        dmc.SegmentedControl(id="cxl-ct-metric", value="rate", size="xs", radius="md",
+                             data=[{"label": "Cancel rate", "value": "rate"},
+                                   {"label": "Count", "value": "count"}]),
+    ], gap="xs", wrap="nowrap")
+    ct_card = ui.chart_card(
+        "Cancel timing · last 14 days before arrival", "cxl-ct-grid", info=_INFO["ct_grid"],
+        height=320, header_extra=ct_extra,
+        subtitle="Per-day cancel rate near arrival (0 = arrival day) · rate = of the "
+                 "bookings still due to arrive that day, the share that cancel. Switch "
+                 "rows (stay / lead) and colour (rate / count).")
+
+    # ---- No-show section (new) --------------------------------------------
+    noshow_header = dmc.Stack([
+        dmc.Divider(mt="lg", mb=2),
+        dmc.Group([
+            dmc.Title("No-shows", order=2),
+            dmc.Badge("Resolved arrivals · didn't cancel, didn't show", color="gray",
+                      variant="light", radius="sm"),
+        ], gap="sm", align="center"),
+        dmc.Text("How often confirmed arrivals turn into no-shows  over time, by location "
+                 "and by length of stay. Based on the raw reservations history; the same "
+                 "location and time-window filters apply.", size="sm", c="dimmed"),
+    ], gap=4)
+    noshow_stay_card = ui.chart_card(
+        "No-show rate by length of stay", "cxl-ns-stay", info=_INFO["ns_stay"], height=300,
+        subtitle="Short 1–2 · Mid 3–6 · Long 7+ nights · bars labelled with the no-show count.")
 
     drawer = dmc.Drawer(
         id="cxl-drawer", position="right", size="md", padding="lg", opened=False,
@@ -87,8 +218,17 @@ def layout(**_kwargs):
 
     return dmc.Stack([
         header,
-        ui.location_filter(props, "cxl-property-filter", span_label=span_label),
+
+        # Update-history card (top)  rebuilds the cleaned dataset behind these charts.
+        _history_update_card(),
+
+        ui.sticky_filter_bar(props, "cxl-property-filter", "cxl-timewin",
+                             span_label=span_label, timewin_info=_INFO["timewin"]),
         dcc.Store(id="cxl-drawer-store"),
+        dcc.Store(id="cxl-upd-kick", data=0),
+        dcc.Store(id="cxl-upd-seen", data={}),
+        dcc.Store(id="cxl-data-version", data=0),         # bumped on update -> charts refresh
+        dcc.Interval(id="cxl-upd-poll", interval=1500, n_intervals=0),
 
         html.Div(id="cxl-kpi", children=dmc.Skeleton(height=96, radius="lg")),
         html.Div(id="cxl-anomaly"),
@@ -103,8 +243,26 @@ def layout(**_kwargs):
 
         breakdowns,
 
+        lead_card,
+
+        blend_card,
+
         ui.chart_card("Cancel-timing curve", "cxl-timing", info=_INFO["timing"], height=320,
                       subtitle="How late before arrival do cancellations land?"),
+
+        ct_card,
+
+        noshow_header,
+
+        ui.chart_card("No-show rate over time", "cxl-ns-monthly", info=_INFO["ns_monthly"],
+                      height=320,
+                      subtitle="Monthly · share of resolved arrivals that were no-shows."),
+
+        ui.chart_card("No-show rate · location × month", "cxl-ns-heatmap",
+                      info=_INFO["ns_heatmap"], height=None,
+                      subtitle="Click-free overview · blank cells have too few arrivals."),
+
+        noshow_stay_card,
 
         drawer,
     ], gap="md")
@@ -146,8 +304,8 @@ def _kpi_cards(k: dict) -> list:
     ]
 
 
-def _anomaly_alert(props):
-    hot = ch.flag_anomalies(props)
+def _anomaly_alert(props, window_months=None):
+    hot = ch.flag_anomalies(props, window_months=window_months)
     if hot.empty:
         return None
     top = hot.head(3)
@@ -163,32 +321,162 @@ def _anomaly_alert(props):
         withCloseButton=True)
 
 
+# ---------------------------------------------------------------------------
+# Update-history job (file-backed runner): start on click, poll the job file,
+# bump cxl-data-version on success so every chart re-reads the fresh clean cache.
+# ---------------------------------------------------------------------------
+@callback(
+    Output("cxl-upd-kick", "data"),
+    Input("cxl-upd-btn", "n_clicks"),
+    prevent_initial_call=True,
+)
+def _start_history_update(n):
+    jobs.start("history", mo.update_history_job)
+    return (n or 0)
+
+
+@callback(
+    Output("cxl-upd-ring", "sections"),
+    Output("cxl-upd-pct", "children"),
+    Output("cxl-upd-msg", "children"),
+    Output("cxl-upd-wrap", "style"),
+    Output("cxl-upd-cancel", "children"),
+    Output("cxl-upd-result", "children"),
+    Output("cxl-upd-btn", "disabled"),
+    Output("cxl-data-version", "data"),
+    Output("cxl-upd-seen", "data"),
+    Input("cxl-upd-poll", "n_intervals"),
+    Input("cxl-upd-kick", "data"),
+    State("cxl-data-version", "data"),
+    State("cxl-upd-seen", "data"),
+)
+def _poll_history_update(_n, _kick, version, seen):
+    st = jobs.read("history")
+    status = st.get("status", "idle")
+    seen = dict(seen or {})
+    if status == "running":
+        sec, pct, msg, wrap = ui.loader_view(float(st.get("progress", 0)) * 100,
+                                             st.get("message", ""), show=True)
+        return sec, pct, msg, wrap, "Cancel", no_update, True, no_update, no_update
+    sec, pct, msg, wrap = ui.loader_view(0, "", show=False)
+    fin = st.get("finished")
+    bump = no_update
+    if fin and seen.get("history") != fin:
+        seen["history"] = fin
+        if status == "done":
+            bump = (version or 0) + 1
+    if status == "error":
+        return sec, pct, msg, wrap, no_update, _err_alert(st.get("error", "unknown error")), False, bump, seen
+    if status == "cancelled":
+        return sec, pct, msg, wrap, no_update, _cancelled_alert(), False, bump, seen
+    if status == "done":
+        return sec, pct, msg, wrap, no_update, _history_result(st.get("result") or {}), False, bump, seen
+    return sec, pct, msg, wrap, no_update, no_update, False, no_update, seen
+
+
+@callback(
+    Output("cxl-upd-cancel", "children", allow_duplicate=True),
+    Input("cxl-upd-cancel", "n_clicks"),
+    prevent_initial_call=True,
+)
+def _cancel_history_update(_n):
+    jobs.cancel("history")
+    return "Cancelling…"
+
+
 @callback(
     Output("cxl-kpi", "children"),
     Output("cxl-anomaly", "children"),
     Output("cxl-channel", "figure"),
     Output("cxl-stay", "figure"),
-    Output("cxl-lead", "figure"),
     Output("cxl-timing", "figure"),
+    Output("cxl-blend", "figure"),
     Input("cxl-property-filter", "value"),
+    Input("cxl-timewin", "value"),
+    Input("cxl-data-version", "data"),
 )
-def _update_filter(sel_value):
+def _update_filter(sel_value, timewin, _version):
     props = _sel(sel_value)
-    k = ch.kpis(props)
+    win = _win(timewin)
+    k = ch.kpis(props, window_months=win)
     kpis = ui.kpi_strip(_kpi_cards(k))
-    anomaly = _anomaly_alert(props)
+    anomaly = _anomaly_alert(props, win)
 
-    dev, base = ch.channel_deviation(props)
-    stay = ch.stay_segment_rate(props)
-    lead = ch.leadtime_bucket_rate(props)
-    curve, n = ch.cancel_timing_curve(props)
+    dev, base = ch.channel_deviation(props, window_months=win)
+    stay = ch.stay_daily_rate(props, window_months=win)      # per-night, coloured by segment
+    curve, n = ch.cancel_timing_curve(props, window_months=win)
+    grid = ch.leadtime_stay_grid(props, window_months=win)   # lead × stay heatmap
     overall = k["overall_rate"]
 
     return (kpis, anomaly,
             hc.fig_channel(dev, base),
-            hc.fig_rate_bars(stay, "label", base=overall, color=theme.GREEN),
-            hc.fig_rate_bars(lead, "bucket", base=overall, color=theme.ORANGE),
-            hc.fig_timing(curve, n))
+            hc.fig_stay_daily(stay, base=overall),
+            hc.fig_timing(curve, n),
+            hc.fig_leadtime_stay_heatmap(grid))
+
+
+# ---------------------------------------------------------------------------
+# Cancel-timing near-window heatmap: filter + time-window + dim (stay/lead) +
+# metric (rate/count). Own callback because of its two extra toggles.
+# ---------------------------------------------------------------------------
+@callback(
+    Output("cxl-ct-grid", "figure"),
+    Input("cxl-property-filter", "value"),
+    Input("cxl-ct-dim", "value"),
+    Input("cxl-ct-metric", "value"),
+    Input("cxl-timewin", "value"),
+    Input("cxl-data-version", "data"),
+)
+def _update_ct_grid(sel_value, dim, metric, timewin, _version):
+    props = _sel(sel_value)
+    dim = dim if dim in ("stay", "lead") else "stay"
+    grid = ch.cancel_timing_grid(props, dim=dim, window_months=_win(timewin))
+    return hc.fig_cancel_timing_heatmap(grid, dim=dim, metric=(metric or "rate"))
+
+
+# ---------------------------------------------------------------------------
+# No-show section: monthly rate + location×month heatmap + by length of stay.
+# Same location + time-window filters as the cancellation charts.
+# ---------------------------------------------------------------------------
+@callback(
+    Output("cxl-ns-monthly", "figure"),
+    Output("cxl-ns-heatmap", "figure"),
+    Output("cxl-ns-stay", "figure"),
+    Input("cxl-property-filter", "value"),
+    Input("cxl-timewin", "value"),
+    Input("cxl-data-version", "data"),
+)
+def _update_noshow(sel_value, timewin, _version):
+    props = _sel(sel_value)
+    win = _win(timewin)
+    base = ch.noshow_overall_rate(props, window_months=win)
+    monthly = ch.noshow_monthly_rate(props, window_months=win)
+    matrix = ch.noshow_property_month_matrix(props, months_back=12, window_months=win)
+    stay = ch.noshow_stay_rate(props, window_months=win)
+    return (hc.fig_noshow_monthly(monthly, base),
+            hc.fig_noshow_heatmap(matrix),
+            hc.fig_noshow_stay(stay, base=base))
+
+
+# ---------------------------------------------------------------------------
+# Lead-time curve (own row): filter + window (30/60 d) + optional stay split
+# ---------------------------------------------------------------------------
+@callback(
+    Output("cxl-lead", "figure"),
+    Input("cxl-property-filter", "value"),
+    Input("cxl-lead-split", "value"),
+    Input("cxl-lead-range", "value"),
+    Input("cxl-timewin", "value"),
+    Input("cxl-data-version", "data"),
+)
+def _update_leadtime(sel_value, split, rng, timewin, _version):
+    props = _sel(sel_value)
+    win = _win(timewin)
+    by_stay = split == "stay"
+    daily = ch.leadtime_daily_rate(props, by_stay=by_stay, max_day=int(rng or "30"),
+                                   window_months=win)
+    return hc.fig_leadtime_daily(daily, by_stay=by_stay,
+                                 base=ch.selection_rate(props, window_months=win))
 
 
 # ---------------------------------------------------------------------------
@@ -198,11 +486,14 @@ def _update_filter(sel_value):
     Output("cxl-monthly", "figure"),
     Input("cxl-property-filter", "value"),
     Input("cxl-per-prop", "value"),
+    Input("cxl-timewin", "value"),
+    Input("cxl-data-version", "data"),
 )
-def _update_monthly(sel_value, mode):
+def _update_monthly(sel_value, mode, timewin, _version):
     props = _sel(sel_value)
-    monthly = ch.monthly_rate(props)
-    per = ch.monthly_rate(props, per_property=True) if mode == "per" else None
+    win = _win(timewin)
+    monthly = ch.monthly_rate(props, window_months=win)
+    per = ch.monthly_rate(props, per_property=True, window_months=win) if mode == "per" else None
     return hc.fig_monthly(monthly, ch.base_rate(), per)
 
 
@@ -213,11 +504,14 @@ def _update_monthly(sel_value, mode):
     Output("cxl-heatmap", "figure"),
     Input("cxl-property-filter", "value"),
     Input("cxl-window", "value"),
+    Input("cxl-timewin", "value"),
+    Input("cxl-data-version", "data"),
 )
-def _update_heatmap(sel_value, window):
+def _update_heatmap(sel_value, window, timewin, _version):
     props = _sel(sel_value)
     months = int(window or "12")
-    return hc.fig_heatmap(ch.property_month_matrix(props, months_back=months))
+    return hc.fig_heatmap(ch.property_month_matrix(props, months_back=months,
+                                                   window_months=_win(timewin)))
 
 
 # ---------------------------------------------------------------------------

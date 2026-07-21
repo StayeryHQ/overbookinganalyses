@@ -3,10 +3,10 @@
 # artifact builds).
 #
 # Why not Dash background callbacks: their progress/running state lives inside
-# the callback context and dies when the user navigates away — the UI then shows
+# the callback context and dies when the user navigates away  the UI then shows
 # a stuck loading bar forever while the work keeps running invisibly. Here every
 # job writes its state to Data/jobs/<name>.json; any page polls that file with a
-# dcc.Interval and renders real progress, success or error — across page changes
+# dcc.Interval and renders real progress, success or error  across page changes
 # AND app restarts. One job per name at a time; jobs are daemon threads.
 #
 # Deliberate limitation: threads cannot be killed, so there is NO cancel. A job
@@ -25,6 +25,50 @@ import src
 
 _LOCK = threading.Lock()
 _THREADS: dict[str, threading.Thread] = {}
+_CANCEL: dict[str, threading.Event] = {}
+
+
+class JobCancelled(Exception):
+    """Raised inside a job (via the progress checkpoint) when the user cancels."""
+
+
+def _cancel_path(name: str) -> Path:
+    return _job_path(name).with_suffix(".cancel")
+
+
+def cancel(name: str) -> bool:
+    """Request COOPERATIVE cancellation. The job stops at its next progress checkpoint
+    and is marked 'cancelled' WITHOUT writing its result  so whatever data existed
+    before stays untouched. Threads can't be force-killed, so a step already running
+    (e.g. a model fit or a single SHAP compute) finishes that step before the cancel is
+    noticed.
+
+    Cancellation is FILE-based (Data/jobs/<name>.cancel holds the running job's start
+    timestamp), so it works even when the cancel click and the job thread live in
+    different worker processes  an in-memory Event alone would not cross processes.
+    """
+    st = read(name)
+    if st.get("status") != "running":
+        return False
+    try:
+        _cancel_path(name).write_text(str(st.get("started", "")))
+    except Exception:  # noqa: BLE001
+        pass
+    ev = _CANCEL.get(name)   # also flip the in-process Event for the common single-worker case
+    if ev is not None:
+        ev.set()
+    return True
+
+
+def _cancel_requested(name: str, started, ev: "threading.Event | None") -> bool:
+    """True if THIS job (identified by its start timestamp) has been asked to cancel."""
+    if ev is not None and ev.is_set():
+        return True
+    try:
+        p = _cancel_path(name)
+        return p.exists() and p.read_text().strip() == str(started)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _job_path(name: str) -> Path:
@@ -36,7 +80,7 @@ def _job_path(name: str) -> Path:
 def _write(name: str, state: dict) -> None:
     try:
         _job_path(name).write_text(json.dumps(state))
-    except Exception:  # noqa: BLE001 — a status write must never kill the job
+    except Exception:  # noqa: BLE001  a status write must never kill the job
         pass
 
 
@@ -73,11 +117,17 @@ def start(name: str, fn: Callable, *args, **kwargs) -> bool:
     with _LOCK:
         if running(name):
             return False
+        cancel_ev = threading.Event()
+        _CANCEL[name] = cancel_ev
         state = {"status": "running", "progress": 0.0, "message": "starting…",
                  "started": time.time(), "finished": None, "result": None, "error": None}
         _write(name, state)
 
         def progress(msg: str, frac: float) -> None:
+            # Cooperative cancel checkpoint: raise BEFORE doing/reporting more work, so
+            # the job aborts before it writes anything and the previous data survives.
+            if _cancel_requested(name, state["started"], cancel_ev):
+                raise JobCancelled()
             state["message"] = str(msg)
             state["progress"] = max(0.0, min(1.0, float(frac)))
             _write(name, state)
@@ -87,7 +137,10 @@ def start(name: str, fn: Callable, *args, **kwargs) -> bool:
                 result = fn(progress, *args, **kwargs)
                 state.update(status="done", progress=1.0, message="done",
                              finished=time.time(), result=result)
-            except Exception as e:  # noqa: BLE001 — the whole point: fail LOUDLY
+            except JobCancelled:
+                state.update(status="cancelled", progress=0.0, finished=time.time(),
+                             message="Cancelled  previous data kept.", result=None)
+            except Exception as e:  # noqa: BLE001  the whole point: fail LOUDLY
                 state.update(status="error", finished=time.time(),
                              error=f"{type(e).__name__}: {str(e)[:600]}",
                              trace=traceback.format_exc()[-2000:])

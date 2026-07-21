@@ -3,7 +3,7 @@
 # Reusable, model-agnostic SCORING DIAGNOSTICS for the cancellation models.
 #
 # Everything here works on pooled out-of-sample predictions (y_true, y_prob) that
-# the model notebooks already compute via the walk-forward helpers — so the notebook
+# the model notebooks already compute via the walk-forward helpers  so the notebook
 # cells just hand those arrays in and get the full "standard" battery:
 #
 #   * baseline (mean-rate) reference        -> is the model beating "always guess p0"?
@@ -16,7 +16,7 @@
 # Design notes
 #   * Heavy deps (sklearn / plotly / shap) are imported lazily inside functions, so
 #     `import src.diagnostics` stays cheap and never hard-requires shap.
-#   * Plotly-first (project standard). SHAP's beeswarm is inherently matplotlib —
+#   * Plotly-first (project standard). SHAP's beeswarm is inherently matplotlib 
 #     that's the documented "a library genuinely can't do it in Plotly" exception.
 #   * SHAP helpers are defensive: if a model can't be unwrapped/explained they warn
 #     and return None instead of blowing up a long notebook run.
@@ -149,7 +149,7 @@ def _brand_fig(fig):
     try:
         from dash_app.theme import brand_figure
         return brand_figure(fig)
-    except Exception:  # noqa: BLE001 — notebooks may run without the dash_app package
+    except Exception:  # noqa: BLE001  notebooks may run without the dash_app package
         fig.update_layout(paper_bgcolor="white", plot_bgcolor="white")
         return fig
 
@@ -166,7 +166,7 @@ def roc_curve_fig(y_true, y_prob, model_name: str = "model"):
                     line=dict(color=c["blue"], width=2))
     fig.add_scatter(x=[0, 1], y=[0, 1], mode="lines", name="chance",
                     line=dict(color="grey", dash="dash"))
-    fig.update_layout(title=f"ROC curve — {model_name}", xaxis_title="False positive rate",
+    fig.update_layout(title=f"ROC curve  {model_name}", xaxis_title="False positive rate",
                       yaxis_title="True positive rate", height=360)
     return _brand_fig(fig)
 
@@ -184,7 +184,7 @@ def pr_curve_fig(y_true, y_prob, model_name: str = "model"):
                     line=dict(color=c["green"], width=2))
     fig.add_hline(y=p0, line=dict(color="grey", dash="dash"),
                   annotation_text=f"baseline (p0={p0:.3f})")
-    fig.update_layout(title=f"Precision–Recall — {model_name}", xaxis_title="Recall",
+    fig.update_layout(title=f"Precision–Recall  {model_name}", xaxis_title="Recall",
                       yaxis_title="Precision", height=360)
     return _brand_fig(fig)
 
@@ -199,7 +199,7 @@ def confusion_fig(y_true, y_prob, threshold: float, model_name: str = "model"):
         z=z, x=["pred: keep", "pred: cancel"], y=["actual: keep", "actual: cancel"],
         text=labels, texttemplate="%{text}", colorscale=[[0, "#FFFFFF"], [1, c["yellow"]]],
         showscale=False))
-    fig.update_layout(title=f"Confusion @ {threshold:.2f} — {model_name}",
+    fig.update_layout(title=f"Confusion @ {threshold:.2f}  {model_name}",
                       height=340, yaxis_autorange="reversed")
     return _brand_fig(fig)
 
@@ -313,7 +313,7 @@ def shap_bar_fig(tree_model: Any, X_design: pd.DataFrame, feature_names=None,
 
 def shap_beeswarm(tree_model: Any, X_design: pd.DataFrame, feature_names=None,
                   max_samples: int = 2000, max_display: int = 15) -> None:
-    """SHAP's native beeswarm (matplotlib — the sanctioned non-Plotly exception).
+    """SHAP's native beeswarm (matplotlib  the sanctioned non-Plotly exception).
     No-op with a warning if SHAP is unavailable."""
     try:
         import shap

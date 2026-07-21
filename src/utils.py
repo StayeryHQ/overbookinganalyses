@@ -19,7 +19,7 @@ from .paths import brand_config_path
 
 
 # =============================================================================
-# Timestamps — stored in UTC everywhere, DISPLAYED in local time everywhere.
+# Timestamps  stored in UTC everywhere, DISPLAYED in local time everywhere.
 # =============================================================================
 def local_timezone():
     """The machine's local timezone (the app runs on the user's machine)."""
@@ -29,7 +29,7 @@ def local_timezone():
 def fmt_ts_local(value, fmt: str = "%b %d, %Y, %H:%M %Z") -> str | None:
     """Human-readable timestamp in LOCAL time, e.g. 'Jul 13, 2026, 14:30 CEST'.
 
-    THE one display formatter for the app — never render raw UTC to users.
+    THE one display formatter for the app  never render raw UTC to users.
     Accepts ISO strings / datetimes / pd.Timestamps; naive input is treated as
     UTC (that is how everything is stored). Returns None if unparseable, so
     callers can show 'unavailable' instead of a wrong time.
@@ -93,7 +93,7 @@ def apply_stayery_style() -> None:
 
     For the matplotlib/seaborn notebooks (the Dash app itself uses Plotly via
     theme.brand_figure and does NOT need this). `matplotlib` is imported LAZILY inside the
-    function, so importing `src`/`src.utils` never requires matplotlib — only calling this
+    function, so importing `src`/`src.utils` never requires matplotlib  only calling this
     helper does. Install matplotlib in the notebook env if it isn't already (it ships as a
     dependency again; `uv sync`).
 
@@ -177,7 +177,7 @@ def benchmark_overbooking_allowance(units_total: int) -> int:
 
 
 # =============================================================================
-# Risk buckets (booking-table Risk column) — ONE cost-based rule
+# Risk buckets (booking-table Risk column)  ONE cost-based rule
 # =============================================================================
 # Low / Medium / High are derived from a single COST-BASED decision threshold
 # plus a FIXED high-risk cutoff:
@@ -191,11 +191,11 @@ from .paths import configs_dir  # noqa: E402  (kept local to this section)
 
 RISK_BUCKETS_FILE = "risk_buckets.yaml"
 
-# Fixed High-risk cutoff — a booking at/above this cancel probability is ALWAYS
+# Fixed High-risk cutoff  a booking at/above this cancel probability is ALWAYS
 # High, regardless of the cost-based threshold. Single source of truth.
 HIGH_RISK_CUTOFF: float = 0.85
 
-# Fallback if the config file is missing — so labels are never silently empty.
+# Fallback if the config file is missing  so labels are never silently empty.
 _RISK_BUCKETS_DEFAULT: dict = {
     "high_cutoff": HIGH_RISK_CUTOFF,
     "labels": {"low": "Low", "medium": "Medium", "high": "High"},

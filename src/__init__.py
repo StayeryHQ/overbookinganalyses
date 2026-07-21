@@ -17,10 +17,12 @@ from .data_loader import (
     PII_COLUMNS,
     average_room_rate_by_property,
     bigquery_healthcheck,
+    build_clean_reservations,
     get_bigquery_client,
     load_clean_reservations,
     load_property_performance,
     load_reservations,
+    load_reservations_upcoming_window,
     property_universe,
     strip_pii,
 )
@@ -92,7 +94,9 @@ __all__ = [
     "get_bigquery_client",
     "load_clean_reservations",
     "load_property_performance",
+    "build_clean_reservations",
     "load_reservations",
+    "load_reservations_upcoming_window",
     "property_universe",
     "strip_pii",
     # high-demand walk-cost scaling

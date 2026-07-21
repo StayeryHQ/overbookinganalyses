@@ -1,17 +1,17 @@
 # ---------------------------------------------------------------------------
 # src/walkforward.py
-# Point-in-time temporal helpers — the SINGLE evaluation regime for every
+# Point-in-time temporal helpers  the SINGLE evaluation regime for every
 # cancellation model (static classifiers AND the hazard model).
 #
 # Three timestamps, kept distinct (this is the thing that was previously muddled):
 #   * created            = when a booking's FEATURES first exist (information time).
-#                          NOT the overbooking decision — that is made near arrival.
+#                          NOT the overbooking decision  that is made near arrival.
 #   * outcome_known_date = when the LABEL became known (cancellationTime for a
 #                          pre-arrival cancel, else arrival). The only no-leakage
 #                          rule is: train on outcomes known before the scoring date.
 #   * arrival            = resolution.
 #
-# What the folds here measure — DECISION-TIME, production-faithful:
+# What the folds here measure  DECISION-TIME, production-faithful:
 #   Production scores a booking on every day it is open AND within H days of
 #   arrival. We test each booking EXACTLY ONCE, at its DECISION DATE
 #       S* = max(created, arrival - H)
@@ -23,7 +23,7 @@
 #       test  = O_k < S* <= O_k+step  AND  known > S*  # decided here, still open
 #       deferred (embargo_idx) = decided later, still open (info only)
 #   Each booking falls in exactly one step-wide S* window -> no double-count.
-#   Graded on cancel-by-arrival — the same estimand for every model, so the
+#   Graded on cancel-by-arrival  the same estimand for every model, so the
 #   hazard-vs-static comparison is apples-to-apples. POOL the per-fold test
 #   predictions into one large decision-aligned sample for AUC / AP / Brier / cost
 #   (per-fold spread = stability). Procedure metric; the deployed model is refit
@@ -52,14 +52,14 @@ KNOWN_COL: Final[str] = "outcome_known_date"
 
 # Target column, by preference. `is_canceled_by_arrival` is the readable alias
 # notebook 00 writes alongside the historically-named `status` (which is a STRING
-# in the raw cache but the encoded 0/1 target in the clean parquet — the
+# in the raw cache but the encoded 0/1 target in the clean parquet  the
 # project's most common stumbling block, hence the alias).
 TARGET_CANDIDATES: Final[tuple[str, ...]] = ("is_canceled_by_arrival", "is_cancelled", "status")
 
 
 def target_series(df: pd.DataFrame) -> pd.Series:
     """The 0/1 cancel-by-arrival target from CLEAN data, whatever it is called.
-    THE one target accessor — training, hazard and eval all use it."""
+    THE one target accessor  training, hazard and eval all use it."""
     for c in TARGET_CANDIDATES:
         if c in df.columns:
             return pd.to_numeric(df[c], errors="coerce").fillna(0).astype(int)
@@ -121,7 +121,7 @@ class Fold:
 
 
 # =============================================================================
-# 3. Walk-forward fold generator — DECISION-TIME (each booking tested once)
+# 3. Walk-forward fold generator  DECISION-TIME (each booking tested once)
 # =============================================================================
 def decision_date(df: pd.DataFrame, *, horizon_days: int = 14,
                   created_col: str = CREATED, arrival_col: str = ARRIVAL) -> pd.Series:
@@ -138,7 +138,7 @@ def make_folds(df: pd.DataFrame, *, n_folds: int = 6, horizon_days: int = 14,
                window_days: int | None = None, asof: str | pd.Timestamp | None = None,
                created_col: str = CREATED, arrival_col: str = ARRIVAL,
                known_col: str = KNOWN_COL) -> list[Fold]:
-    """Decision-time walk-forward folds — each booking tested EXACTLY ONCE.
+    """Decision-time walk-forward folds  each booking tested EXACTLY ONCE.
 
     Production scores a booking on every day it is open and within `horizon_days`
     of arrival. We test it ONCE, at its DECISION date S* = max(created, arrival-H)

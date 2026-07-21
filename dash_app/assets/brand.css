@@ -97,3 +97,14 @@ body, .dash-table-container, .ag-theme-alpine {
   border-bottom: 2px solid #FFE650; border-radius: 8px 8px 0 0;
   background: #FFFBE0;
 }
+
+/* Job loader — gently spinning hourglass next to the RingProgress %. */
+@keyframes stayery-hourglass-spin {
+  0%   { transform: rotate(0deg); }
+  60%  { transform: rotate(180deg); }
+  100% { transform: rotate(180deg); }
+}
+.stayery-hourglass {
+  display: inline-block;
+  animation: stayery-hourglass-spin 1.4s ease-in-out infinite;
+}

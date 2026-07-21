@@ -1,5 +1,5 @@
 """Consistency + leakage verification for the cancellation pipeline.
-Run FROM THE REPO ROOT: python3 diagnostics/verify_pipeline.py
+Run FROM THE REPO ROOT: uv run python tests/verify_pipeline.py
 Fast checks only (no model fitting). Exits non-zero on any failure."""
 import sys, json
 import numpy as np, pandas as pd
@@ -92,6 +92,47 @@ for k, hits in stale.items():
 print("\n=== 9. KPI: cost-optimal threshold, not F1 ===")
 ok("scoring exposes cost_threshold_from_scores", hasattr(sc, "cost_threshold_from_scores"))
 ok("scoring.best_model ranks by AP with Brier gate", "ap" in open("src/scoring.py").read().lower())
+
+print("\n=== 10. train/serve parity: build_features == notebook-00 clean engineering ===")
+# build_clean_reservations reuses src.scoring.build_features (the SERVING function). If it
+# reproduces the committed clean parquet (nb00's output) value-for-value, serving and
+# training feature engineering are provably in sync (M3  catches formula drift the
+# column-presence check in §3 cannot).
+from src.data_loader import build_clean_reservations
+rebuilt = build_clean_reservations(raw)
+static_cols = [c for c in roster["numeric"] + roster["categorical"] if c in clean.columns]
+row_ok = len(rebuilt) == len(clean)
+ok("build_clean_reservations reproduces clean row count", row_ok,
+   f"rebuilt={len(rebuilt)} committed={len(clean)}")
+if row_ok:
+    mism = []
+    for c in static_cols:
+        a = clean[c].reset_index(drop=True); b = rebuilt[c].reset_index(drop=True)
+        if pd.api.types.is_numeric_dtype(a) and pd.api.types.is_numeric_dtype(b):
+            bad = int((~np.isclose(pd.to_numeric(a, errors="coerce"),
+                                   pd.to_numeric(b, errors="coerce"), equal_nan=True)).sum())
+        else:
+            bad = int((a.astype("string").fillna("<NA>") != b.astype("string").fillna("<NA>")).sum())
+        if bad:
+            mism.append(f"{c}:{bad}")
+    ok("build_features matches clean parquet on every static feature (no train/serve drift)",
+       not mism, f"mismatches={mism}")
+
+print("\n=== 11. roster regenerates from src (runtime twin of nb00 §11) ===")
+# A fresh deploy must be able to rebuild Data/feature_roster.json without the notebook.
+from src.features import build_feature_roster, build_rateplan_category_map
+from src.data_loader import ARRIVAL_FLOOR, GRACE_DAYS
+_arr = pd.to_datetime(raw["arrival"], utc=True, errors="coerce")
+_cut = pd.to_datetime(raw["created"], utc=True, errors="coerce").max().normalize() \
+       - pd.Timedelta(days=GRACE_DAYS)
+_rp = build_rateplan_category_map(raw[(_arr >= ARRIVAL_FLOOR) & (_arr < _cut)])
+ok("ratePlan_category_map reproduces committed roster map (byte-for-byte)",
+   _rp == roster.get("ratePlan_category_map", {}),
+   f"src={len(_rp)} committed={len(roster.get('ratePlan_category_map', {}))}")
+_regen = build_feature_roster(clean, rateplan_category_map=_rp)
+ok("roster numeric/categorical/log_twins/excluded reproduce committed",
+   all(_regen[k] == roster[k] for k in ("numeric", "categorical", "log_twins", "excluded",
+                                        "dynamic_numeric", "n_numeric", "n_categorical")))
 
 print(f"\n==== {len(P)} passed, {len(F)} failed ====")
 if F:

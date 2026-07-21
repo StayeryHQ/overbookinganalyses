@@ -1,29 +1,29 @@
 step,rows,cols,dropped_cols,delta_rows,delta_cols
-loaded raw parquet,216870,73,[],0,0
-2.5 kept resolved statuses (Canceled+CheckedOut+InHouse+NoShow),211740,73,[],-5130,0
-2.6 dropped pre-floor (COVID-era) arrivals,183110,73,[],-28630,0
-2.6 dropped future arrivals,181385,73,[],-1725,0
-3.0.j dropped subsumed raws,181385,90,"['promoCode', 'corporateCode', 'adults', 'booker_company_name', 'primaryGuest_company_name', 'cancellationFee_dueDateTime']",0,17
-3.0.5 manual drops applied,181385,75,"['paymentAccount_paymentMethod', 'paymentAccount_isVirtual', 'paymentAccount_isActive', 'balance_amount', 'balance_currency', 'is_first_res', 'is_last_res', 'unit_id', 'unit_name', 'unit_description', 'unit_unitGroupId', 'blockId', 'company_id', 'groupName', 'noShowFee_fee_amount']",0,-15
-3.1 dropped 100%-missing columns,181385,68,"['company_name', 'company_code', 'commission_before_amount', 'commission_currency', 'commission_amount', 'company_canCheckOutOnAr', 'commission_before_currency']",0,-7
-3.2 dropped leakage columns,181385,60,"['modified', 'cancellationTime', 'allFoliosHaveInvoice', 'guest_id', 'travelPurpose', 'primaryGuest_address_countryCode', 'primaryGuest_preferredLanguage', 'guest_country_region', 'is_international']",0,-8
-3.3 inspected trios,181385,60,[],0,0
-3.3 manual drops applied,181385,51,"['property_id', 'property_code', 'ratePlan_code', 'ratePlan_id', 'ratePlan_name', 'unitGroup_code', 'unitGroup_id', 'cancellationFee_code', 'cancellationFee_id']",0,-9
-3.4 inspected near-constants,181385,51,[],0,0
-3.4 manual drops applied,181385,43,"['unitGroup_type', 'totalGrossAmount_currency', 'cancellationFee_fee_currency', 'noShowFee_fee_currency', 'noShowFee_name', 'noShowFee_code', 'children', 'childrenAges']",0,-8
-3.5 inspected free-text / opaque-ID columns,181385,43,[],0,0
-3.5 manual drops applied,181385,38,"['bookingId', 'cancellationFee_description', 'noShowFee_description', 'ratePlan_description', 'unitGroup_description']",0,-5
-3.6 inspected numeric correlations,181385,38,[],0,0
-3.6 manual drops applied,181385,36,"['totalGrossAmount_amount', 'cancellationFee_fee_amount']",0,-2
-3.7 inspected categorical associations,181385,36,[],0,0
-3.7 manual drops applied,181385,32,"['noShowFee_id', 'is_nonref', 'hasCityTax', 'ratePlan_type']",0,-4
-4.1 dropped exact-ID duplicates,181385,31,[],0,-1
-4.2 clipped negative lead_time,181385,31,[],0,0
-4.3 after lead_time_days > 365,181372,35,[],-13,4
-4.3 after los_nights < 1 (same calendar day),181369,35,[],-3,0
-4.3 after gross_amount <= 0 (drop all),179595,35,[],-1774,0
-4.3 after los_nights > 200,179576,35,[],-19,0
-4.3.d removed diagnostic scratch cols + departure,179576,30,[],0,-5
-4.4 dropped tiny properties,179576,30,[],0,0
-4.5 QC passed,179576,30,[],0,0
-7 outcome_known_date stamped (walk-forward is the only split; see §12),179576,31,[],0,1
+loaded raw parquet,220038,73,[],0,0
+2.5 kept resolved statuses (Canceled+CheckedOut+InHouse+NoShow),215082,73,[],-4956,0
+2.6 dropped pre-floor (COVID-era) arrivals,186452,73,[],-28630,0
+2.6 dropped future arrivals,184851,73,[],-1601,0
+3.0.j dropped subsumed raws,184851,90,"['promoCode', 'corporateCode', 'adults', 'booker_company_name', 'primaryGuest_company_name', 'cancellationFee_dueDateTime']",0,17
+3.0.5 manual drops applied,184851,75,"['paymentAccount_paymentMethod', 'paymentAccount_isVirtual', 'paymentAccount_isActive', 'balance_amount', 'balance_currency', 'is_first_res', 'is_last_res', 'unit_id', 'unit_name', 'unit_description', 'unit_unitGroupId', 'blockId', 'company_id', 'groupName', 'noShowFee_fee_amount']",0,-15
+3.1 dropped 100%-missing columns,184851,68,"['company_name', 'company_code', 'commission_before_amount', 'commission_currency', 'commission_amount', 'company_canCheckOutOnAr', 'commission_before_currency']",0,-7
+3.2 dropped leakage columns,184851,60,"['modified', 'cancellationTime', 'allFoliosHaveInvoice', 'guest_id', 'travelPurpose', 'primaryGuest_address_countryCode', 'primaryGuest_preferredLanguage', 'guest_country_region', 'is_international']",0,-8
+3.3 inspected trios,184851,60,[],0,0
+3.3 manual drops applied,184851,51,"['property_id', 'property_code', 'ratePlan_code', 'ratePlan_id', 'ratePlan_name', 'unitGroup_code', 'unitGroup_id', 'cancellationFee_code', 'cancellationFee_id']",0,-9
+3.4 inspected near-constants,184851,51,[],0,0
+3.4 manual drops applied,184851,43,"['unitGroup_type', 'totalGrossAmount_currency', 'cancellationFee_fee_currency', 'noShowFee_fee_currency', 'noShowFee_name', 'noShowFee_code', 'children', 'childrenAges']",0,-8
+3.5 inspected free-text / opaque-ID columns,184851,43,[],0,0
+3.5 manual drops applied,184851,38,"['bookingId', 'cancellationFee_description', 'noShowFee_description', 'ratePlan_description', 'unitGroup_description']",0,-5
+3.6 inspected numeric correlations,184851,38,[],0,0
+3.6 manual drops applied,184851,36,"['totalGrossAmount_amount', 'cancellationFee_fee_amount']",0,-2
+3.7 inspected categorical associations,184851,36,[],0,0
+3.7 manual drops applied,184851,32,"['noShowFee_id', 'is_nonref', 'hasCityTax', 'ratePlan_type']",0,-4
+4.1 dropped exact-ID duplicates,184851,31,[],0,-1
+4.2 clipped negative lead_time,184851,31,[],0,0
+4.3 after lead_time_days > 365,184838,35,[],-13,4
+4.3 after los_nights < 1 (same calendar day),184835,35,[],-3,0
+4.3 after gross_amount <= 0 (drop all),183028,35,[],-1807,0
+4.3 after los_nights > 200,183008,35,[],-20,0
+4.3.d removed diagnostic scratch cols + departure,183008,30,[],0,-5
+4.4 dropped tiny properties,183008,30,[],0,0
+4.5 QC passed,183008,30,[],0,0
+7 outcome_known_date stamped (walk-forward is the only split; see §12),183008,32,[],0,2

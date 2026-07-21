@@ -2,11 +2,11 @@
 # Read-only data + aggregation layer for the XAI / Model-Performance page. Reads ONLY the
 # pre-computed leak-free eval artifacts (Data/model_eval_<model>.parquet, written by
 # `python main.py eval`), never trains or queries BigQuery inline. Every metric is derived
-# from ONE pooled, matched-estimand prediction set per model, so the four models — and the
-# naive historical-average baseline — are always compared on the same footing.
+# from ONE pooled, matched-estimand prediction set per model, so the four models  and the
+# naive historical-average baseline  are always compared on the same footing.
 #
 # Baseline discipline (enforced here so no chart can get it wrong): the historical-average
-# baseline is a CONSTANT predictor, meaningful for calibration / Brier / cost — NEVER for
+# baseline is a CONSTANT predictor, meaningful for calibration / Brier / cost  NEVER for
 # ROC-AUC (0.5 by construction). So roc_* functions carry NO baseline; the reliability,
 # threshold-cost and KPI functions do.
 
@@ -18,7 +18,7 @@ import pandas as pd
 from src import model_eval as me
 from src import scoring as sc
 
-# Default asymmetric costs (walk a guest vs empty room) — the single shared definition.
+# Default asymmetric costs (walk a guest vs empty room)  the single shared definition.
 DEFAULT_WALK: float = sc.COST_WALK      # 300.0
 DEFAULT_EMPTY: float = sc.COST_EMPTY    # 80.0
 GLOBAL_COST_KEY: str = "__global__"     # cost-store key for the page's global default
@@ -61,7 +61,7 @@ def location_options(model: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Cost parameters — ONE global entry (GLOBAL_COST_KEY) shared by every page.
+# Cost parameters  ONE global entry (GLOBAL_COST_KEY) shared by every page.
 # Occupancy & Predictions is the primary entry point; Model Performance reads and
 # writes the same entry (editable, kept in sync).
 # ---------------------------------------------------------------------------
@@ -95,7 +95,7 @@ def sc_default_multiplier() -> float:
 
 
 # ---------------------------------------------------------------------------
-# 4.1 ROC — global + per location (NO baseline: constant predictor = 0.5)
+# 4.1 ROC  global + per location (NO baseline: constant predictor = 0.5)
 # ---------------------------------------------------------------------------
 def roc_global(model: str, props: list[str] | None) -> dict:
     from sklearn.metrics import roc_curve, roc_auc_score
@@ -207,7 +207,7 @@ def train_test(model: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 4.9 KPI summary — model vs baseline, best/worst location (valid metric only)
+# 4.9 KPI summary  model vs baseline, best/worst location (valid metric only)
 # ---------------------------------------------------------------------------
 def _brier_skill(y, p) -> float:
     """Brier Skill Score vs the constant base-rate predictor. >0 beats the baseline."""
@@ -222,7 +222,7 @@ def _brier_skill(y, p) -> float:
 def kpis(model: str, props: list[str] | None, walk: float, empty: float,
          *, min_n: int = LOC_MIN_N) -> dict:
     """Headline KPIs for the selected model vs the naive baseline, plus the best/worst
-    location by Brier Skill Score (a metric where the baseline comparison is valid — NOT
+    location by Brier Skill Score (a metric where the baseline comparison is valid  NOT
     AUC). Returns None-valued fields when the artifact is missing / below threshold."""
     from sklearn.metrics import roc_auc_score
     out = {"available": me.eval_available(model), "n": None, "base_rate": None,

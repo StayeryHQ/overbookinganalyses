@@ -3,7 +3,7 @@
 # everything here is importable and runnable WITHOUT Dash (the prerequisite for
 # unattended automation later). Nothing is re-implemented: BigQuery access lives in
 # src.data_loader, scoring in src.scoring, retraining in src.training/src.hazard,
-# cost params in the shared cost-store. Rendering the page never touches BigQuery —
+# cost params in the shared cost-store. Rendering the page never touches BigQuery 
 # model_status() only reads the tiny model-card JSON, so the tiles paint instantly.
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ def _noop(_msg: str, _frac: float) -> None:
     return None
 
 
-# ---- Cadence policy (soft, per the brief — a hint, never a hard lock) -------
+# ---- Cadence policy (soft, per the brief  a hint, never a hard lock) -------
 RETRAIN_INTERVAL_DAYS: int = 182          # ~6 months (normal cadence)
 RETRAIN_NEW_LOCATION_DAYS: int = 61       # ~2 months (when a new location opens)
 WINDOW_DAYS: int = 14                     # fast-path forward window (matches Occupancy)
@@ -52,7 +52,7 @@ def model_label(name: str) -> str:
 # Small helpers
 # =============================================================================
 def _fmt_ts(value) -> str | None:
-    """LOCAL-time display string ('Jul 13, 2026, 14:30 CEST') — one formatter
+    """LOCAL-time display string ('Jul 13, 2026, 14:30 CEST')  one formatter
     for the whole app (src.fmt_ts_local); storage stays UTC."""
     return src.fmt_ts_local(value)
 
@@ -84,12 +84,12 @@ def scoring_model_options() -> list[dict]:
 
 
 # =============================================================================
-# Info tiles + hyperparameters (read-only from the model card — instant)
+# Info tiles + hyperparameters (read-only from the model card  instant)
 # =============================================================================
 def _load_card(model_name: str) -> dict | None:
     try:
         return sc.load_model_card(model_name)
-    except Exception:  # noqa: BLE001 — no card yet
+    except Exception:  # noqa: BLE001  no card yet
         return None
 
 
@@ -105,7 +105,7 @@ def model_status(model_name: str) -> dict:
     retrained_raw = card.get("retrained_at")
     roster_hash = card.get("roster_hash")
     # A booking-count is stored for static cards (n_train_deploy); the hazard card stores
-    # person-periods — surface both honestly rather than conflating them.
+    # person-periods  surface both honestly rather than conflating them.
     n_train = card.get("n_train_deploy")
     n_pp = card.get("n_train_person_period")
 
@@ -118,7 +118,7 @@ def model_status(model_name: str) -> dict:
     else:
         status_label = "trained (comparison baseline)"
 
-    version = "—"
+    version = ""
     if retrained_raw:
         d = pd.to_datetime(retrained_raw, utc=True, errors="coerce")
         stamp = d.strftime("%Y-%m-%d") if not pd.isna(d) else "?"
@@ -171,7 +171,7 @@ def latest_walkforward(model_name: str) -> dict:
         cell = agg.get(m) if isinstance(agg, dict) else None
         if isinstance(cell, dict) and "mean" in cell:
             out[m] = {"mean": cell.get("mean"), "std": cell.get("std")}
-    # hazard cards store a person-period val_ap instead — surface it clearly labelled.
+    # hazard cards store a person-period val_ap instead  surface it clearly labelled.
     if not out and card.get("val_ap") is not None:
         out["val_ap_person_period"] = {"mean": card.get("val_ap"), "std": None}
     return out
@@ -186,28 +186,28 @@ def cadence_hint(model_name: str) -> dict:
         days = _days_since(card.get("retrained_at"))
     if days is None:
         return {"level": "unknown",
-                "text": "No recorded training date — retraining will create the first "
+                "text": "No recorded training date  retraining will create the first "
                         "model card. Recommended cadence: about every 6 months (or every "
                         "~2 months when a new location opens)."}
     if days >= RETRAIN_INTERVAL_DAYS:
         return {"level": "due",
-                "text": f"Last retrained {days} days ago — at or beyond the ~6-month "
+                "text": f"Last retrained {days} days ago  at or beyond the ~6-month "
                         "recommended interval. A refit is reasonable now."}
     return {"level": "ok",
             "text": f"Last retrained {days} days ago. Recommended cadence is about every "
                     "6 months (or every ~2 months when a new location opens), so retraining "
-                    "is usually not needed yet — this is a hint, not a hard limit."}
+                    "is usually not needed yet  this is a hint, not a hard limit."}
 
 
 # =============================================================================
-# THE data update — one strict BigQuery pull per table + immediate scoring
+# THE data update  one strict BigQuery pull per table + immediate scoring
 # =============================================================================
 def update_all(progress: Progress = _noop, model_name: str | None = None,
                walk: float | None = None, empty: float | None = None,
                days: int = WINDOW_DAYS) -> dict:
     """Job entry point for the Update button (signature: progress first, so
     jobs.start can inject its reporter). Delegates to src.scoring.refresh_and_score
-    — ONE BigQuery query per table, then scoring; NO silent cache fallback, a
+     ONE BigQuery query per table, then scoring; NO silent cache fallback, a
     BigQuery failure raises and the job status shows it loudly.
 
     `walk`/`empty` (cost-store): when both are set, pred_cancel uses the analytic
@@ -222,7 +222,7 @@ def update_all(progress: Progress = _noop, model_name: str | None = None,
     # Let the page backends see the fresh parquets on their next read.
     try:
         from dash_app.backend import data_access as da
-        for fn in ("_reservations_cached", "_capacity_from_perf", "_property_code_to_name"):
+        for fn in ("_reservations_cached", "_property_code_to_name", "_perf_daily"):
             getattr(da, fn).cache_clear()
     except Exception as e:  # noqa: BLE001
         logger.warning("cache clear after update failed: %s", e)
@@ -234,8 +234,115 @@ def update_all(progress: Progress = _noop, model_name: str | None = None,
     return res
 
 
+def score_window_job(progress: Progress = _noop, model_name: str | None = None,
+                     walk: float | None = None, empty: float | None = None,
+                     days: int = WINDOW_DAYS) -> dict:
+    """Occupancy 'Run scoring' job  the 'rescore + refresh the occupancy view' action.
+
+    Two BigQuery pulls, both cheap: the next `days` days of arrivals (a windowed SQL scan,
+    NOT the full history) for scoring, AND the property-performance-daily table so the
+    occupancy heatmap's capacity/occupancy is current. It deliberately does NOT touch the
+    full-history reservations cache (that's the separate 'update historical data' action).
+    Writes Data/scored_upcoming.parquet, refreshes the perf cache, and returns bucket
+    counts for the green card. Runs on the file-backed jobs runner (survives page changes).
+    Fails loudly if BigQuery is unavailable  no cache fallback.
+    """
+    t0 = time.perf_counter()
+    progress(f"BigQuery: pulling the next {days} days of arrivals…", 0.15)
+    df = src.load_reservations_upcoming_window(days=days, quiet=True)
+    if "status" in df.columns:
+        df = df[df["status"].astype("string") != "Canceled"].copy()
+
+    # Refresh property performance so the occupancy graph (capacity / occupancy %) is current.
+    progress("BigQuery: refreshing property performance (occupancy + capacity)…", 0.40)
+    perf = src.load_property_performance(force_refresh=True, quiet=True)
+
+    threshold = (sc.analytic_threshold(walk, empty)
+                 if walk is not None and empty is not None else None)
+    progress(f"Scoring {len(df):,} bookings arriving in the next {days} days…", 0.65)
+    scored = sc.score_reservations(df, model_name=model_name, threshold=threshold,
+                                   save_as="scored_upcoming.parquet")
+
+    try:  # let the Occupancy backend see the fresh scored parquet + perf on its next read
+        from dash_app.backend import data_access as da
+        for fn in ("_reservations_cached", "_property_code_to_name", "_perf_daily"):
+            getattr(da, fn).cache_clear()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("cache clear after scoring failed: %s", e)
+
+    rb = scored.get("risk_bucket")
+    buckets = ({b: int((rb == b).sum()) for b in ("high", "medium", "low")}
+               if rb is not None else {"high": 0, "medium": 0, "low": 0})
+    return {"scored_rows": int(len(scored)), "buckets": buckets, "days": int(days),
+            "perf_rows": int(len(perf)), "model_label": model_label(sc.resolve_model(model_name)),
+            "elapsed_s": round(time.perf_counter() - t0, 1),
+            "finished": _fmt_ts(pd.Timestamp.utcnow().isoformat())}
+
+
+def training_rows_by_property() -> list[dict]:
+    """[{property, rows}]  bookings per property in the cleaned TRAINING set (the clean
+    cache). Descending by rows; empty list if the clean cache isn't built yet. Used for
+    the retrain-page comparison and the scoring-page data-quality warning."""
+    try:
+        clean = src.load_clean_reservations()
+    except Exception:  # noqa: BLE001  no clean cache yet
+        return []
+    if clean.empty or "property_name" not in clean.columns:
+        return []
+    vc = clean["property_name"].astype("string").value_counts()
+    return [{"property": str(k), "rows": int(v)} for k, v in vc.items()]
+
+
+def data_quality_flags(model_name: str, *, min_rows: int = 100,
+                       stale_days: int = 182) -> dict:
+    """Scoring-page data-quality signals: locations with < `min_rows` training bookings,
+    and whether the model is older than `stale_days` (~6 months). Both are 'still works
+    but may be less accurate' warnings, never hard blocks."""
+    low = [r for r in training_rows_by_property() if r["rows"] < min_rows]
+    st = model_status(model_name)
+    days = st.get("retrained_days_ago")
+    return {"low_locations": low, "min_rows": min_rows,
+            "retrained_days_ago": days, "stale_days": stale_days,
+            "is_stale": bool(days is not None and days > stale_days),
+            "retrained_at": st.get("retrained_at")}
+
+
+def update_history_job(progress: Progress = _noop) -> dict:
+    """Cancellation-History 'update history' job: pull the FULL reservations history
+    from BigQuery and rebuild the cleaned/labelled cache (src.build_clean_reservations,
+    validated to match notebook 00). Refreshes the history views. Fails loudly on a
+    BigQuery error  no cache fallback (the whole point is fresh history).
+    """
+    t0 = time.perf_counter()
+    progress("BigQuery: pulling full reservations history…", 0.10)
+    raw = src.load_reservations(force_refresh=True, quiet=True)   # also refreshes the raw cache
+    if raw.empty:
+        raise RuntimeError("BigQuery returned 0 reservations  refusing to rebuild the history.")
+
+    progress(f"Cleaning + labelling {len(raw):,} rows…", 0.60)
+    clean = src.build_clean_reservations(raw)
+    progress("Writing the cleaned dataset…", 0.90)   # last cancel checkpoint before the write
+    from src.data_loader import CLEAN_CACHE_FILE
+    out_path = src.data_dir() / CLEAN_CACHE_FILE
+    clean.to_parquet(out_path, index=False)
+
+    try:  # let the Cancellation-History page see the fresh clean cache
+        from dash_app.backend import cancellation_history as ch
+        ch._clean.cache_clear()
+        ch.property_list.cache_clear()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("CH cache clear after history update failed: %s", e)
+
+    arr = pd.to_datetime(clean["arrival"], utc=True, errors="coerce")
+    return {"clean_rows": int(len(clean)), "raw_rows": int(len(raw)),
+            "base_rate": round(float(pd.to_numeric(clean["status"]).mean()), 4),
+            "span_start": str(arr.min().date()), "span_end": str(arr.max().date()),
+            "elapsed_s": round(time.perf_counter() - t0, 1),
+            "finished": _fmt_ts(pd.Timestamp.utcnow().isoformat())}
+
+
 # =============================================================================
-# Job wrappers — thin adapters with the (progress, *args) signature jobs.start
+# Job wrappers  thin adapters with the (progress, *args) signature jobs.start
 # expects. Keep ALL logic in the functions they call.
 # =============================================================================
 def retrain_job(progress: Progress, model_name: str, retune: bool = False) -> dict:
@@ -248,7 +355,7 @@ def artifacts_job(progress: Progress, include_shap: bool = False) -> dict:
 
 
 def rebuild_eval_job(progress: Progress, model_name: str, all_models: bool = False) -> dict:
-    """Force-rebuild the eval artifact(s) — the XAI page's 'Rebuild evaluation'."""
+    """Force-rebuild the eval artifact(s)  the XAI page's 'Rebuild evaluation'."""
     from src import model_eval as me
     targets = list(me.EVAL_MODELS) if all_models else [model_name]
     done, errors = [], []
@@ -257,39 +364,40 @@ def rebuild_eval_job(progress: Progress, model_name: str, all_models: bool = Fal
         try:
             d = me.model_eval(m, refresh=True)
             done.append(f"{m} ({len(d):,} rows)")
-        except Exception as e:  # noqa: BLE001 — collect, keep going, report loudly
+        except Exception as e:  # noqa: BLE001  collect, keep going, report loudly
             errors.append(f"{m}: {str(e)[:120]}")
     progress("Done.", 1.0)
     return {"rebuilt": done, "errors": errors}
 
 
 # =============================================================================
-# RETRAIN — thin adapter over the existing, tested retrain logic
+# RETRAIN  thin adapter over the existing, tested retrain logic
 # =============================================================================
 def run_retrain(model_name: str, *, retune: bool = False, asof: str | None = None,
                 progress: Progress = _noop) -> dict:
     """Retrain ONE model for deployment. mode='refit' keeps the frozen card hyperparameters
     (default, per the brief); retune=True re-searches them. Delegates entirely to
-    src.training.retrain (which dispatches hazard to src.hazard.retrain_hazard) — no modelling
+    src.training.retrain (which dispatches hazard to src.hazard.retrain_hazard)  no modelling
     logic is duplicated here. Returns a compact, UI-friendly summary."""
     mode = "retune" if retune else "refit"
-    progress(f"Retraining '{model_label(model_name)}' ({mode}) — fitting on all resolved "
-             "data. This can take a while…", 0.1)
-
-    # refresh_eval=True rebuilds the Model-Performance eval artifact for this model right
-    # after the new model is persisted, so the comparison page never lags the deployed model.
+    # Stage 1/2  fit on all resolved data AND rebuild the Model-Performance eval artifact
+    # (refresh_eval=True), so the performance page is never stale after a retrain.
+    progress(f"Stage 1/2 · retraining '{model_label(model_name)}' ({mode}) + rebuilding "
+             "evaluation. This can take a while…", 0.05)
     result = tr.retrain(model_name, mode=mode, asof=asof, persist=True, refresh_eval=True)
 
-    # Also rebuild this model's explanations (SHAP beeswarm/importance + iteration curve) so
-    # the XAI page reflects the retrained model. Best-effort — never fail the retrain on it.
-    progress("Rebuilding explanations (SHAP) for the updated model…", 0.85)
+    # Stage 2/2  rebuild this model's explanations (SHAP beeswarm/importance, cached PDP,
+    # iteration curve) so the predictions-page XAI reflects the retrained model WITHOUT ever
+    # recomputing over many bookings there. Best-effort  never fail the retrain on it.
+    progress("Stage 2/2 · rebuilding explanations (SHAP + partial dependence)…", 0.55)
     try:
         from dash_app.backend import explain as ex
         ex.compute_global_shap(model_name, refresh=True)
+        ex.compute_all_pdp(model_name, refresh=True)
         if model_name in ("xgboost", "histgb"):
             ex.iteration_curve(model_name, refresh=True)
-    except Exception as e:  # noqa: BLE001 — never fail the retrain over explanations
-        logger.warning("post-retrain SHAP rebuild failed for %s: %s", model_name, e)
+    except Exception as e:  # noqa: BLE001  never fail the retrain over explanations
+        logger.warning("post-retrain explanation rebuild failed for %s: %s", model_name, e)
 
     progress("Reading back the updated model card…", 0.9)
     status = model_status(model_name)
@@ -312,7 +420,7 @@ def run_retrain(model_name: str, *, retune: bool = False, asof: str | None = Non
 
 
 # =============================================================================
-# Model-Performance artifacts — auto-warm (eval for all models; optional SHAP)
+# Model-Performance artifacts  auto-warm (eval for all models; optional SHAP)
 # =============================================================================
 def eval_coverage() -> dict:
     """Which models already have a Model-Performance eval artifact on disk."""
@@ -324,7 +432,7 @@ def eval_coverage() -> dict:
 
 def ensure_all_eval(progress: Progress = _noop, *, include_shap: bool = False) -> dict:
     """Build any MISSING Model-Performance eval artifacts (all four models), so the XAI page
-    always has data — runs in the background, skips artifacts that already exist. With
+    always has data  runs in the background, skips artifacts that already exist. With
     `include_shap=True` also builds the (slower) global SHAP for any model missing it.
     Never raises: per-model failures are collected, not fatal."""
     from src import model_eval as me
@@ -360,7 +468,7 @@ def ensure_all_eval(progress: Progress = _noop, *, include_shap: bool = False) -
 
 
 # =============================================================================
-# Scored set — directly retrievable on the page (table + export)
+# Scored set  directly retrievable on the page (table + export)
 # =============================================================================
 def scored_overview(limit: int = 1000) -> dict:
     """Summary + display rows of the current scored set (Data/scored_upcoming.parquet),
@@ -376,11 +484,11 @@ def scored_overview(limit: int = 1000) -> dict:
     for r in d.head(limit).itertuples():
         arr = getattr(r, "arrival", None)
         rows.append({
-            "property_name": getattr(r, "property_name", "—"),
+            "property_name": getattr(r, "property_name", ""),
             "arrival": pd.to_datetime(arr, utc=True, errors="coerce").strftime("%Y-%m-%d")
-                       if arr is not None else "—",
+                       if arr is not None else "",
             "cancel_pct": round(float(getattr(r, "cancel_proba", 0)) * 100, 1),
-            "risk_bucket": getattr(r, "risk_bucket", "—"),
+            "risk_bucket": getattr(r, "risk_bucket", ""),
         })
     scored_at = _fmt_ts(d["scored_at"].iloc[0]) if "scored_at" in d.columns and len(d) else None
     model_used = d["model_used"].iloc[0] if "model_used" in d.columns and len(d) else None
@@ -390,7 +498,7 @@ def scored_overview(limit: int = 1000) -> dict:
             "low": int((rb == "low").sum()) if rb is not None else 0}
 
 
-# Columns of the COMPACT export — what a revenue manager actually reads. The full
+# Columns of the COMPACT export  what a revenue manager actually reads. The full
 # export (all ~100 engineered columns) stays available for analysts.
 _EXPORT_COLUMNS: tuple[str, ...] = (
     "property_name", "arrival", "departure", "los_nights", "channelCode",

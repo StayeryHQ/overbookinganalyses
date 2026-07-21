@@ -5,10 +5,10 @@
 # cancellation when its probability clears the cost-optimal threshold
 # (src.scoring.operating_threshold / analytic_threshold). During a flagged
 # high-demand period, walking a guest hurts more, so the walk cost is scaled up
-# by a user-editable multiplier — this raises the effective walk cost, which in
+# by a user-editable multiplier  this raises the effective walk cost, which in
 # turn RAISES the threshold, making the flags more conservative.
 #
-# Pure math, no model dependency — trivially unit-testable.
+# Pure math, no model dependency  trivially unit-testable.
 # ---------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import Final
 
 # Default multiplier applied to the walk cost during a flagged high-demand period.
-# Exposed in the UI as an editable value — this is only the pre-filled default.
+# Exposed in the UI as an editable value  this is only the pre-filled default.
 DEFAULT_HIGH_DEMAND_MULTIPLIER: Final[float] = 1.5
 
 

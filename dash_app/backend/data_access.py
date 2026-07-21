@@ -1,9 +1,9 @@
 # dash_app/backend/data_access.py
 # Read-only accessors the Occupancy dashboard uses. EVERYTHING here reads from the
-# Phase-1 local caches (parquet) — no live BigQuery is ever triggered by a filter or
-# table interaction (hard performance requirement). The only write path is
-# refresh_scored(), which re-runs the model on the already-cached reservations and
-# is meant to be called from a background callback, never inline on a filter.
+# Phase-1 local caches (parquet)  no live BigQuery is ever triggered by a filter or
+# table interaction (hard performance requirement). Re-scoring the upcoming window is
+# a separate write path that runs on the file-backed job runner (see
+# model_ops.score_window_job), never inline on a filter.
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ WINDOW_DAYS = 14                      # fixed forward-looking window for this pa
 # Default DECISION threshold when no costs are entered yet: the analytic cost-optimal
 # point for the project's default walk/empty costs. Everything downstream (heatmap
 # count, KPI, table Low/Medium boundary) uses the cost-based threshold instead once
-# costs are set — see cost_optimal_threshold().
+# costs are set  see cost_optimal_threshold().
 DEFAULT_RISK_THRESHOLD = float(sc.analytic_threshold())
 RAW_CACHE_FILE = "reservations_raw_no_pii.parquet"
 SCORED_CACHE_FILE = "scored_upcoming.parquet"
@@ -81,7 +81,7 @@ def data_freshness() -> dict:
 
 
 def model_meta() -> dict:
-    """Real model metadata for the KPI tiles — never fabricated.
+    """Real model metadata for the KPI tiles  never fabricated.
 
     Returns retrained_at + training-set size for the DEFAULT scoring model, reading
     the model card and the cleaned-dataset metadata. Any value that isn't present in
@@ -91,7 +91,7 @@ def model_meta() -> dict:
            "trained_on_note": None}
     try:
         name = sc.resolve_model()
-    except Exception:  # noqa: BLE001 — no model artifact on disk
+    except Exception:  # noqa: BLE001  no model artifact on disk
         return out
     out["model"] = name
     # retrained_at from the model card, if the card exists and has it.
@@ -150,18 +150,6 @@ def load_scored() -> pd.DataFrame:
     return _drop_cancelled(pd.read_parquet(p))
 
 
-def refresh_scored(model_name: str | None = None) -> int:
-    """Re-run the model over the cached reservations and rewrite the scored parquet.
-
-    Reads reservations from the local cache (force_refresh=False => NO BigQuery).
-    Returns the row count. Intended to be called from a BACKGROUND callback (model
-    inference can take >1s), never inline on a filter interaction.
-    """
-    scored = sc.score_upcoming(model_name=model_name, force_refresh=False, save=True)
-    _reservations_cached.cache_clear()
-    return int(len(scored))
-
-
 # ---- Window filtering ------------------------------------------------------
 def in_window(df: pd.DataFrame, properties: list[str] | None = None,
               today: pd.Timestamp | None = None,
@@ -182,7 +170,7 @@ def in_window(df: pd.DataFrame, properties: list[str] | None = None,
 def per_night_expected_freed(scored_window: pd.DataFrame,
                              hotel_col: str | None = "property_name") -> pd.DataFrame:
     """Per-(arrival-night[, hotel]) expected freed rooms from the scored window.
-    Thin wrapper over src.hazard.per_night_table — ONE implementation of
+    Thin wrapper over src.hazard.per_night_table  ONE implementation of
     exp = Σp / var = Σp(1-p), instead of a drifting inline copy."""
     if scored_window.empty or "cancel_proba" not in scored_window.columns:
         cols = ["arrival_date"] + (["hotel"] if hotel_col else []) + ["n", "exp", "var"]
@@ -197,7 +185,7 @@ def add_display_columns(df: pd.DataFrame, threshold: float | None = None) -> pd.
     """Add `risk_label` (cost-based Low/Medium/High) and `is_group` (booking is
     part of a group: blockId or groupName present). No-op on an empty frame.
 
-    `threshold` is the cost-based decision threshold — it is the Low/Medium boundary;
+    `threshold` is the cost-based decision threshold  it is the Low/Medium boundary;
     High is the fixed 0.85 cutoff (src.HIGH_RISK_CUTOFF). Defaults to
     DEFAULT_RISK_THRESHOLD so the column is never blank just because no costs were
     passed. Recomputed live at display time, so changing the costs re-colours the
@@ -213,7 +201,7 @@ def add_display_columns(df: pd.DataFrame, threshold: float | None = None) -> pd.
         out["risk_label"] = ""
 
     def _txt(col: str) -> pd.Series:
-        """Column as string Series, '' for missing values AND missing columns —
+        """Column as string Series, '' for missing values AND missing columns 
         so a schema drift in ONE of the two group fields can't crash the page."""
         if col not in out.columns:
             return pd.Series([""] * len(out), index=out.index, dtype="string")
@@ -226,7 +214,7 @@ def add_display_columns(df: pd.DataFrame, threshold: float | None = None) -> pd.
 # ---- Capacity per property (for occupancy %) -------------------------------
 @lru_cache(maxsize=1)
 def _property_code_to_name() -> dict[str, str]:
-    """{property_code -> property_name} from the reservations cache — the bridge
+    """{property_code -> property_name} from the reservations cache  the bridge
     between the performance table's propertyId (e.g. 'BER_FR') and the
     property_name used everywhere else. Empty dict if the columns are absent."""
     df = _reservations_cached()
@@ -236,38 +224,35 @@ def _property_code_to_name() -> dict[str, str]:
     return dict(zip(m["property_code"].astype(str), m["property_name"].astype(str)))
 
 
+# NOTE: capacity is no longer a single per-property number. It comes PER DAY from
+# _perf_daily() (houseCount straight from the perf table). The old
+# _capacity_from_perf()/property_capacity() helpers were removed as dead code when the
+# heatmap switched to the PMS `occupancyPercentage` (2026-07  nothing else referenced them).
+
+
 @lru_cache(maxsize=1)
-def _capacity_from_perf() -> dict[str, int]:
-    """{property_name -> total bookable units} from the performance table's most recent
-    houseCount, mapped propertyId->property_name via the reservations cache. Real data,
-    not a placeholder. Empty dict if the perf cache or the mapping is unavailable."""
+def _perf_daily() -> pd.DataFrame:
+    """property_performance_daily with `property_name` attached and the businessDay
+    normalised to a UTC midnight `_day`.
+
+    THE authoritative operational source for the heatmap: occupancy %, sold/house
+    counts, arrivals/departures and cancellations come STRAIGHT from the PMS here 
+    never re-derived from reservations. `occupancyPercentage` is already
+    soldCount / (houseCount − outOfOrderCount) × 100 (so it can exceed 100 % when a
+    night is overbooked); we take it verbatim. Empty frame if the cache/mapping is
+    unavailable. Cached; cleared after every data refresh (see model_ops).
+    """
     p = _data_dir() / PERF_CACHE_FILE
     if not p.exists():
-        return {}
+        return pd.DataFrame()
     perf = pd.read_parquet(p)
-    if perf.empty or not {"propertyId", "houseCount"} <= set(perf.columns):
-        return {}
-    if "businessDay" in perf.columns:
-        perf = perf.assign(_bd=pd.to_datetime(perf["businessDay"], errors="coerce")).sort_values("_bd")
-    latest = perf.groupby("propertyId")["houseCount"].last()   # current room count
+    if perf.empty or "propertyId" not in perf.columns:
+        return pd.DataFrame()
     code2name = _property_code_to_name()
-    out: dict[str, int] = {}
-    for code, hc in latest.items():
-        name = code2name.get(str(code))
-        if name and pd.notna(hc) and hc > 0:
-            out[name] = int(hc)
-    return out
-
-
-def property_capacity() -> dict[str, int]:
-    """Total bookable units per property_name, for the occupancy-% heatmap.
-
-    Single source: the performance table's houseCount (real room counts), mapped to
-    property_name via the reservations cache's property_code. Returns {} if that is
-    unavailable — the heatmap then shows occupied units without a % (never a
-    fabricated %).
-    """
-    return _capacity_from_perf()
+    out = perf.copy()
+    out["property_name"] = out["propertyId"].astype(str).map(code2name)
+    out["_day"] = pd.to_datetime(out["businessDay"], utc=True, errors="coerce").dt.normalize()
+    return out.dropna(subset=["property_name", "_day"])
 
 
 # ---- ONE cost-based decision threshold (shared by every view) --------------
@@ -290,7 +275,7 @@ def cost_optimal_threshold(walk: float | None, empty: float | None,
     eff_walk = src.effective_walk_cost(w, bool(high_demand), mult)
     try:
         thr = sc.operating_threshold(sc.resolve_model(model), eff_walk, e)
-    except Exception:  # noqa: BLE001 — no artifact/validation preds -> analytic Bayes
+    except Exception:  # noqa: BLE001  no artifact/validation preds -> analytic Bayes
         thr = sc.analytic_threshold(eff_walk, e)
     return float(min(max(thr, 0.0), 1.0))
 
@@ -353,89 +338,73 @@ def arrivals_window(scored: pd.DataFrame, properties: list[str] | None = None,
 # ---- Heatmap grid: one row per (property, day) -----------------------------
 def heatmap_grid(properties: list[str] | None = None, threshold: float | None = None,
                  today: pd.Timestamp | None = None) -> pd.DataFrame:
-    """Per (property_name, day) over the 14-day window: occupancy_pct (NaN if
-    capacity unknown), occupied_units, arrivals, departures, exp_cancels
-    (Σ P(cancel) over that night's arrivals — expected cancellations) and
-    pred_cancels (COUNT of scored arrivals with cancel_proba >= the cost threshold).
+    """Per (property_name, day) over the 14-day window.
 
-    Vectorised: groupby counts + a per-property searchsorted for the occupied
-    count (occupied on night d = #(arrivals <= d) − #(departures <= d) among
-    occupying stays), instead of the old pandas-filter-per-cell double loop.
+    OPERATIONAL columns come STRAIGHT from the PMS property_performance_daily table
+    (no re-derivation): occupancy_pct = `occupancyPercentage` (already
+    soldCount/(houseCount−outOfOrder)×100, so it can exceed 100 % = overbooked),
+    occupied_units = `soldCount`, capacity = `houseCount`, out_of_order =
+    `outOfOrderCount`, arrivals = `arrivalsCount`, departures = `departuresCount`,
+    cancellations = `cancellationsCount`.
+
+    MODEL columns come from the scored upcoming arrivals (reservations): exp_cancels =
+    Σ P(cancel) over that night's arrivals (threshold-independent) and pred_cancels =
+    COUNT of arrivals with cancel_proba ≥ the cost threshold. NaN occupancy_pct means
+    the perf table has no row for that (property, day).
     """
-    import numpy as np
-
     thr = DEFAULT_RISK_THRESHOLD if threshold is None else float(threshold)
     start, end = window_bounds(today)
     days = pd.date_range(start, end - pd.Timedelta(days=1), freq="D", tz="UTC")
     props = properties or property_list()
-    caps = property_capacity()
-
-    res = _drop_cancelled(_reservations_cached())
-    if not res.empty:
-        res = res[res["property_name"].isin(props)]
-    scored = load_scored()
-    if not scored.empty and "property_name" in scored.columns:
-        scored = scored[scored["property_name"].isin(props)]
 
     # Base grid: every (property, day), keeping the given property order.
     grid = pd.DataFrame([(p, d) for p in props for d in days],
                         columns=["property_name", "_day"])
 
-    def _daily_count(df: pd.DataFrame, day_values, name: str) -> pd.DataFrame:
-        return (pd.DataFrame({"property_name": df["property_name"].to_numpy(),
-                              "_day": day_values})
-                .groupby(["property_name", "_day"]).size()
-                .rename(name).reset_index())
+    # --- OPERATIONAL truth: taken verbatim from the PMS perf table ---------------
+    perf = _perf_daily()
+    if not perf.empty:
+        perf = perf[perf["property_name"].isin(props)]
+        rename = {"occupancyPercentage": "occupancy_pct", "soldCount": "occupied_units",
+                  "houseCount": "capacity", "outOfOrderCount": "out_of_order",
+                  "arrivalsCount": "arrivals", "departuresCount": "departures",
+                  "cancellationsCount": "cancellations"}
+        keep = ["property_name", "_day"] + [c for c in rename if c in perf.columns]
+        grid = grid.merge(perf[keep].rename(columns=rename),
+                          on=["property_name", "_day"], how="left")
 
-    parts: list[pd.DataFrame] = []
-    if not res.empty:
-        arr = pd.to_datetime(res["arrival"], utc=True).dt.normalize()
-        dep = pd.to_datetime(res["departure"], utc=True).dt.normalize()
-        parts.append(_daily_count(res, arr.to_numpy(), "arrivals"))
-        parts.append(_daily_count(res, dep.to_numpy(), "departures"))
-
-        occ = res[res["status"].isin(OCCUPYING_STATUSES)]
-        if not occ.empty:
-            a_all = pd.to_datetime(occ["arrival"], utc=True).dt.normalize()
-            d_all = pd.to_datetime(occ["departure"], utc=True).dt.normalize()
-            day_np = days.to_numpy()
-            occ_parts = []
-            for prop, idx in occ.groupby("property_name").groups.items():
-                a = np.sort(a_all.loc[idx].to_numpy())
-                d = np.sort(d_all.loc[idx].to_numpy())
-                occupied = (np.searchsorted(a, day_np, side="right")
-                            - np.searchsorted(d, day_np, side="right"))
-                occ_parts.append(pd.DataFrame({"property_name": prop, "_day": days,
-                                               "occupied_units": occupied}))
-            parts.append(pd.concat(occ_parts, ignore_index=True))
-
+    # --- MODEL outputs: over the night's scored arrivals (reservations) ----------
+    scored = load_scored()
+    if not scored.empty and "property_name" in scored.columns:
+        scored = scored[scored["property_name"].isin(props)]
     if not scored.empty and "cancel_proba" in scored.columns:
         cp = pd.to_numeric(scored["cancel_proba"], errors="coerce")
         s_all = pd.to_datetime(scored["arrival"], utc=True).dt.normalize()
-        # exp_cancels = Σ P(cancel) over the arrivals that night (expected cancellations,
-        # threshold-INDEPENDENT). pred_cancels = COUNT of arrivals over the cost threshold.
         exp_df = (pd.DataFrame({"property_name": scored["property_name"].to_numpy(),
                                 "_day": s_all.to_numpy(),
                                 "exp_cancels": cp.fillna(0.0).to_numpy()})
                   .groupby(["property_name", "_day"])["exp_cancels"].sum().reset_index())
-        parts.append(exp_df)
+        grid = grid.merge(exp_df, on=["property_name", "_day"], how="left")
         hot = scored[cp >= thr]
         if not hot.empty:
             s_arr = pd.to_datetime(hot["arrival"], utc=True).dt.normalize()
-            parts.append(_daily_count(hot, s_arr.to_numpy(), "pred_cancels"))
+            pred_df = (pd.DataFrame({"property_name": hot["property_name"].to_numpy(),
+                                     "_day": s_arr.to_numpy()})
+                       .groupby(["property_name", "_day"]).size()
+                       .rename("pred_cancels").reset_index())
+            grid = grid.merge(pred_df, on=["property_name", "_day"], how="left")
 
-    for p in parts:
-        grid = grid.merge(p, on=["property_name", "_day"], how="left")
-    for col in ("arrivals", "departures", "occupied_units", "pred_cancels"):
+    for col in ("occupied_units", "capacity", "out_of_order", "arrivals", "departures",
+                "cancellations", "pred_cancels"):
         grid[col] = (pd.to_numeric(grid[col], errors="coerce").fillna(0).astype(int)
                      if col in grid.columns else 0)
     grid["exp_cancels"] = (pd.to_numeric(grid["exp_cancels"], errors="coerce").fillna(0.0)
                            if "exp_cancels" in grid.columns else 0.0)
-
-    grid["capacity"] = grid["property_name"].map(caps)
-    grid["occupancy_pct"] = np.where(
-        grid["capacity"].notna() & (grid["capacity"] > 0),
-        np.round(grid["occupied_units"] / grid["capacity"] * 100, 1), float("nan"))
+    # occupancy_pct is taken as-is from the table (already a %, may exceed 100). Left NaN
+    # where the perf table has no row, so the heatmap shows a blank tile, never a fake 0 %.
+    grid["occupancy_pct"] = (pd.to_numeric(grid["occupancy_pct"], errors="coerce").round(1)
+                             if "occupancy_pct" in grid.columns else float("nan"))
     grid["day"] = grid["_day"].dt.date.astype(str)
     return grid[["property_name", "day", "occupancy_pct", "occupied_units",
-                 "capacity", "arrivals", "departures", "pred_cancels", "exp_cancels"]]
+                 "capacity", "out_of_order", "arrivals", "departures", "cancellations",
+                 "pred_cancels", "exp_cancels"]]

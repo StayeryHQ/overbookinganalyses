@@ -8,11 +8,11 @@
 #   * expands bookings into a person-period grid (one row per day-before-arrival
 #     snapshot) and learns h_d = P(cancel in window ending at d | survived, x);
 #   * calibrates with PER-SNAPSHOT-BAND isotonic maps (daily d<=14 vs the coarse
-#     tail) — a wide-window hazard is not on the same probability scale as a daily
+#     tail)  a wide-window hazard is not on the same probability scale as a daily
 #     one, so one pooled map over heterogeneous widths miscalibrates both;
 #   * serves a per-booking P(cancel before arrival) via the survival product
 #     P_cum(D) = 1 - Π_{u=1..D} (1 - h_u), evaluated on a FRESH forward grid
-#     u=1..D (D = the booking's current days_until_arrival) — the v11 bugfix;
+#     u=1..D (D = the booking's current days_until_arrival)  the v11 bugfix;
 #   * pins scoring categoricals to the EXACT train dtype (unseen -> NaN), the
 #     other v11 fix (XGBoost 2.x recodes the declared category array by name).
 #
@@ -29,21 +29,21 @@ import numpy as np
 import pandas as pd
 
 from . import walkforward as wf
-from .features import load_feature_roster
+from .features import family_feature_lists, load_feature_roster
 from .paths import data_dir, repo_root
 
 SEED: Final[int] = 42
 AXIS: Final[str] = "days_until_arrival"
 ARRIVAL: Final[str] = "arrival"           # booking arrival-date column
 SNAP_FINE: Final[list[int]] = list(range(1, 15))                  # daily, decision-relevant horizon
-# Coarse train-only tail — extended to ~270d so LONG-LEAD cancellations are not
+# Coarse train-only tail  extended to ~270d so LONG-LEAD cancellations are not
 # mislabelled as survivors. At max_snap=90 we missed ~4.5% of cancels (event_d>90:
 # (90,120]=868, (120,180]=515, (180,270]=219). Data supports it (lead>=270 ~0.2%
-# of bookings; >270 cancels ~0.1% — negligible residual).
+# of bookings; >270 cancels ~0.1%  negligible residual).
 SNAP_COARSE: Final[list[int]] = [21, 30, 45, 60, 90, 120, 180, 270]
 SNAP: Final[list[int]] = sorted(SNAP_FINE + SNAP_COARSE)
 # Calibration band edge: daily snapshots (<=14, width 1) vs the coarse tail
-# (>14, widths 7..90). Isotonic is fit separately per band (see fit_hazard) —
+# (>14, widths 7..90). Isotonic is fit separately per band (see fit_hazard) 
 # pooling a wide-window hazard with a daily one miscalibrates both.
 CAL_BAND_EDGE: Final[int] = max(SNAP_FINE)   # = 14
 
@@ -65,9 +65,15 @@ HP_GRID: Final[list[dict]] = [
 # Feature lists + event columns
 # =============================================================================
 def feature_lists(clean: pd.DataFrame) -> tuple[list[str], list[str]]:
+    """Hazard is an XGBoost (TREE-family) model, so it must use the RAW skewed columns
+    and DROP their `_log` twins  never both. Previously this read the raw roster
+    `numeric`, which carries a column AND its `_log` twin, so the hazard model (and its
+    SHAP/XAI) ended up with both. family_feature_lists(..., "tree") is the single
+    source of that per-family selection (same rule the static tree models use)."""
     r = load_feature_roster()
-    num = [c for c in r["numeric"] if c in clean.columns]
-    cat = [c for c in r["categorical"] if c in clean.columns]
+    num, cat = family_feature_lists(r, "tree")
+    num = [c for c in num if c in clean.columns]
+    cat = [c for c in cat if c in clean.columns]
     return num, cat
 
 
@@ -95,7 +101,7 @@ def add_event_columns(clean: pd.DataFrame) -> pd.DataFrame:
 
 
 # =============================================================================
-# Person-period expansion (pure pandas — unit-testable)
+# Person-period expansion (pure pandas  unit-testable)
 # =============================================================================
 def build_person_period(clean: pd.DataFrame, num: list[str], cat: list[str],
                          *, cat_dtypes: dict | None = None) -> tuple[pd.DataFrame, dict]:
@@ -103,7 +109,7 @@ def build_person_period(clean: pd.DataFrame, num: list[str], cat: list[str],
 
     `clean` must already have `lead`, `event_d`, `src_idx` (see add_event_columns).
     Categoricals are pinned to `cat_dtypes` if given (train dtype; unseen -> NaN),
-    otherwise inferred here and the resulting dtypes are returned — so the caller
+    otherwise inferred here and the resulting dtypes are returned  so the caller
     can reuse the TRAIN dtypes when building val/test grids (the v11 fix).
     """
     prevs = {d: (SNAP[i - 1] if i > 0 else 0) for i, d in enumerate(SNAP)}
@@ -131,7 +137,7 @@ def build_person_period(clean: pd.DataFrame, num: list[str], cat: list[str],
 
 
 # =============================================================================
-# Survival product (pure — testable with a stub hazard fn)
+# Survival product (pure  testable with a stub hazard fn)
 # =============================================================================
 def survival_cancel_proba(bookings: pd.DataFrame, haz_fn, num: list[str], cat: list[str],
                           cat_dtypes: dict, *, horizon_col: str = AXIS,
@@ -139,7 +145,7 @@ def survival_cancel_proba(bookings: pd.DataFrame, haz_fn, num: list[str], cat: l
     """Per-booking P(cancel before arrival) = 1 - Π_{s∈snaps, s≤D} (1 - h_s).
 
     The grid is the model's TRAINED snapshot grid (daily 1..14 + the coarse tail),
-    NOT a daily grid capped at 14 — so LONG-LEAD bookings (arrival far out) accumulate
+    NOT a daily grid capped at 14  so LONG-LEAD bookings (arrival far out) accumulate
     cancel risk across the full horizon the model knows (the #5 fix). D = the
     booking's `horizon_col` (days_until_arrival), capped at its `lead`. Pass
     `snaps=hz["snap"]` so scoring matches exactly what the model was trained on.
@@ -154,7 +160,7 @@ def survival_cancel_proba(bookings: pd.DataFrame, haz_fn, num: list[str], cat: l
     if n == 0 or snaps_arr.size == 0:
         return np.zeros(n, dtype=float)
     # Cross bookings × snapshots, keep the snapshots each booking actually traverses
-    # (snap ≤ its days-to-arrival). Vectorised — no per-booking Python loop.
+    # (snap ≤ its days-to-arrival). Vectorised  no per-booking Python loop.
     row_idx = np.repeat(np.arange(n), snaps_arr.size)
     snap_col = np.tile(snaps_arr, n)
     keep = snap_col <= D[row_idx]
@@ -178,11 +184,11 @@ def survival_cancel_proba(bookings: pd.DataFrame, haz_fn, num: list[str], cat: l
 
 
 # =============================================================================
-# Fit + calibrate (xgboost — kernel-validated)
+# Fit + calibrate (xgboost  kernel-validated)
 # =============================================================================
 def _sample_hp(rng) -> dict:
     """Sample one hyperparameter config (depth, lr, min_child_weight, reg_lambda,
-    subsample, colsample) — the RandomizedSearch space for the hazard model."""
+    subsample, colsample)  the RandomizedSearch space for the hazard model."""
     return dict(
         max_depth=int(rng.choice([4, 5, 6, 7, 8])),
         learning_rate=float(np.exp(rng.uniform(np.log(0.02), np.log(0.15)))),
@@ -193,15 +199,36 @@ def _sample_hp(rng) -> dict:
     )
 
 
+def card_hp() -> dict | None:
+    """Frozen hazard hyperparameters from the model card (search-space keys only), so
+    per-fold EVALUATION refits with ONE fit instead of a full RandomizedSearch. Returns
+    None (=> full search) when no card exists yet.
+
+    THE single source of the frozen hazard HP: src.model_eval AND the notebook bake-offs
+    (training.bakeoff_walk_forward, walk_forward_eval_hazard, walk_forward_per_snapshot,
+    _wf_hazard_folds) all call this, so every EVAL surface fits the hazard IDENTICALLY
+    (consistency fix). Retraining for DEPLOYMENT still runs the full search on purpose.
+    """
+    from . import scoring as sc
+    try:
+        hp = dict(sc.load_model_card("hazard").get("hyperparams", {}))
+    except Exception:  # noqa: BLE001  no card yet
+        return None
+    keys = ("max_depth", "learning_rate", "min_child_weight", "reg_lambda",
+            "subsample", "colsample_bytree")
+    picked = {k: hp[k] for k in keys if k in hp}
+    return picked or None
+
+
 def fit_hazard(clean_resolved: pd.DataFrame, *, val_frac: float = 0.15,
                n_iter: int = 15, seed: int = SEED, fixed_hp: dict | None = None) -> dict:
     """Fit the hazard model on RESOLVED bookings via a RandomizedSearch (with
-    EARLY STOPPING — no fixed tree count) + PER-SNAPSHOT-BAND isotonic calibration,
+    EARLY STOPPING  no fixed tree count) + PER-SNAPSHOT-BAND isotonic calibration,
     both on a temporally held-out (most-recent-by-created) validation slice.
 
     `fixed_hp` skips the search and fits ONE model with the given hyperparameters (still
     early-stopped + calibrated). This is the FROZEN-hp path used by leak-free per-fold
-    evaluation / refit (src.model_eval), so a walk-forward doesn't re-tune per fold — the
+    evaluation / refit (src.model_eval), so a walk-forward doesn't re-tune per fold  the
     same discipline the static models use via training._card_hp. None => full search.
 
     Returns a dict artifact: {model, iso, iso_bands, num, cat, cat_dtypes, snap,
@@ -287,7 +314,7 @@ def hazard_fn(hz: dict):
 
 def score_upcoming_hazard(hz: dict, bookings: pd.DataFrame) -> np.ndarray:
     """Per-booking P(cancel before arrival) for upcoming bookings (survival product
-    over the model's full trained snapshot grid — long-lead bookings included)."""
+    over the model's full trained snapshot grid  long-lead bookings included)."""
     return survival_cancel_proba(bookings, hazard_fn(hz), hz["num"], hz["cat"],
                                  hz["cat_dtypes"], snaps=hz.get("snap"))
 
@@ -306,7 +333,7 @@ def load_hazard(path=None) -> dict:
     import joblib
     p = data_dir() / HAZARD_PATH if path is None else path
     if not p.exists():
-        raise FileNotFoundError(f"{p} not found — train the hazard model first (retrain_hazard).")
+        raise FileNotFoundError(f"{p} not found  train the hazard model first (retrain_hazard).")
     return joblib.load(p)
 
 
@@ -315,7 +342,7 @@ def hazard_available() -> bool:
 
 
 # =============================================================================
-# Retrain (point-in-time) — fit on all resolved data, persist
+# Retrain (point-in-time)  fit on all resolved data, persist
 # =============================================================================
 def retrain_hazard(*, asof=None, persist: bool = True, seed: int = SEED,
                    refresh_eval: bool = False) -> dict:
@@ -442,7 +469,7 @@ def walk_forward_eval_hazard(*, n_folds: int = 6, horizon_days: int = 14, step_d
         tr, te = clean.iloc[f.train_idx], clean.iloc[f.test_idx]
         if len(tr) < 500 or len(te) < 50:
             continue
-        hz = fit_hazard(tr, seed=seed)
+        hz = fit_hazard(tr, seed=seed, fixed_hp=card_hp())   # frozen HP: eval == every surface
         S = pd.Timestamp(f.origin)
         teb = te.copy()
         arr = pd.to_datetime(teb[ARRIVAL], utc=True); cre = pd.to_datetime(teb["created"], utc=True)
@@ -480,7 +507,7 @@ def walk_forward_eval_hazard(*, n_folds: int = 6, horizon_days: int = 14, step_d
 
 
 # =============================================================================
-# Time-resolved (per-snapshot) evaluation — does the hazard track risk over time?
+# Time-resolved (per-snapshot) evaluation  does the hazard track risk over time?
 # =============================================================================
 # The walk-forward above grades each booking ONCE (its decision horizon). To test
 # whether the hazard captures how risk CHANGES as arrival approaches, we score each
@@ -489,7 +516,7 @@ def walk_forward_eval_hazard(*, n_folds: int = 6, horizon_days: int = 14, step_d
 # before the test bookings.
 def per_snapshot_scores(hz: dict, clean_test: pd.DataFrame,
                         *, max_days: int | None = None) -> pd.DataFrame:
-    """Long frame [days_until_arrival, width, y, p] — the CALIBRATED hazard for each
+    """Long frame [days_until_arrival, width, y, p]  the CALIBRATED hazard for each
     (test booking × snapshot). Feed a per-fold `hz` and that fold's TEST bookings.
 
     `max_days` caps the evaluated horizon. A decision-time test set is open at
@@ -535,7 +562,7 @@ def walk_forward_per_snapshot(*, n_folds: int = 6, horizon_days: int = 14,
         tr, te = clean.iloc[f.train_idx], clean.iloc[f.test_idx]
         if len(tr) < 500 or len(te) < 50:
             continue
-        hz = fit_hazard(tr, seed=seed)
+        hz = fit_hazard(tr, seed=seed, fixed_hp=card_hp())   # frozen HP: eval == every surface
         parts.append(per_snapshot_scores(hz, te, max_days=horizon_days))   # daily decision band only
     scores = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=[AXIS, "width", "y", "p"])
     return {"per_snapshot": snapshot_metrics(scores), "scores": scores}
@@ -551,7 +578,7 @@ def _wf_hazard_folds(n_folds, horizon_days, step_days, seed):
         tr, te = clean.iloc[f.train_idx], clean.iloc[f.test_idx]
         if len(tr) < 500 or len(te) < 50:
             continue
-        hz = fit_hazard(tr, seed=seed)
+        hz = fit_hazard(tr, seed=seed, fixed_hp=card_hp())   # frozen HP: eval == every surface
         te = te.copy()
         arr = pd.to_datetime(te[ARRIVAL], utc=True); cre = pd.to_datetime(te["created"], utc=True)
         te["lead"] = (arr - cre) / pd.Timedelta(days=1)

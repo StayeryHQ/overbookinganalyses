@@ -87,8 +87,8 @@ uv run python -c "import src; print(src.__all__)"   # smoke-test the package
 ## Health checks
 
 ```bash
-uv run python diagnostics/verify_pipeline.py       # ~28 consistency + leakage checks
-uv run python diagnostics/diagnose_calibration.py  # eval artifact vs notebook reference
+uv run python tests/verify_pipeline.py       # consistency + leakage checks
+uv run python tests/diagnose_calibration.py  # eval artifact vs notebook reference
 ```
 
 Run `verify_pipeline.py` from the repo root after any refactor or data refresh — it
