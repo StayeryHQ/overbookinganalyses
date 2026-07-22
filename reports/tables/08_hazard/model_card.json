@@ -1,17 +1,18 @@
 {
   "model": "hazard",
-  "retrained_at": "2026-07-15T19:08:52.789218+00:00",
-  "asof": "2026-07-12",
-  "val_ap": 0.07656059228430237,
+  "retrained_at": "2026-07-21T20:10:40.117755+00:00",
+  "mode": "retune",
+  "asof": "2026-07-18",
+  "val_ap": 0.07826313004587018,
   "hyperparams": {
-    "max_depth": 6,
-    "learning_rate": 0.05,
-    "min_child_weight": 5,
-    "reg_lambda": 1.0,
-    "subsample": 0.8,
-    "colsample_bytree": 0.8
+    "max_depth": 7,
+    "learning_rate": 0.023538653154365943,
+    "min_child_weight": 20,
+    "reg_lambda": 1.9266471602959974,
+    "subsample": 0.9007849390949739,
+    "colsample_bytree": 0.8175751586115095
   },
-  "n_train_person_period": 1250489,
+  "n_train_person_period": 1260048,
   "snap": [
     1,
     2,
