@@ -46,6 +46,10 @@ app = Dash(
     external_stylesheets=EXTERNAL_STYLESHEETS,
     suppress_callback_exceptions=True,   # callbacks target components on page-scoped layouts
     title="STAYERY · Cancellation Analytics",
+    # Disable Dash's default "Updating..." browser-tab title. The pages poll a job file on
+    # a short dcc.Interval, which otherwise makes that title flicker permanently even when
+    # nothing is running. In-page progress rings (ui.job_loader) already show real progress.
+    update_title=None,
 )
 
 _original_strip = app.strip_relative_path
