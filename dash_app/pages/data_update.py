@@ -1,25 +1,22 @@
 # dash_app/pages/data_update.py
-# PAGE 5 - Retraining & hyperparameters ONLY. Data update moved to Cancellation
-# History (rebuild the cleaned history) and 14-day scoring to Occupancy & Predictions;
-# building the Model-Performance eval/SHAP artifacts lives on the Model Performance
-# page. What remains here: the current-model tiles + hyperparameters + walk-forward
-# metrics, and the on-demand Retrain action (confirm-modal, overwrites the serving
-# artifact). Retrain runs through dash_app.backend.jobs (file-backed thread): a
-# dcc.Interval polls the job file, so progress SURVIVES page changes and a dead
-# worker shows a loud error instead of an eternal loading bar. Logic in model_ops.py.
+# PAGE 5 - Current model info (READ-ONLY). Shows the served model's tiles, current
+# hyperparameters, last walk-forward metrics and the cleaned-history freshness.
+# Retraining is deliberately NOT in the app — it is heavy and OVERWRITES the serving
+# model, so it runs from the CLI (`uv run python main.py retrain …`). Data update lives
+# on Cancellation History and 14-day scoring on Occupancy & Predictions. Logic in
+# model_ops.py.
 
 from __future__ import annotations
 
 import dash
 import dash_mantine_components as dmc
-from dash import Input, Output, State, callback, dcc, html, no_update
+from dash import Input, Output, callback, dcc, html
 
-from dash_app.backend import jobs
 from dash_app.backend import model_ops as mo
 from dash_app.components import ui
 
-dash.register_page(__name__, path="/data-update", name="Update & Retraining",
-                   order=4, title="STAYERY · Update & Retraining")
+dash.register_page(__name__, path="/data-update", name="Model info",
+                   order=4, title="STAYERY · Model info")
 
 
 
@@ -137,42 +134,13 @@ def _wf_panel(model: str):
     return dmc.Stack(rows, gap=6)
 
 
-def _err_alert(text: str):
-    return dmc.Alert(dmc.Text(str(text), size="sm"), color="red", variant="light",
-                     title="Failed", icon=html.I(className="bi bi-exclamation-triangle"))
-
-
-# ---------------------------------------------------------------------------
-# Per-job SUCCESS renderers
-# ---------------------------------------------------------------------------
-def _retrain_result(res: dict):
-    agg = res.get("walk_forward_aggregate") or {}
-    auc = agg.get("auc", {}).get("mean") if isinstance(agg.get("auc"), dict) else None
-    change = res.get("feature_change") or {}
-    n_books = res.get("n_train_deploy")
-    books_txt = f"{n_books:,}" if isinstance(n_books, (int, float)) and n_books else "?"
-    n_pp = res.get("n_train_person_period")
-    pp_txt = f" ({n_pp:,} person-periods)" if isinstance(n_pp, (int, float)) and n_pp else ""
-    return dmc.Alert(dmc.Stack([
-        dmc.Text(f"Retrained {mo.model_label(res.get('model', '?'))} ({res.get('mode')}) "
-                 f"on {books_txt} bookings{pp_txt}.", fw=600, size="sm"),
-        dmc.Text((f"Walk-forward AUC ≈ {auc:.3f}. " if auc is not None else "")
-                 + (f"Feature set changed: +{change.get('added')} −{change.get('removed')}. "
-                    if change.get("changed") else "Feature set unchanged. ")
-                 + f"Finished {res.get('retrained_at') or '?'}.", size="xs", c="dimmed"),
-        dmc.Text("Re-score the next 14 days on Occupancy & Predictions to use the new model.",
-                 size="xs", c="dimmed"),
-    ], gap=6), color="green", variant="light", icon=html.I(className="bi bi-check-circle"))
-
-
 def _clean_history_line():
-    """One-line freshness note for the cleaned history that Retrain trains on, so the user
-    can see at a glance whether to tick 'update history first'."""
+    """One-line freshness note for the cleaned history that the served model was trained on
+    (read straight from the parquet, so it stays accurate after a history rebuild)."""
     s = mo.clean_history_status()
     if not s.get("exists"):
-        return dmc.Text("Cleaned history not built yet — tick 'update history first' below, "
-                        "or rebuild it on the Cancellation History page.",
-                        size="xs", c="orange")
+        return dmc.Text("Cleaned history not built yet — rebuild it on the Cancellation "
+                        "History page.", size="xs", c="orange")
     rows = f"{s['rows']:,} bookings" if s.get("rows") else "—"
     return dmc.Text(f"Training data: {rows} · through {s.get('data_through') or '?'} · "
                     f"cleaned history last rebuilt {s.get('rebuilt_at') or '?'}.",
@@ -188,21 +156,16 @@ def layout(**_kwargs):
 
     header = dmc.Group([
         dmc.Group([
-            dmc.Title("Update & retraining", order=3),
-            dmc.Badge("Data & model · jobs survive page changes", color="gray",
+            dmc.Title("Model info", order=3),
+            dmc.Badge("Current served model · read-only", color="gray",
                       variant="light", radius="sm"),
         ], gap="sm", align="center"),
-        dmc.Text("Retrain the serving model on demand; data updates live on their "
-                 "own pages now.", size="sm", c="dimmed"),
+        dmc.Text("View the served model; retraining runs from the CLI (see below). "
+                 "Data updates and scoring live on their own pages.", size="sm", c="dimmed"),
     ], justify="space-between", align="center", wrap="wrap", mb="xs")
 
     stores = html.Div([
         dcc.Store(id="du-info-version", data=0),
-        dcc.Store(id="du-jobs-seen", data={}),
-        dcc.Store(id="du-kick", data=0),
-        # THE page heartbeat: polls Data/jobs/*.json so progress/result render
-        # from server truth - page changes and app restarts included.
-        dcc.Interval(id="du-poll", interval=1200, n_intervals=0),
     ])
 
     # 3) Model info (tiles, hyperparams, metrics).
@@ -237,45 +200,44 @@ def layout(**_kwargs):
         html.Div(id="du-trainrows", children=dmc.Skeleton(height=200, radius="md")),
     ], withBorder=True, radius="lg", p="md", shadow="xs")
 
-    # 4) RETRAIN - controls, progress and result in ONE card + confirm modal.
+    # 4) RETRAIN - CLI only. Retraining is heavy and OVERWRITES the serving model, so it
+    # is deliberately NOT a button here. This card just documents the CLI commands.
     retrain_card = dmc.Card([
-        dmc.Group([dmc.Text("Retraining (on demand)", fw=600, size="sm"),
-                   ui.info_icon("Refits the selected model on all resolved data and OVERWRITES "
-                                "the serving artifact - hence the confirmation. Cannot be "
-                                "cancelled once started; it runs to completion (or error) and "
-                                "survives page changes.")], gap=6),
-        dmc.Text("Default keeps the frozen hyperparameters; re-estimating searches them "
-                 "again (slower). Trains on the cleaned history — tick 'update history "
-                 "first' to pull fresh data from BigQuery before retraining.",
-                 size="xs", c="dimmed"),
+        dmc.Group([dmc.Text("Retraining (command line)", fw=600, size="sm"),
+                   ui.info_icon("Retraining refits on all resolved data and OVERWRITES the "
+                                "serving artifact. It is heavy, so it runs from the CLI — not "
+                                "from this page. Scoring and data updates stay in the app.")],
+                  gap=6),
+        dmc.Text("Retraining is not available as a button (on purpose). Run it from a "
+                 "terminal in the project root:", size="xs", c="dimmed"),
         html.Div(_clean_history_line(), id="du-clean-freshness", className="mt-1"),
-        dmc.Group([
-            dmc.Select(id="du-model", label="Model", data=opts, value=default_model,
-                       clearable=False, style={"width": "220px"},
-                       leftSection=html.I(className="bi bi-cpu")),
-            dmc.Button("Retrain model…", id="du-retrain-btn", size="sm", variant="light",
-                       leftSection=html.I(className="bi bi-gear-wide-connected"), mt=22),
-            dmc.Stack([
-                dmc.Checkbox(id="du-retune", checked=False, size="sm",
-                             label="Re-estimate hyperparameters (slower)"),
-                dmc.Checkbox(id="du-update-first", checked=False, size="sm",
-                             label="Update history from BigQuery first (slower)"),
-            ], gap=6, mt=22),
-        ], gap="md", align="flex-end", mt=8),
-        ui.two_stage_loader("du-retrain", "Retrain + evaluate", "Explanations"),
-        html.Div(id="du-retrain-result", className="mt-2"),
-        dmc.Modal(id="du-retrain-modal", opened=False, centered=True,
-                  title=dmc.Text("Confirm retraining", fw=700),
-                  children=[
-                      html.Div(id="du-retrain-modal-body"),
-                      dmc.Group([
-                          dmc.Button("Cancel", id="du-retrain-abort", variant="subtle",
-                                     color="gray"),
-                          dmc.Button("Yes, retrain now", id="du-retrain-confirm",
-                                     color="red", variant="filled"),
-                      ], justify="flex-end", mt="md"),
-                  ]),
+        html.Pre(
+            "# refit — reuse the frozen hyperparameters (fast)\n"
+            "uv run python main.py retrain --model hazard\n\n"
+            "# retune — larger hyperparameter search (slower, more thorough)\n"
+            "uv run python main.py retrain --model hazard --retune\n\n"
+            "# train on fresh data — rebuild the cleaned history first, then retrain\n"
+            "uv run python main.py update          # BigQuery pull + rescore\n"
+            "uv run python main.py retrain --model hazard\n\n"
+            "# dry run — fit + metrics, writes nothing\n"
+            "uv run python main.py retrain --model hazard --dry-run",
+            style={"background": "#f4f4f5", "padding": "12px", "borderRadius": "8px",
+                   "fontSize": "12px", "overflowX": "auto", "whiteSpace": "pre-wrap",
+                   "fontFamily": "monospace", "margin": "8px 0 0 0"}),
+        dmc.Text("Models: hazard (served), xgboost (fallback), logreg / histgb (baselines). "
+                 "After retraining, re-score the next 14 days on Occupancy & Predictions to "
+                 "serve the new model.", size="xs", c="dimmed", mt=8),
     ], withBorder=True, radius="lg", p="md", shadow="xs")
+
+    # Page-level model selector — drives the info cards below (view any model's card,
+    # hyperparameters and metrics). Not tied to retraining, which is CLI-only.
+    controls = dmc.Paper(dmc.Group([
+        dmc.Select(id="du-model", label="Model", data=opts, value=default_model,
+                   clearable=False, style={"width": "220px"},
+                   leftSection=html.I(className="bi bi-cpu")),
+        dmc.Text("Pick a model to inspect its card, hyperparameters and walk-forward "
+                 "metrics.", size="xs", c="dimmed"),
+    ], align="flex-end", gap="md", wrap="wrap"), p="md", radius="lg", withBorder=True)
 
     top_grid = dmc.Grid([
         dmc.GridCol(info_card, span={"base": 12, "md": 12}),
@@ -284,7 +246,7 @@ def layout(**_kwargs):
         dmc.GridCol(trainrows_card, span={"base": 12, "md": 12}),
     ], gutter="md")
 
-    return dmc.Stack([header, stores, top_grid, retrain_card], gap="md")
+    return dmc.Stack([header, stores, controls, top_grid, retrain_card], gap="md")
 
 
 # ---------------------------------------------------------------------------
@@ -311,112 +273,6 @@ def _fill_info(model, _version):
             _train_rows_panel(mo.training_rows_by_property()), _clean_history_line())
 
 
-# ---------------------------------------------------------------------------
-# Retrain (confirm modal -> start -> poller renders progress). This page is now
-# retrain + hyperparameters only; data update lives on Cancellation History and
-# scoring on Occupancy & Predictions.
-# ---------------------------------------------------------------------------
-@callback(
-    Output("du-retrain-modal", "opened"),
-    Output("du-retrain-modal-body", "children"),
-    Input("du-retrain-btn", "n_clicks"),
-    State("du-model", "value"),
-    State("du-retune", "checked"),
-    State("du-update-first", "checked"),
-    prevent_initial_call=True,
-)
-def _confirm_retrain(_n, model, retune, update_first):
-    st = mo.model_status(model or "hazard")
-    mode = "retune (hyperparameter search)" if retune else "refit (frozen hyperparameters)"
-    data_note = ("Will FIRST pull fresh reservations from BigQuery and rebuild the cleaned "
-                 "history, then retrain on it."
-                 if update_first else
-                 "Trains on the current cleaned history (no BigQuery pull).")
-    body = dmc.Stack([
-        dmc.Text(f"This will retrain {st.get('label')} and OVERWRITE the serving artifact.",
-                 size="sm"),
-        dmc.Text(f"Mode: {mode}. Last retrained: {st.get('retrained_at') or 'never'}.",
-                 size="sm", c="dimmed"),
-        dmc.Text(data_note, size="sm", c="dimmed"),
-        dmc.Text("You can cancel it  it stops at the next stage and the previous model "
-                 "stays in place (a fit already running finishes that step first). "
-                 "It also survives page changes.", size="xs", c="dimmed"),
-    ], gap=6)
-    return True, body
-
-
-@callback(
-    Output("du-retrain-modal", "opened", allow_duplicate=True),
-    Output("du-kick", "data", allow_duplicate=True),
-    Input("du-retrain-confirm", "n_clicks"),
-    State("du-model", "value"),
-    State("du-retune", "checked"),
-    State("du-update-first", "checked"),
-    prevent_initial_call=True,
-)
-def _start_retrain(n, model, retune, update_first):
-    jobs.start("retrain", mo.retrain_job, model or "hazard", bool(retune), bool(update_first))
-    return False, n
-
-
-@callback(
-    Output("du-retrain-modal", "opened", allow_duplicate=True),
-    Input("du-retrain-abort", "n_clicks"),
-    prevent_initial_call=True,
-)
-def _abort_retrain(_n):
-    return False
-
-
-# ---------------------------------------------------------------------------
-# THE poller - renders the two-stage retrain loader from its status file, bumps the
-# model-info version once on completion, and disables the retrain button while running.
-# ---------------------------------------------------------------------------
-@callback(
-    Output("du-retrain-ring1", "sections"), Output("du-retrain-pct1", "children"),
-    Output("du-retrain-ring2", "sections"), Output("du-retrain-pct2", "children"),
-    Output("du-retrain-msg", "children"), Output("du-retrain-wrap", "style"),
-    Output("du-retrain-cancel", "children"),
-    Output("du-retrain-result", "children"), Output("du-retrain-btn", "disabled"),
-    Output("du-info-version", "data"),
-    Output("du-jobs-seen", "data"),
-    Input("du-poll", "n_intervals"),
-    Input("du-kick", "data"),
-    State("du-jobs-seen", "data"),
-    State("du-info-version", "data"),
-)
-def _poll(_n, _kick, seen, info_v):
-    seen = dict(seen or {})
-    st = jobs.read("retrain")
-    status = st.get("status", "idle")
-    if status == "running":
-        r1, p1, r2, p2, msg, wrap = ui.two_stage_view(float(st.get("progress", 0)),
-                                                      st.get("message", ""), show=True)
-        return r1, p1, r2, p2, msg, wrap, "Cancel", no_update, True, no_update, no_update
-    r1, p1, r2, p2, msg, wrap = ui.two_stage_view(0, "", show=False)
-    fin = st.get("finished")
-    new_info = no_update
-    if fin and seen.get("retrain") != fin:
-        seen["retrain"] = fin
-        if status == "done":
-            new_info = (info_v or 0) + 1     # refresh the model tiles/metrics once
-    if status == "error":
-        return r1, p1, r2, p2, msg, wrap, no_update, _err_alert(st.get("error", "unknown error")), False, new_info, seen
-    if status == "cancelled":
-        return (r1, p1, r2, p2, msg, wrap, no_update,
-                dmc.Alert("Retrain cancelled  the previous model is still in place.",
-                          color="gray", variant="light", icon=html.I(className="bi bi-x-circle")),
-                False, new_info, seen)
-    if status == "done":
-        return r1, p1, r2, p2, msg, wrap, no_update, _retrain_result(st.get("result") or {}), False, new_info, seen
-    return r1, p1, r2, p2, msg, wrap, no_update, no_update, False, no_update, seen
-
-
-@callback(
-    Output("du-retrain-cancel", "children", allow_duplicate=True),
-    Input("du-retrain-cancel", "n_clicks"),
-    prevent_initial_call=True,
-)
-def _cancel_retrain(_n):
-    jobs.cancel("retrain")
-    return "Cancelling…"
+# Retraining is intentionally CLI-only (see the "Retraining (command line)" card) — the
+# heavy, model-overwriting action does not belong in a shared web app, so there is no
+# retrain button and no job poller here anymore.

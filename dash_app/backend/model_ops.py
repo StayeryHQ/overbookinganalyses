@@ -308,28 +308,26 @@ def data_quality_flags(model_name: str, *, min_rows: int = 100,
 
 
 def clean_history_status() -> dict:
-    """Freshness of the cleaned training history — the data Retrain actually trains on.
+    """Freshness of the cleaned training history — the data the served model was trained on.
 
-    Returns the parquet's last-rebuilt time (file mtime), the data span end and the row
-    count (from the meta sidecar). All values are None-safe so the UI can say
-    'unavailable' rather than fabricate anything. This is what the retrain panel shows so
-    the user can tell at a glance whether to tick 'update history first'."""
-    import json
+    Read STRAIGHT from the parquet: last-rebuilt time (file mtime), row count (parquet
+    footer — cheap), and data span end (max of the `arrival` column). NOT from the meta
+    sidecar, which only notebook 00 writes and would go stale after an in-app history
+    rebuild. All values None-safe so the UI can say 'unavailable' rather than fabricate."""
     d = src.data_dir()
     clean = d / "reservations_clean.parquet"
     out = {"exists": clean.exists(), "rebuilt_at": None, "data_through": None, "rows": None}
-    if clean.exists():
-        ts = pd.to_datetime(clean.stat().st_mtime, unit="s", utc=True)
-        out["rebuilt_at"] = _fmt_ts(ts)
-    meta = d / "reservations_clean_meta.json"
-    if meta.exists():
-        try:
-            m = json.loads(meta.read_text())
-            am = m.get("arrival_max")
-            out["data_through"] = str(am)[:10] if am else None
-            out["rows"] = m.get("n_rows") or m.get("rows")
-        except Exception:  # noqa: BLE001
-            pass
+    if not clean.exists():
+        return out
+    out["rebuilt_at"] = _fmt_ts(pd.to_datetime(clean.stat().st_mtime, unit="s", utc=True))
+    try:
+        import pyarrow.parquet as pq
+        out["rows"] = int(pq.ParquetFile(clean).metadata.num_rows)      # footer only, cheap
+        arr = pd.to_datetime(pd.read_parquet(clean, columns=["arrival"])["arrival"],
+                             utc=True, errors="coerce").max()
+        out["data_through"] = str(arr.date()) if pd.notna(arr) else None
+    except Exception:  # noqa: BLE001
+        pass
     return out
 
 
