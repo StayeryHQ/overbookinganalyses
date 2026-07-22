@@ -117,6 +117,11 @@ _INFO = {
                   "than 30 resolved arrivals. Hover shows the no-show count and arrivals.",
     "ns_stay": "No-show rate by length of stay (short 1–2, mid 3–6, long 7+ nights). "
                "Each bar is labelled with the absolute number of no-shows.",
+    "ct_hist": "How many cancellations land at each whole day before arrival, in exact "
+               "daily bins (bin '0–1' = cancelled on the arrival day, '1–2' = the day "
+               "before, and so on). Everything 30+ days out pools into the last bar. This "
+               "is a raw count of cancellations, not a rate. Toggle 'by length of stay' to "
+               "split the bars into short / mid / long.",
 }
 
 
@@ -194,6 +199,16 @@ def layout(**_kwargs):
                  "bookings still due to arrive that day, the share that cancel. Switch "
                  "rows (stay / lead) and colour (rate / count).")
 
+    # "When do cancellations happen" — daily count histogram (+ by-LOS split).
+    cth_extra = dmc.SegmentedControl(id="cxl-cth-split", value="all", size="xs", radius="md",
+                                     data=[{"label": "All", "value": "all"},
+                                           {"label": "By length of stay", "value": "stay"}])
+    cth_card = ui.chart_card(
+        "When do cancellations happen?", "cxl-ct-hist", info=_INFO["ct_hist"], height=320,
+        header_extra=cth_extra,
+        subtitle="Number of cancellations by day before arrival · exact daily bins "
+                 "(0–1 = arrival day) · 30+ days pooled.")
+
     # ---- No-show section (new) --------------------------------------------
     noshow_header = dmc.Stack([
         dmc.Divider(mt="lg", mb=2),
@@ -249,6 +264,8 @@ def layout(**_kwargs):
 
         ui.chart_card("Cancel-timing curve", "cxl-timing", info=_INFO["timing"], height=320,
                       subtitle="How late before arrival do cancellations land?"),
+
+        cth_card,
 
         ct_card,
 
@@ -432,6 +449,20 @@ def _update_ct_grid(sel_value, dim, metric, timewin, _version):
     dim = dim if dim in ("stay", "lead") else "stay"
     grid = ch.cancel_timing_grid(props, dim=dim, window_months=_win(timewin))
     return hc.fig_cancel_timing_heatmap(grid, dim=dim, metric=(metric or "rate"))
+
+
+@callback(
+    Output("cxl-ct-hist", "figure"),
+    Input("cxl-property-filter", "value"),
+    Input("cxl-cth-split", "value"),
+    Input("cxl-timewin", "value"),
+    Input("cxl-data-version", "data"),
+)
+def _update_ct_hist(sel_value, split, timewin, _version):
+    props = _sel(sel_value)
+    by_stay = split == "stay"
+    hist = ch.cancel_timing_histogram(props, by_stay=by_stay, window_months=_win(timewin))
+    return hc.fig_cancel_timing_hist(hist, by_stay=by_stay)
 
 
 # ---------------------------------------------------------------------------

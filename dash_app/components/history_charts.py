@@ -336,6 +336,41 @@ def fig_cancel_timing_heatmap(g: pd.DataFrame, dim: str = "stay", metric: str = 
     return theme.brand_figure(fig)
 
 
+# ---- 8) "When do cancellations happen" — daily count histogram -------------
+def fig_cancel_timing_hist(df: pd.DataFrame, by_stay: bool = False,
+                           height: int = 320) -> go.Figure:
+    """Number of cancellations by whole day before arrival (exact daily bins, 0–1 = the
+    arrival day). Counts, not shares. When by_stay is set, grouped bars split the count by
+    length of stay (short/mid/long)."""
+    if df is None or df.empty:
+        return _empty("No cancellations in the current selection", height)
+    d = df.copy().sort_values("day_order")
+    order = d.drop_duplicates("day_order").sort_values("day_order")["day"].tolist()
+    fig = go.Figure()
+    if by_stay and "stay_bucket" in d.columns:
+        for seg in _SEG_ORDER:
+            s = d[d["stay_bucket"] == seg]
+            if s.empty:
+                continue
+            fig.add_trace(go.Bar(
+                x=s["day"], y=s["n_cancel"], name=_SEG_NAME[seg], marker_color=_SEG_COLOR[seg],
+                hovertemplate=_SEG_NAME[seg] + "<br>%{x} days before arrival"
+                              "<br>%{y:,} cancellations<extra></extra>"))
+        fig.update_layout(barmode="group")
+    else:
+        fig.add_trace(go.Bar(
+            x=d["day"], y=d["n_cancel"], marker_color=theme.BLUE,
+            hovertemplate="%{x} days before arrival<br>%{y:,} cancellations<extra></extra>"))
+    fig.update_layout(
+        height=height, xaxis_title="Days before arrival (0–1 = arrival day)",
+        yaxis_title="Cancellations",
+        xaxis=dict(categoryorder="array", categoryarray=order),
+        showlegend=by_stay,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0, font=dict(size=10)),
+        margin=dict(l=55, r=20, t=30, b=45))
+    return theme.brand_figure(fig)
+
+
 # ---- 9) No-shows: monthly rate, location×month heatmap, by length of stay ---
 def fig_noshow_monthly(monthly: pd.DataFrame, base_rate: float | None = None,
                        height: int = 320) -> go.Figure:

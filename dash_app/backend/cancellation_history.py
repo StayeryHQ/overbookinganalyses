@@ -422,6 +422,39 @@ def cancel_timing_grid(properties: list[str] | None = None, dim: str = "stay",
     return _cancel_timing_grid(_filtered(properties, window_months), dim)
 
 
+# ---- 7b) "When do cancellations happen" — daily count histogram -------------
+def _cancel_timing_hist(df: pd.DataFrame, by_stay: bool = False,
+                        max_day: int = 30) -> pd.DataFrame:
+    """[day, day_order(, stay_bucket), n_cancel] — number of cancellations by whole day
+    before arrival, in EXACT daily bins: bin 'k–k+1' = cancellations with
+    floor(days-before-arrival) == k (i.e. the half-open interval [k, k+1) days). Everything
+    at or beyond max_day pools into a single 'max_day+' bin so the tail isn't lost. When
+    by_stay is set the count is additionally split by stay segment. Counts, never shares."""
+    cols = ["day", "day_order"] + (["stay_bucket"] if by_stay else []) + ["n_cancel"]
+    if df.empty or "cancel_days_before_arrival" not in df.columns:
+        return pd.DataFrame(columns=cols)
+    c = df[df[TARGET] == 1].copy()
+    k = np.floor(pd.to_numeric(c["cancel_days_before_arrival"], errors="coerce"))
+    c = c.assign(_k=k)
+    c = c[c["_k"] >= 0]
+    if c.empty:
+        return pd.DataFrame(columns=cols)
+    c["_k"] = np.minimum(c["_k"].astype(int), max_day)          # overflow bucket = max_day
+    keys = ["_k"] + (["stay_bucket"] if by_stay else [])
+    g = c.groupby(keys, observed=True).size().rename("n_cancel").reset_index()
+    g["day"] = g["_k"].map(lambda x: f"{max_day}+" if x >= max_day else f"{x}–{x + 1}")
+    g["day_order"] = g["_k"].astype(int)
+    keep = ["day", "day_order"] + (["stay_bucket"] if by_stay else []) + ["n_cancel"]
+    sort_keys = ["day_order"] + (["stay_bucket"] if by_stay else [])
+    return g.sort_values(sort_keys).reset_index(drop=True)[keep]
+
+
+def cancel_timing_histogram(properties: list[str] | None = None, by_stay: bool = False,
+                            max_day: int = 30,
+                            window_months: int | None = None) -> pd.DataFrame:
+    return _cancel_timing_hist(_filtered(properties, window_months), by_stay, max_day)
+
+
 # ---- 8) No-shows (RAW resolved arrivals  the clean target hides them in 0) --
 # A no-show is a booking that did NOT cancel before arrival but never checked in. The
 # cleaned modelling cache collapses it into the "stayed" class, so no-shows are only
