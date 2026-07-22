@@ -126,9 +126,18 @@ _arr = pd.to_datetime(raw["arrival"], utc=True, errors="coerce")
 _cut = pd.to_datetime(raw["created"], utc=True, errors="coerce").max().normalize() \
        - pd.Timedelta(days=GRACE_DAYS)
 _rp = build_rateplan_category_map(raw[(_arr >= ARRIVAL_FLOOR) & (_arr < _cut)])
-ok("ratePlan_category_map reproduces committed roster map (byte-for-byte)",
-   _rp == roster.get("ratePlan_category_map", {}),
-   f"src={len(_rp)} committed={len(roster.get('ratePlan_category_map', {}))}")
+# Buckets for names present in BOTH must agree (a CHANGED bucket = real drift). NEW
+# rate-plan names in fresher data are fine — they map to 'other' until the next
+# `main.py build-roster`; we surface them as a note, not a failure.
+_committed_map = roster.get("ratePlan_category_map", {})
+_changed = {k: (_committed_map[k], _rp[k]) for k in set(_rp) & set(_committed_map)
+            if _committed_map[k] != _rp[k]}
+ok("ratePlan_category_map: no CHANGED buckets vs committed roster (new names OK)",
+   not _changed, f"changed={_changed}")
+_new_names = sorted(set(_rp) - set(_committed_map))
+if _new_names:
+    print(f"  note: {len(_new_names)} new rate-plan name(s) since the roster was built — "
+          f"run `python main.py build-roster` to fold them in: {_new_names[:8]}")
 _regen = build_feature_roster(clean, rateplan_category_map=_rp)
 ok("roster numeric/categorical/log_twins/excluded reproduce committed",
    all(_regen[k] == roster[k] for k in ("numeric", "categorical", "log_twins", "excluded",

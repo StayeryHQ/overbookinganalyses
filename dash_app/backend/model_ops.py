@@ -16,7 +16,6 @@ import pandas as pd
 
 import src
 from src import scoring as sc
-from src import training as tr
 
 logger = logging.getLogger(__name__)
 
@@ -346,9 +345,10 @@ def update_history_job(progress: Progress = _noop) -> dict:
     progress(f"Cleaning + labelling {len(raw):,} rows…", 0.60)
     clean = src.build_clean_reservations(raw)
     progress("Writing the cleaned dataset…", 0.90)   # last cancel checkpoint before the write
-    from src.data_loader import CLEAN_CACHE_FILE
+    from src.data_loader import CLEAN_CACHE_FILE, write_clean_meta
     out_path = src.data_dir() / CLEAN_CACHE_FILE
     clean.to_parquet(out_path, index=False)
+    write_clean_meta(clean)   # keep reservations_clean_meta.json fresh (model_meta / KPI read it)
 
     try:  # let the Cancellation-History page see the fresh clean cache
         from dash_app.backend import cancellation_history as ch
@@ -369,23 +369,6 @@ def update_history_job(progress: Progress = _noop) -> dict:
 # Job wrappers  thin adapters with the (progress, *args) signature jobs.start
 # expects. Keep ALL logic in the functions they call.
 # =============================================================================
-def retrain_job(progress: Progress, model_name: str, retune: bool = False,
-                update_first: bool = False) -> dict:
-    """Retrain job. If `update_first`, pull fresh reservations from BigQuery and rebuild
-    the cleaned history FIRST (so the model trains on current data), then retrain. The
-    data-update takes the first ~35 % of the progress bar, the retrain the rest. A
-    BigQuery failure raises and the whole job errors loudly (no retrain on stale data)."""
-    if update_first:
-        def _hist_p(msg: str, frac: float) -> None:
-            progress(f"Data update · {msg}", float(frac) * 0.35)
-        update_history_job(_hist_p)
-
-        def _retr_p(msg: str, frac: float) -> None:
-            progress(msg, 0.35 + float(frac) * 0.65)
-        return run_retrain(model_name, retune=retune, progress=_retr_p)
-    return run_retrain(model_name, retune=retune, progress=progress)
-
-
 def artifacts_job(progress: Progress, include_shap: bool = False) -> dict:
     """Build MISSING Model-Performance artifacts (eval; optionally SHAP)."""
     return ensure_all_eval(progress=progress, include_shap=include_shap)
@@ -407,57 +390,9 @@ def rebuild_eval_job(progress: Progress, model_name: str, all_models: bool = Fal
     return {"rebuilt": done, "errors": errors}
 
 
-# =============================================================================
-# RETRAIN  thin adapter over the existing, tested retrain logic
-# =============================================================================
-def run_retrain(model_name: str, *, retune: bool = False, asof: str | None = None,
-                progress: Progress = _noop) -> dict:
-    """Retrain ONE model for deployment. mode='refit' keeps the frozen card hyperparameters
-    (default, per the brief); retune=True re-searches them. Delegates entirely to
-    src.training.retrain (which dispatches hazard to src.hazard.retrain_hazard)  no modelling
-    logic is duplicated here. Returns a compact, UI-friendly summary."""
-    mode = "retune" if retune else "refit"
-    # Stage 1/2  fit on all resolved data AND rebuild the Model-Performance eval artifact
-    # (refresh_eval=True), so the performance page is never stale after a retrain.
-    progress(f"Stage 1/2 · retraining '{model_label(model_name)}' ({mode}) + rebuilding "
-             "evaluation. This can take a while…", 0.05)
-    result = tr.retrain(model_name, mode=mode, asof=asof, persist=True, refresh_eval=True)
-
-    # Stage 2/2  rebuild this model's explanations (SHAP beeswarm/importance, cached PDP,
-    # iteration curve) so the predictions-page XAI reflects the retrained model WITHOUT ever
-    # recomputing over many bookings there. Best-effort  never fail the retrain on it.
-    progress("Stage 2/2 · rebuilding explanations (SHAP + partial dependence)…", 0.55)
-    try:
-        from dash_app.backend import explain as ex
-        ex.compute_global_shap(model_name, refresh=True)
-        ex.compute_all_pdp(model_name, refresh=True)
-        if model_name in ("xgboost", "histgb"):
-            ex.iteration_curve(model_name, refresh=True)
-    except Exception as e:  # noqa: BLE001  never fail the retrain over explanations
-        logger.warning("post-retrain explanation rebuild failed for %s: %s", model_name, e)
-
-    progress("Reading back the updated model card…", 0.9)
-    status = model_status(model_name)
-    agg = {}
-    wf = result.get("walk_forward", {})
-    if isinstance(wf, dict):
-        agg = wf.get("aggregate", {})
-    progress("Done.", 1.0)
-    return {
-        "model": model_name,
-        "mode": result.get("mode", mode),
-        "asof": result.get("asof"),
-        # Static models report n_train_deploy; the hazard model reports n_books_resolved
-        # (bookings) + n_train_pp (person-periods). Coalesce so the success message shows a
-        # real booking count for the hazard model instead of "?".
-        "n_train_deploy": result.get("n_train_deploy") or result.get("n_books_resolved"),
-        "n_train_person_period": result.get("n_train_pp"),
-        "retrained_at": status.get("retrained_at"),
-        "feature_change": result.get("feature_change"),
-        "walk_forward_aggregate": agg,
-        "hyperparams": result.get("hyperparams"),
-        "eval_refreshed": result.get("eval_refreshed"),
-    }
+# Retraining is CLI-only (`uv run python main.py retrain …` → src.training.retrain). The
+# old in-app retrain_job/run_retrain wrappers were removed with the retrain button — the
+# CLI calls src.training.retrain directly, so nothing was duplicated here.
 
 
 # =============================================================================

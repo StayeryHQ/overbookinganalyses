@@ -228,6 +228,7 @@ def bigquery_healthcheck() -> dict:
 # (produced by 00_data_audit.ipynb).
 RAW_CACHE_FILE: Final[str] = "reservations_raw_no_pii.parquet"
 CLEAN_CACHE_FILE: Final[str] = "reservations_clean.parquet"
+CLEAN_META_FILE: Final[str] = "reservations_clean_meta.json"
 
 # ---- Dtype hints ----------------------------------------------------------
 INT_COLUMNS: Final[tuple[str, ...]] = (
@@ -476,6 +477,38 @@ def build_clean_reservations(raw: pd.DataFrame, *, write_roster: bool = False) -
     if write_roster or not (data_dir() / ROSTER_FILENAME).exists():
         write_feature_roster(out, rateplan_category_map=rp_map)
     return out
+
+
+def clean_reservations_meta(clean: pd.DataFrame) -> dict:
+    """Run-metadata sidecar for the cleaned parquet (mirrors notebook 00 §11's meta).
+
+    Everything is derived from the clean frame, so it always matches the parquet it
+    describes. `model_meta()` (Occupancy KPI) and the model-info freshness line read it —
+    writing it on every runtime rebuild is what keeps them from going stale."""
+    arr = pd.to_datetime(clean["arrival"], utc=True, errors="coerce")
+    cre = pd.to_datetime(clean.get("created"), utc=True, errors="coerce")
+    status = pd.to_numeric(clean.get("status"), errors="coerce")
+    cutoff = (cre.max().normalize() - pd.Timedelta(days=GRACE_DAYS)) if cre.notna().any() else None
+    return {
+        "run_timestamp_utc": str(pd.Timestamp.now("UTC")),
+        "arrival_floor": str(ARRIVAL_FLOOR.date()),
+        "arrival_cutoff": str(cutoff.date()) if cutoff is not None and pd.notna(cutoff) else None,
+        "grace_days": GRACE_DAYS,
+        "n_rows": int(len(clean)),
+        "n_cols": int(clean.shape[1]),
+        "positive_share": float(status.mean()) if status.notna().any() else None,
+        "arrival_min": str(arr.min()),
+        "arrival_max": str(arr.max()),
+    }
+
+
+def write_clean_meta(clean: pd.DataFrame, path: str | Path | None = None) -> Path:
+    """Write Data/reservations_clean_meta.json for a cleaned frame. Call this wherever the
+    cleaned parquet is (re)written at runtime, so the sidecar never goes stale (previously
+    only notebook 00 wrote it, so an in-app history rebuild left it out of date)."""
+    p = Path(path) if path is not None else data_dir() / CLEAN_META_FILE
+    p.write_text(json.dumps(clean_reservations_meta(clean), indent=2))
+    return p
 
 
 # =============================================================================
