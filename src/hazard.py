@@ -289,7 +289,27 @@ def fit_hazard(clean_resolved: pd.DataFrame, *, val_frac: float = 0.15,
     iso_bands = {"edge": CAL_BAND_EDGE,
                  "le": _fit_band(axis_va <= CAL_BAND_EDGE),
                  "gt": _fit_band(axis_va >  CAL_BAND_EDGE)}
+
+    # Decision-time recalibration (aggregate-bias fix). The survival PRODUCT of the
+    # per-window calibrated hazards ranks well but is aggregate-biased on the decision
+    # population: multiplicative compounding + survivor selection make it UNDER-predict the
+    # TOTAL cancels (~15%), which for overbooking means systematically under-freeing rooms.
+    # Fit a monotone map on the HELD-OUT validation bookings' per-booking survival-product
+    # prediction vs cancel-by-arrival; score_upcoming_hazard applies it so the summed
+    # expected-freed-rooms the overbooking math consumes is unbiased. Isotonic => ranking
+    # preserved. Mirrors the static models' decision-time recal (training.retrain). (Fit on
+    # the val slice for cost; a fuller version would use pooled walk_forward_predict_hazard.)
+    decision_recal = None
+    _partial = {"model": model, "iso": iso_pooled, "iso_bands": iso_bands}
+    va_b = va_books.copy()
+    va_b[AXIS] = np.minimum(va_b["lead"], CAL_BAND_EDGE).clip(lower=1)
+    p_va_book = survival_cancel_proba(va_b, hazard_fn(_partial), num, cat, cat_dtypes, snaps=SNAP)
+    y_va_book = (wf.target_series(va_b).to_numpy() == 1).astype(int)
+    if len(va_b) >= 500 and np.unique(y_va_book).size > 1 and p_va_book.std() > 0:
+        decision_recal = IsotonicRegression(out_of_bounds="clip").fit(p_va_book, y_va_book)
+
     return {"model": model, "iso": iso_pooled, "iso_bands": iso_bands,
+            "decision_recal": decision_recal,
             "num": num, "cat": cat, "cat_dtypes": cat_dtypes,
             "snap": SNAP, "axis": AXIS, "hp": hp, "val_ap": float(val_ap),
             "best_iteration": int(getattr(model, "best_iteration", 0) or 0),
@@ -320,10 +340,16 @@ def hazard_fn(hz: dict):
 
 
 def score_upcoming_hazard(hz: dict, bookings: pd.DataFrame) -> np.ndarray:
-    """Per-booking P(cancel before arrival) for upcoming bookings (survival product
-    over the model's full trained snapshot grid  long-lead bookings included)."""
-    return survival_cancel_proba(bookings, hazard_fn(hz), hz["num"], hz["cat"],
-                                 hz["cat_dtypes"], snaps=hz.get("snap"))
+    """Per-booking P(cancel before arrival) for upcoming bookings (survival product over
+    the model's full trained snapshot grid  long-lead bookings included), with the
+    DECISION-TIME recalibration applied when the artifact carries one (aggregate-bias fix;
+    isotonic => ranking preserved). Older artifacts without it pass through unchanged."""
+    p = survival_cancel_proba(bookings, hazard_fn(hz), hz["num"], hz["cat"],
+                              hz["cat_dtypes"], snaps=hz.get("snap"))
+    recal = hz.get("decision_recal")
+    if recal is not None:
+        p = np.clip(recal.predict(np.asarray(p, dtype=float)), 0.0, 1.0)
+    return p
 
 
 # =============================================================================
@@ -384,6 +410,7 @@ def retrain_hazard(*, mode: str = "refit", asof=None, persist: bool = True, seed
                 "mode": used_mode,
                 "asof": str(asof_ts.date()), "val_ap": hz["val_ap"], "hyperparams": hz["hp"],
                 "n_train_person_period": hz["n_train_pp"], "snap": SNAP, "axis": AXIS,
+                "decision_time_recalibrated": bool(hz.get("decision_recal") is not None),
                 "features_numeric": hz["num"], "features_categorical": hz["cat"]}
         cp = repo_root() / HAZARD_CARD
         cp.parent.mkdir(parents=True, exist_ok=True)
