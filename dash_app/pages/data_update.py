@@ -149,9 +149,13 @@ def _retrain_result(res: dict):
     agg = res.get("walk_forward_aggregate") or {}
     auc = agg.get("auc", {}).get("mean") if isinstance(agg.get("auc"), dict) else None
     change = res.get("feature_change") or {}
+    n_books = res.get("n_train_deploy")
+    books_txt = f"{n_books:,}" if isinstance(n_books, (int, float)) and n_books else "?"
+    n_pp = res.get("n_train_person_period")
+    pp_txt = f" ({n_pp:,} person-periods)" if isinstance(n_pp, (int, float)) and n_pp else ""
     return dmc.Alert(dmc.Stack([
         dmc.Text(f"Retrained {mo.model_label(res.get('model', '?'))} ({res.get('mode')}) "
-                 f"on {res.get('n_train_deploy') or '?'} bookings.", fw=600, size="sm"),
+                 f"on {books_txt} bookings{pp_txt}.", fw=600, size="sm"),
         dmc.Text((f"Walk-forward AUC ≈ {auc:.3f}. " if auc is not None else "")
                  + (f"Feature set changed: +{change.get('added')} −{change.get('removed')}. "
                     if change.get("changed") else "Feature set unchanged. ")
@@ -159,6 +163,20 @@ def _retrain_result(res: dict):
         dmc.Text("Re-score the next 14 days on Occupancy & Predictions to use the new model.",
                  size="xs", c="dimmed"),
     ], gap=6), color="green", variant="light", icon=html.I(className="bi bi-check-circle"))
+
+
+def _clean_history_line():
+    """One-line freshness note for the cleaned history that Retrain trains on, so the user
+    can see at a glance whether to tick 'update history first'."""
+    s = mo.clean_history_status()
+    if not s.get("exists"):
+        return dmc.Text("Cleaned history not built yet — tick 'update history first' below, "
+                        "or rebuild it on the Cancellation History page.",
+                        size="xs", c="orange")
+    rows = f"{s['rows']:,} bookings" if s.get("rows") else "—"
+    return dmc.Text(f"Training data: {rows} · through {s.get('data_through') or '?'} · "
+                    f"cleaned history last rebuilt {s.get('rebuilt_at') or '?'}.",
+                    size="xs", c="dimmed")
 
 
 # ---------------------------------------------------------------------------
@@ -227,17 +245,22 @@ def layout(**_kwargs):
                                 "cancelled once started; it runs to completion (or error) and "
                                 "survives page changes.")], gap=6),
         dmc.Text("Default keeps the frozen hyperparameters; re-estimating searches them "
-                 "again (slower). Trains on the cleaned history  rebuild that on the "
-                 "Cancellation History page first if you need fresh data.",
+                 "again (slower). Trains on the cleaned history — tick 'update history "
+                 "first' to pull fresh data from BigQuery before retraining.",
                  size="xs", c="dimmed"),
+        html.Div(_clean_history_line(), id="du-clean-freshness", className="mt-1"),
         dmc.Group([
             dmc.Select(id="du-model", label="Model", data=opts, value=default_model,
                        clearable=False, style={"width": "220px"},
                        leftSection=html.I(className="bi bi-cpu")),
             dmc.Button("Retrain model…", id="du-retrain-btn", size="sm", variant="light",
                        leftSection=html.I(className="bi bi-gear-wide-connected"), mt=22),
-            dmc.Checkbox(id="du-retune", checked=False, size="sm",
-                         label="Re-estimate hyperparameters (slower)", mt=26),
+            dmc.Stack([
+                dmc.Checkbox(id="du-retune", checked=False, size="sm",
+                             label="Re-estimate hyperparameters (slower)"),
+                dmc.Checkbox(id="du-update-first", checked=False, size="sm",
+                             label="Update history from BigQuery first (slower)"),
+            ], gap=6, mt=22),
         ], gap="md", align="flex-end", mt=8),
         ui.two_stage_loader("du-retrain", "Retrain + evaluate", "Explanations"),
         html.Div(id="du-retrain-result", className="mt-2"),
@@ -273,6 +296,7 @@ def layout(**_kwargs):
     Output("du-hp", "children"),
     Output("du-metrics", "children"),
     Output("du-trainrows", "children"),
+    Output("du-clean-freshness", "children"),
     Input("du-model", "value"),
     Input("du-info-version", "data"),
 )
@@ -284,7 +308,7 @@ def _fill_info(model, _version):
     cadence = dmc.Alert(hint["text"], color=color, variant="light", radius="md",
                         icon=html.I(className="bi bi-clock-history"))
     return (_tiles(status), cadence, _hp_rows(model), _wf_panel(model),
-            _train_rows_panel(mo.training_rows_by_property()))
+            _train_rows_panel(mo.training_rows_by_property()), _clean_history_line())
 
 
 # ---------------------------------------------------------------------------
@@ -298,16 +322,22 @@ def _fill_info(model, _version):
     Input("du-retrain-btn", "n_clicks"),
     State("du-model", "value"),
     State("du-retune", "checked"),
+    State("du-update-first", "checked"),
     prevent_initial_call=True,
 )
-def _confirm_retrain(_n, model, retune):
+def _confirm_retrain(_n, model, retune, update_first):
     st = mo.model_status(model or "hazard")
     mode = "retune (hyperparameter search)" if retune else "refit (frozen hyperparameters)"
+    data_note = ("Will FIRST pull fresh reservations from BigQuery and rebuild the cleaned "
+                 "history, then retrain on it."
+                 if update_first else
+                 "Trains on the current cleaned history (no BigQuery pull).")
     body = dmc.Stack([
         dmc.Text(f"This will retrain {st.get('label')} and OVERWRITE the serving artifact.",
                  size="sm"),
         dmc.Text(f"Mode: {mode}. Last retrained: {st.get('retrained_at') or 'never'}.",
                  size="sm", c="dimmed"),
+        dmc.Text(data_note, size="sm", c="dimmed"),
         dmc.Text("You can cancel it  it stops at the next stage and the previous model "
                  "stays in place (a fit already running finishes that step first). "
                  "It also survives page changes.", size="xs", c="dimmed"),
@@ -321,10 +351,11 @@ def _confirm_retrain(_n, model, retune):
     Input("du-retrain-confirm", "n_clicks"),
     State("du-model", "value"),
     State("du-retune", "checked"),
+    State("du-update-first", "checked"),
     prevent_initial_call=True,
 )
-def _start_retrain(n, model, retune):
-    jobs.start("retrain", mo.retrain_job, model or "hazard", bool(retune))
+def _start_retrain(n, model, retune, update_first):
+    jobs.start("retrain", mo.retrain_job, model or "hazard", bool(retune), bool(update_first))
     return False, n
 
 

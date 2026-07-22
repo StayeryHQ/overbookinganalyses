@@ -307,6 +307,32 @@ def data_quality_flags(model_name: str, *, min_rows: int = 100,
             "retrained_at": st.get("retrained_at")}
 
 
+def clean_history_status() -> dict:
+    """Freshness of the cleaned training history — the data Retrain actually trains on.
+
+    Returns the parquet's last-rebuilt time (file mtime), the data span end and the row
+    count (from the meta sidecar). All values are None-safe so the UI can say
+    'unavailable' rather than fabricate anything. This is what the retrain panel shows so
+    the user can tell at a glance whether to tick 'update history first'."""
+    import json
+    d = src.data_dir()
+    clean = d / "reservations_clean.parquet"
+    out = {"exists": clean.exists(), "rebuilt_at": None, "data_through": None, "rows": None}
+    if clean.exists():
+        ts = pd.to_datetime(clean.stat().st_mtime, unit="s", utc=True)
+        out["rebuilt_at"] = _fmt_ts(ts)
+    meta = d / "reservations_clean_meta.json"
+    if meta.exists():
+        try:
+            m = json.loads(meta.read_text())
+            am = m.get("arrival_max")
+            out["data_through"] = str(am)[:10] if am else None
+            out["rows"] = m.get("n_rows") or m.get("rows")
+        except Exception:  # noqa: BLE001
+            pass
+    return out
+
+
 def update_history_job(progress: Progress = _noop) -> dict:
     """Cancellation-History 'update history' job: pull the FULL reservations history
     from BigQuery and rebuild the cleaned/labelled cache (src.build_clean_reservations,
@@ -345,7 +371,20 @@ def update_history_job(progress: Progress = _noop) -> dict:
 # Job wrappers  thin adapters with the (progress, *args) signature jobs.start
 # expects. Keep ALL logic in the functions they call.
 # =============================================================================
-def retrain_job(progress: Progress, model_name: str, retune: bool = False) -> dict:
+def retrain_job(progress: Progress, model_name: str, retune: bool = False,
+                update_first: bool = False) -> dict:
+    """Retrain job. If `update_first`, pull fresh reservations from BigQuery and rebuild
+    the cleaned history FIRST (so the model trains on current data), then retrain. The
+    data-update takes the first ~35 % of the progress bar, the retrain the rest. A
+    BigQuery failure raises and the whole job errors loudly (no retrain on stale data)."""
+    if update_first:
+        def _hist_p(msg: str, frac: float) -> None:
+            progress(f"Data update · {msg}", float(frac) * 0.35)
+        update_history_job(_hist_p)
+
+        def _retr_p(msg: str, frac: float) -> None:
+            progress(msg, 0.35 + float(frac) * 0.65)
+        return run_retrain(model_name, retune=retune, progress=_retr_p)
     return run_retrain(model_name, retune=retune, progress=progress)
 
 
@@ -410,7 +449,11 @@ def run_retrain(model_name: str, *, retune: bool = False, asof: str | None = Non
         "model": model_name,
         "mode": result.get("mode", mode),
         "asof": result.get("asof"),
-        "n_train_deploy": result.get("n_train_deploy"),
+        # Static models report n_train_deploy; the hazard model reports n_books_resolved
+        # (bookings) + n_train_pp (person-periods). Coalesce so the success message shows a
+        # real booking count for the hazard model instead of "?".
+        "n_train_deploy": result.get("n_train_deploy") or result.get("n_books_resolved"),
+        "n_train_person_period": result.get("n_train_pp"),
         "retrained_at": status.get("retrained_at"),
         "feature_change": result.get("feature_change"),
         "walk_forward_aggregate": agg,

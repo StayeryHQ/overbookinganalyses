@@ -344,9 +344,14 @@ def hazard_available() -> bool:
 # =============================================================================
 # Retrain (point-in-time)  fit on all resolved data, persist
 # =============================================================================
-def retrain_hazard(*, asof=None, persist: bool = True, seed: int = SEED,
-                   refresh_eval: bool = False) -> dict:
+def retrain_hazard(*, mode: str = "refit", asof=None, persist: bool = True, seed: int = SEED,
+                   refresh_eval: bool = False, n_iter: int = 40) -> dict:
     """Fit the deployment hazard model on ALL data resolved by `asof` and persist.
+
+    mode="refit"  -> reuse the FROZEN card hyperparameters: ONE early-stopped fit. Fast and
+                     reproducible — mirrors the static models' refit path.
+    mode="retune" -> run the RandomizedSearch (`n_iter` candidates): slower, more thorough.
+    With no model card yet, refit falls back to a search (never deploy an un-tuned model).
 
     `refresh_eval=True` rebuilds the Model-Performance page's eval artifact afterwards
     (Data/model_eval_hazard.parquet) so the page tracks the freshly deployed model."""
@@ -356,12 +361,20 @@ def retrain_hazard(*, asof=None, persist: bool = True, seed: int = SEED,
     asof_ts = pd.Timestamp(asof, tz="UTC") if asof is not None else pd.Timestamp(known.max())
     resolved = clean[known <= asof_ts]
 
-    hz = fit_hazard(resolved, seed=seed)
-    result = {"model": "hazard", "asof": str(asof_ts.date()), "val_ap": hz["val_ap"],
-              "hp": hz["hp"], "n_train_pp": hz["n_train_pp"], "n_books_resolved": int(len(resolved))}
+    frozen = card_hp()
+    if mode == "retune" or frozen is None:
+        hz = fit_hazard(resolved, seed=seed, n_iter=n_iter)      # full RandomizedSearch
+        used_mode = "retune"
+    else:
+        hz = fit_hazard(resolved, seed=seed, fixed_hp=frozen)    # reuse frozen card HP (1 fit)
+        used_mode = "refit"
+    result = {"model": "hazard", "mode": used_mode, "asof": str(asof_ts.date()),
+              "val_ap": hz["val_ap"], "hp": hz["hp"], "n_train_pp": hz["n_train_pp"],
+              "n_books_resolved": int(len(resolved))}
     if persist:
         jp = save_hazard(hz)
         card = {"model": "hazard", "retrained_at": pd.Timestamp.utcnow().isoformat(),
+                "mode": used_mode,
                 "asof": str(asof_ts.date()), "val_ap": hz["val_ap"], "hyperparams": hz["hp"],
                 "n_train_person_period": hz["n_train_pp"], "snap": SNAP, "axis": AXIS,
                 "features_numeric": hz["num"], "features_categorical": hz["cat"]}

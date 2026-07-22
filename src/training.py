@@ -428,10 +428,11 @@ def retrain(model_name: str, *, mode: str = "refit", asof: str | pd.Timestamp | 
         raise ValueError("mode must be 'refit' or 'retune'")
     if model_name == "hazard":
         # The hazard model (per-night engine, the PRIMARY serving model) has its own
-        # person-period fit; dispatch to src.hazard. It always runs its small HP grid,
-        # so refit/retune behave the same here.
+        # person-period fit; dispatch to src.hazard. refit reuses the frozen card HP
+        # (fast); retune runs the RandomizedSearch (slower) — same semantics as the
+        # static models, so the app's "Re-estimate hyperparameters" toggle is honoured.
         from . import hazard as hz
-        return hz.retrain_hazard(asof=asof, persist=persist, seed=seed,
+        return hz.retrain_hazard(mode=mode, asof=asof, persist=persist, seed=seed,
                                  refresh_eval=refresh_eval)
     num, cat = _family_feature_lists(model_name)
     df = wf.add_outcome_known_date(_load_clean())
