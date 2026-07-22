@@ -193,6 +193,43 @@ def family_feature_lists(roster: dict, family: str) -> tuple[list[str], list[str
     return num, cat
 
 
+# The ONE model -> family map (single source of truth). Every place a model is fit or
+# scored resolves its columns through `model_feature_lists()` below, so training,
+# hazard, scoring, eval and the dashboard can never drift onto different feature sets.
+MODEL_FAMILY: Final[dict[str, str]] = {
+    "logreg": "linear", "xgboost": "tree", "histgb": "tree", "hazard": "tree",
+}
+
+
+def model_family(model_name: str) -> str:
+    """Feature FAMILY ('linear' | 'tree') for a model name - the single mapping."""
+    try:
+        return MODEL_FAMILY[model_name]
+    except KeyError:
+        raise KeyError(f"unknown model {model_name!r}; known: {list(MODEL_FAMILY)}") from None
+
+
+def model_feature_lists(model_name: str, *, roster: dict | None = None,
+                        present_in=None) -> tuple[list[str], list[str]]:
+    """THE single source of truth for the columns a model CONSUMES.
+
+    Derived from the one roster + the model's family (tree -> raw skewed columns;
+    linear -> their `_log` twins; categoricals are family-agnostic). Pass `present_in`
+    (e.g. a frame's `.columns`) to keep only columns that actually exist there.
+
+    Use this EVERYWHERE a model is fit or scored. Do NOT use the raw-roster superset
+    (`roster_features`) for that - it carries both raw AND `_log` twins and is only a
+    presence guard / null-audit helper.
+    """
+    r = roster if roster is not None else load_feature_roster()
+    num, cat = family_feature_lists(r, model_family(model_name))
+    if present_in is not None:
+        cols = set(present_in)
+        num = [c for c in num if c in cols]
+        cat = [c for c in cat if c in cols]
+    return num, cat
+
+
 # ---------------------------------------------------------------------------
 # Roster LOADER (used by every notebook + scoring.py - the single source)
 # ---------------------------------------------------------------------------

@@ -29,7 +29,6 @@ import numpy as np
 import pandas as pd
 
 from . import walkforward as wf
-from .features import family_feature_lists, load_feature_roster
 from .paths import data_dir, repo_root
 
 SEED: Final[int] = 42
@@ -65,16 +64,12 @@ HP_GRID: Final[list[dict]] = [
 # Feature lists + event columns
 # =============================================================================
 def feature_lists(clean: pd.DataFrame) -> tuple[list[str], list[str]]:
-    """Hazard is an XGBoost (TREE-family) model, so it must use the RAW skewed columns
-    and DROP their `_log` twins  never both. Previously this read the raw roster
-    `numeric`, which carries a column AND its `_log` twin, so the hazard model (and its
-    SHAP/XAI) ended up with both. family_feature_lists(..., "tree") is the single
-    source of that per-family selection (same rule the static tree models use)."""
-    r = load_feature_roster()
-    num, cat = family_feature_lists(r, "tree")
-    num = [c for c in num if c in clean.columns]
-    cat = [c for c in cat if c in clean.columns]
-    return num, cat
+    """Hazard is a TREE-family model: RAW skewed columns, `_log` twins dropped (never
+    both). Thin delegate to the ONE source of truth (src.features.model_feature_lists),
+    filtered to columns present in `clean` - the exact same list the static tree
+    models use, so the hazard and its SHAP/XAI can never drift onto a different set."""
+    from .features import model_feature_lists
+    return model_feature_lists("hazard", present_in=clean.columns)
 
 
 def add_event_columns(clean: pd.DataFrame) -> pd.DataFrame:
@@ -459,23 +454,41 @@ def walk_forward_eval_hazard(*, n_folds: int = 6, horizon_days: int = 14, step_d
     `horizon_days`) (src.walkforward.make_folds). Per fold: fit the hazard model on
     bookings resolved before the window, score the test bookings via the SURVIVAL
     PRODUCT over d, and grade on cancel-by-arrival. If `compare_static`, the best
-    static model is scored on the SAME rows + SAME label so the comparison targets
-    the same estimand (P(cancel by arrival | open at the decision date)). The
-    promotion signal uses mean(delta_AUC) > its own std (signal beats noise), not a
-    magic 0.01 gate.
+    static model is REFIT ON THIS FOLD'S TRAIN (family-correct features, frozen card
+    HP, calibrated) and scored on the SAME test rows + SAME label, so the comparison
+    is leak-free and targets the same estimand (P(cancel by arrival | open at the
+    decision date)) - identical to notebook 05's bake-off.
+
+    The promotion signal uses mean(delta_AUC) > its own std (signal beats noise), not
+    a magic 0.01 gate. (NOTE: keyed on ROC-AUC; a paired bootstrap CI on PR-AUC/cost
+    over the POOLED matched predictions is the better test - tracked separately.)
     """
     from sklearn.metrics import roc_auc_score, average_precision_score, brier_score_loss
-    from . import scoring as sc, walkforward as wf, load_clean_reservations
+    from . import scoring as sc, walkforward as wf, training as T, load_clean_reservations
+    import warnings
 
     clean = wf.add_outcome_known_date(load_clean_reservations())
     folds = wf.make_folds(clean, n_folds=n_folds, horizon_days=horizon_days, step_days=step_days)
-    static_pipe = None
+
+    # Static baseline: refit the best static model PER FOLD (family-correct feature
+    # lists, frozen card HP, calibrated) exactly as notebook 05's bake-off does.
+    # v12 fix - the old path (a) loaded the DEPLOYED static model, trained on ALL data
+    # incl. these very test rows (leakage in the static's favour), and (b) fed it
+    # sc.model_feature_lists() = the full 25-col roster incl. the four `_log` twins the
+    # TREE pipeline was never fit on, so predict_proba raised and the broad try/except
+    # silently swallowed it -> the static baseline vanished from every fold and the
+    # notebook only ever showed hazard-vs-nothing.
+    static_name = snum = scat = shp = None
     if compare_static:
         try:
-            static_pipe = sc.load_model(sc.best_model())
-            snum, scat = sc.model_feature_lists()
-        except Exception:  # noqa: BLE001
-            static_pipe = None
+            static_name = sc.best_model()
+            snum, scat = T._family_feature_lists(static_name)
+            shp = T._card_hp(static_name)
+        except Exception as e:  # noqa: BLE001 - no trained static model/card yet
+            warnings.warn(
+                f"[walk_forward_eval_hazard] static baseline unavailable "
+                f"({type(e).__name__}: {e}); reporting hazard only.", stacklevel=2)
+            static_name = None
 
     rows = []
     for f in folds:
@@ -493,30 +506,34 @@ def walk_forward_eval_hazard(*, n_folds: int = 6, horizon_days: int = 14, step_d
         p_haz = survival_cancel_proba(teb, hazard_fn(hz), hz["num"], hz["cat"],
                                       hz["cat_dtypes"], snaps=hz.get("snap"))
         y = (wf.target_series(teb).to_numpy() == 1)
+        two = len(set(y)) > 1
         row = {"fold": f.k, "S": str(S.date()), "n_test": int(len(te)),
-               "auc_haz": roc_auc_score(y, p_haz) if len(set(y)) > 1 else float("nan"),
+               "auc_haz": roc_auc_score(y, p_haz) if two else float("nan"),
                "ap_haz": average_precision_score(y, p_haz),
                "brier_haz": brier_score_loss(y, p_haz)}
-        if static_pipe is not None:
-            try:
-                p_st = static_pipe.predict_proba(teb[snum + scat])[:, 1]
-                row["auc_static"] = roc_auc_score(y, p_st) if len(set(y)) > 1 else float("nan")
-                row["ap_static"] = average_precision_score(y, p_st)
-                row["delta_auc"] = row["auc_haz"] - row["auc_static"]
-            except Exception as e:  # noqa: BLE001
-                row["static_err"] = str(e)[:60]
+        if static_name is not None:
+            # Refit on THIS fold's train, score its held-out test - no leak, same rows.
+            spipe = T.build_pipeline(static_name, shp, snum, scat, calibrate=True, seed=seed)
+            spipe.fit(tr[snum + scat], wf.target_series(tr).to_numpy())
+            p_st = spipe.predict_proba(teb[snum + scat])[:, 1]
+            row["auc_static"] = roc_auc_score(y, p_st) if two else float("nan")
+            row["ap_static"] = average_precision_score(y, p_st)
+            row["brier_static"] = brier_score_loss(y, p_st)
+            row["delta_auc"] = row["auc_haz"] - row["auc_static"]
+            row["delta_ap"] = row["ap_haz"] - row["ap_static"]
         rows.append(row)
 
     pf = pd.DataFrame(rows)
     agg = {m: {"mean": float(pf[m].mean()), "std": float(pf[m].std())}
-           for m in ["auc_haz", "ap_haz", "brier_haz", "auc_static", "ap_static", "delta_auc"]
+           for m in ["auc_haz", "ap_haz", "brier_haz", "auc_static", "ap_static",
+                     "brier_static", "delta_auc", "delta_ap"]
            if m in pf.columns}
     gate = None
     if "delta_auc" in pf.columns and len(pf) > 1:
         d = pf["delta_auc"]
         gate = {"mean_delta_auc": float(d.mean()), "std": float(d.std()),
                 "hazard_better": bool(d.mean() > d.std() and d.mean() > 0)}
-    return {"per_fold": rows, "aggregate": agg, "gate": gate}
+    return {"per_fold": rows, "aggregate": agg, "gate": gate, "static_name": static_name}
 
 
 # =============================================================================

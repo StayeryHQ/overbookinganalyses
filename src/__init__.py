@@ -41,6 +41,8 @@ from .features import (
     family_feature_lists,
     load_feature_roster,
     log_twin_map,
+    model_family,
+    model_feature_lists,
     model_feature_roster,
     roster_features,
 )
@@ -64,7 +66,6 @@ from .scoring import (
     cancel_proba,
     list_available_models,
     load_model,
-    model_feature_lists,
     refresh_and_score,
     resolve_model,
     score_reservations,
@@ -110,6 +111,7 @@ __all__ = [
     "roster_features",
     "excluded_columns",
     "family_feature_lists",
+    "model_family",
     "log_twin_map",
     # paths
     "configs_dir",

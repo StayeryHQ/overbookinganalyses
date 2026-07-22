@@ -1,6 +1,6 @@
 {
   "model": "hazard",
-  "generated_at_utc": "2026-07-21T20:13:49.199550+00:00",
+  "generated_at_utc": "2026-07-22T14:49:43.440073+00:00",
   "estimand": "P(cancel at/before arrival) at d = min(lead, horizon_days)",
   "horizon_days": 14,
   "n_folds_requested": 6,

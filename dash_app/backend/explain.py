@@ -56,7 +56,8 @@ def _feature_lists(model: str) -> tuple[list[str], list[str], list[str]]:
         from src import hazard as hz
         h = hz.load_hazard()
         return list(h["num"]), list(h["cat"]), [hz.AXIS]
-    num, cat = sc.model_feature_lists()
+    from src.features import model_feature_lists   # ONE source of truth (family-correct)
+    num, cat = model_feature_lists(model)
     return num, cat, []
 
 

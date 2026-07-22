@@ -40,18 +40,19 @@ MODEL_KIND: Final[dict[str, str]] = {
 # Feature lists + target
 # =============================================================================
 def _feature_lists() -> tuple[list[str], list[str]]:
-    r = load_feature_roster()
-    return list(r["numeric"]), list(r["categorical"])
+    """Raw-roster SUPERSET (all candidate cols, both raw and `_log` twins). Presence
+    guard / null-audit only - NOT a model's trained set. Single accessor:
+    src.features.roster_features."""
+    from .features import roster_features
+    return roster_features()
 
 
 def _family_feature_lists(model_name: str) -> tuple[list[str], list[str]]:
-    """Family-aware feature view (decided 2026-06-30): the LINEAR model (logreg)
-    uses the skew-damped `_log` twins + scaling; the TREE models (xgboost, histgb)
-    use the raw columns and ignore collinearity. Reads `log_twins` from the roster."""
-    from .features import family_feature_lists
-    roster = load_feature_roster()
-    family = "linear" if MODEL_KIND[model_name] == "logreg" else "tree"
-    return family_feature_lists(roster, family)
+    """Family-aware feature view for a model (linear -> `_log` twins; tree -> raw
+    columns; decided 2026-06-30). Thin delegate to the ONE source of truth,
+    src.features.model_feature_lists - so every fit/score site shares one list."""
+    from .features import model_feature_lists
+    return model_feature_lists(model_name)
 
 
 def _target(df: pd.DataFrame) -> pd.Series:

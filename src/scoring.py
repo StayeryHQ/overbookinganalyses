@@ -291,12 +291,10 @@ def operating_threshold(name: str, c_walk: float = COST_WALK,
 # a hardcoded copy here is exactly the drift that once broke scoring. Loading is
 # lazy so `import src` works before the artifact exists.
 
-def model_feature_lists() -> tuple[list[str], list[str]]:
-    """(numeric, categorical) STATIC features for the trained pipelines,
-    read from the roster artifact. Raises a clear error if 00 hasn't run."""
-    from .features import load_feature_roster
-    r = load_feature_roster()
-    return list(r["numeric"]), list(r["categorical"])
+# NOTE: the former `scoring.model_feature_lists()` (raw-roster superset, no model arg)
+# was removed in the 2026-07-22 feature-list unification. The single source of truth is
+# now `src.features.model_feature_lists(model_name)` (family-correct); the raw-roster
+# superset (presence guards / null audits) is `src.features.roster_features()`.
 
 
 def dynamic_features() -> list[str]:
@@ -545,16 +543,17 @@ def cancel_proba(model_name: str, feat: pd.DataFrame) -> np.ndarray:
             )
         return np.asarray(hz_mod.score_upcoming_hazard(hz, feat), dtype=float)
 
-    # Static sklearn pipeline (xgboost in the MVP). The pipeline's ColumnTransformer
-    # selects the columns it was trained on by name, so passing the roster superset
-    # (numeric incl. log twins) is safe  the extras are dropped by the transformer.
+    # Static sklearn pipeline. Use this model's FAMILY-CORRECT columns - the ONE source
+    # of truth (src.features.model_feature_lists), exactly what the pipeline was fit on -
+    # and fail loud if build_features did not produce one of them.
+    from .features import model_feature_lists
     pipeline = load_model(model_name)
-    num, cat = model_feature_lists()           # from the roster (single source of truth)
+    num, cat = model_feature_lists(model_name)
     needed = num + cat
     missing = [c for c in needed if c not in feat.columns]
     if missing:
         raise KeyError(
-            f"cancel_proba({model_name}): build_features did not produce roster "
+            f"cancel_proba({model_name}): build_features did not produce model "
             f"features {missing}. build_features must mirror 00_data_audit's engineering."
         )
     p = pipeline.predict_proba(feat[needed])[:, 1]
