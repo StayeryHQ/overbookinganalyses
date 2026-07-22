@@ -364,14 +364,88 @@ def walk_forward_predict(model_name: str, *, hp: dict | None = None, n_folds: in
             else pd.DataFrame(columns=["fold", "y_true", "y_prob"]))
 
 
+# The matched bake-off is expensive (fits 3 static + hazard per fold, ~hours). Persist
+# its per-row predictions so notebook 05 - and any later diagnosis - can slice metrics
+# (pooled / per-fold / by horizon d) in seconds instead of re-fitting everything.
+BAKEOFF_PATH: Final[str] = "bakeoff_predictions.parquet"
+BAKEOFF_META_PATH: Final[str] = "bakeoff_predictions_meta.json"
+
+
+def _persist_bakeoff(frame: pd.DataFrame, *, n_folds: int, horizon_days: int,
+                     step_days: int, seed: int) -> None:
+    """Write the matched bake-off frame + a small provenance JSON to the Data dir."""
+    frame.to_parquet(data_dir() / BAKEOFF_PATH, index=False)
+    meta = {"generated_at_utc": pd.Timestamp.utcnow().isoformat(),
+            "n_rows": int(len(frame)), "n_folds": int(n_folds),
+            "horizon_days": int(horizon_days), "step_days": int(step_days), "seed": int(seed),
+            "base_rate": float(frame["y_true"].mean()) if len(frame) else None,
+            "models": [c[2:] for c in frame.columns if c.startswith("p_")]}
+    (data_dir() / BAKEOFF_META_PATH).write_text(json.dumps(meta, indent=2))
+
+
+class StaleArtifact(RuntimeError):
+    """A cached artifact is older than an input it was built from (must recompute)."""
+
+
+def _bakeoff_deps() -> list:
+    """Files the bake-off predictions are built FROM: the CLEAN data + each model's card
+    (the frozen hyperparameters every fold refits with). If any is newer than the cache,
+    the cache no longer reflects the current models/data and is stale."""
+    from . import scoring as sc
+    from .data_loader import CLEAN_CACHE_FILE
+    deps = [data_dir() / CLEAN_CACHE_FILE]
+    for name in ("logreg", "xgboost", "histgb", "hazard"):
+        try:
+            deps.append(repo_root() / sc.MODEL_REGISTRY[name]["card"])
+        except Exception:  # noqa: BLE001
+            pass
+    return [p for p in deps if p.exists()]
+
+
+def bakeoff_cache_status() -> str:
+    """'missing' | 'stale' | 'fresh' for Data/bakeoff_predictions.parquet - compares its
+    mtime against the clean data + the model cards it was built from. This is the bake-off's
+    equivalent of retrain(refresh_eval=True): after a retrain (which rewrites the cards) or a
+    data refresh, the cache reports 'stale' so consumers recompute instead of showing old
+    numbers."""
+    p = data_dir() / BAKEOFF_PATH
+    if not p.exists():
+        return "missing"
+    cache_mtime = p.stat().st_mtime
+    return "stale" if any(d.stat().st_mtime > cache_mtime for d in _bakeoff_deps()) else "fresh"
+
+
+def load_bakeoff(*, require_fresh: bool = True) -> pd.DataFrame:
+    """Load the persisted matched bake-off frame (columns: fold, y_true, d, p_<model>).
+
+    Raises FileNotFoundError if it was never generated, or StaleArtifact if it predates
+    the clean data / a model card (so a retrain or data refresh forces a recompute rather
+    than silently serving old predictions). Pass `require_fresh=False` to read a stale
+    cache anyway (e.g. quick inspection)."""
+    status = bakeoff_cache_status()
+    if status == "missing":
+        raise FileNotFoundError(
+            f"{data_dir() / BAKEOFF_PATH} not found - run training.bakeoff_walk_forward() "
+            "(notebook 05) first.")
+    if require_fresh and status == "stale":
+        raise StaleArtifact(
+            f"{BAKEOFF_PATH} is older than the clean data or a model card - recompute via "
+            "bakeoff_walk_forward() so the comparison reflects the current models/data.")
+    return pd.read_parquet(data_dir() / BAKEOFF_PATH)
+
+
 def bakeoff_walk_forward(*, n_folds: int = 8, horizon_days: int = 14, step_days: int = 14,
-                         seed: int = SEED) -> pd.DataFrame:
+                         seed: int = SEED, persist: bool = True) -> pd.DataFrame:
     """FAIR matched bake-off (notebook 05). On each decision-time fold, fit LogReg,
     XGBoost, HistGB (family-correct, frozen card hp, calibrated) AND the hazard model
     on the SAME train, then score the SAME test rows. Pool. Returns a wide frame
-    [fold, y_true, p_logreg, p_xgboost, p_histgb, p_hazard] - every model on the
+    [fold, y_true, d, p_logreg, p_xgboost, p_histgb, p_hazard] - every model on the
     identical rows + label, so AUC / AP / Brier / confusion are directly comparable.
     Hazard uses the survival product at d = min(lead, H) (its decision horizon).
+
+    `persist=True` (default) writes the frame to Data/bakeoff_predictions.parquet (+ a
+    provenance JSON) so downstream metrics are a cheap slice, not an hours-long refit;
+    read it back with `load_bakeoff()`.
     """
     from . import hazard as hz
     df = wf.add_outcome_known_date(_load_clean())
@@ -400,8 +474,13 @@ def bakeoff_walk_forward(*, n_folds: int = 8, horizon_days: int = 14, step_days:
         out["p_hazard"] = hz.survival_cancel_proba(te, hz.hazard_fn(hzm), hzm["num"], hzm["cat"],
                                                    hzm["cat_dtypes"], snaps=hzm.get("snap"))
         parts.append(pd.DataFrame(out))
-    return (pd.concat(parts, ignore_index=True) if parts
-            else pd.DataFrame(columns=["fold", "y_true", "d", "p_logreg", "p_xgboost", "p_histgb", "p_hazard"]))
+    frame = (pd.concat(parts, ignore_index=True) if parts
+             else pd.DataFrame(columns=["fold", "y_true", "d",
+                                        "p_logreg", "p_xgboost", "p_histgb", "p_hazard"]))
+    if persist and len(frame):
+        _persist_bakeoff(frame, n_folds=n_folds, horizon_days=horizon_days,
+                         step_days=step_days, seed=seed)
+    return frame
 
 
 # =============================================================================

@@ -149,9 +149,21 @@ def survival_cancel_proba(bookings: pd.DataFrame, haz_fn, num: list[str], cat: l
     snaps_arr = np.array(sorted(snaps if snaps is not None else SNAP), dtype=int)
     b = bookings.reset_index(drop=True).copy()
     n = len(b)
-    D = np.floor(pd.to_numeric(b[horizon_col], errors="coerce").fillna(0)).astype(int).to_numpy()
+    dua = pd.to_numeric(b[horizon_col], errors="coerce").fillna(0).to_numpy()
+    D = np.floor(dua).astype(int)
+    leadv = None
     if "lead" in b.columns:
-        D = np.minimum(D, np.floor(pd.to_numeric(b["lead"], errors="coerce").fillna(0)).astype(int).to_numpy())
+        leadv = pd.to_numeric(b["lead"], errors="coerce").fillna(0).to_numpy()
+        D = np.minimum(D, np.floor(leadv).astype(int))
+    # A still-open booking is at risk in its CURRENT (0, 1] window, so it must traverse at
+    # least the first daily snapshot. Without this, any booking with < 1 day of horizon OR
+    # lead floors to D = 0, traverses NO snapshot, and is scored a spurious P(cancel) = 0 -
+    # the near-arrival collapse (d<=1 AUC ~0.5, and a chunk of the aggregate
+    # under-prediction). Give those still-open bookings h_1 instead of 0.
+    open_now = dua > 0
+    if leadv is not None:
+        open_now = open_now & (leadv > 0)
+    D = np.where(open_now, np.maximum(D, 1), D)
     if n == 0 or snaps_arr.size == 0:
         return np.zeros(n, dtype=float)
     # Cross bookings × snapshots, keep the snapshots each booking actually traverses
@@ -491,6 +503,7 @@ def walk_forward_eval_hazard(*, n_folds: int = 6, horizon_days: int = 14, step_d
             static_name = None
 
     rows = []
+    pool_y, pool_h, pool_s = [], [], []   # pooled matched predictions for the paired gate
     for f in folds:
         tr, te = clean.iloc[f.train_idx], clean.iloc[f.test_idx]
         if len(tr) < 500 or len(te) < 50:
@@ -521,6 +534,7 @@ def walk_forward_eval_hazard(*, n_folds: int = 6, horizon_days: int = 14, step_d
             row["brier_static"] = brier_score_loss(y, p_st)
             row["delta_auc"] = row["auc_haz"] - row["auc_static"]
             row["delta_ap"] = row["ap_haz"] - row["ap_static"]
+            pool_y.append(y.astype(int)); pool_h.append(p_haz); pool_s.append(p_st)
         rows.append(row)
 
     pf = pd.DataFrame(rows)
@@ -528,11 +542,20 @@ def walk_forward_eval_hazard(*, n_folds: int = 6, horizon_days: int = 14, step_d
            for m in ["auc_haz", "ap_haz", "brier_haz", "auc_static", "ap_static",
                      "brier_static", "delta_auc", "delta_ap"]
            if m in pf.columns}
+    # Promotion gate: paired BOOTSTRAP CI on the POOLED matched predictions, keyed on
+    # PR-AUC (the low-prevalence metric this project cares about) - replaces the old,
+    # statistically meaningless "mean(dAUC) > its own std" per-fold heuristic. Use
+    # model_eval.promotion_report on the persisted bake frame for the full report
+    # (incl. cost). Both dPR and dROC CIs are returned here for transparency.
     gate = None
-    if "delta_auc" in pf.columns and len(pf) > 1:
-        d = pf["delta_auc"]
-        gate = {"mean_delta_auc": float(d.mean()), "std": float(d.std()),
-                "hazard_better": bool(d.mean() > d.std() and d.mean() > 0)}
+    if pool_s:
+        from . import model_eval as _me
+        Y = np.concatenate(pool_y); PH = np.concatenate(pool_h); PS = np.concatenate(pool_s)
+        d_ap = _me.paired_delta_ci(Y, PH, PS, metric="ap", seed=seed)
+        d_auc = _me.paired_delta_ci(Y, PH, PS, metric="auc", seed=seed)
+        gate = {"method": "paired bootstrap on pooled matched predictions",
+                "n_pooled": int(len(Y)), "delta_pr_auc": d_ap, "delta_roc_auc": d_auc,
+                "hazard_better_pr": bool(d_ap["lo"] >= 0)}
     return {"per_fold": rows, "aggregate": agg, "gate": gate, "static_name": static_name}
 
 

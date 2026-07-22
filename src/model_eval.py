@@ -296,3 +296,86 @@ def model_eval_meta(model_name: str) -> dict | None:
         return json.loads(p.read_text())
     except Exception:  # noqa: BLE001
         return None
+
+
+# ===========================================================================
+# Honest comparison metrics (notebook 05 / promotion decision)
+# ---------------------------------------------------------------------------
+# A pooled ROC-AUC over (booking x horizon) rows is partly MECHANICAL: it rewards
+# a model for knowing "how close is arrival" (far-out bookings have both higher risk
+# AND higher predictions). `within_horizon_auc` strips that out by measuring AUC at a
+# FIXED days-until-arrival - the honest per-booking ranking skill. And a promotion
+# decision needs a real statistical test on the SAME rows, not "mean(delta) > its own
+# std": `paired_delta_ci` + `promotion_report` give a paired bootstrap CI on the
+# metrics the project actually cares about (PR-AUC at low prevalence, and cost).
+# ===========================================================================
+def within_horizon_auc(frame: pd.DataFrame, *, prob_col: str, y_col: str = "y_true",
+                       day_col: str = "d", max_day: int = HORIZON_DAYS) -> tuple[pd.DataFrame, float]:
+    """Per-horizon (fixed integer days-until-arrival) discrimination = the honest
+    per-booking skill, stripped of the between-horizon separation that inflates a
+    pooled AUC. Returns (table[day, n, base, p_std, auc], n_weighted_mean_auc).
+    Days are ceil()'d and capped at `max_day`; a horizon with no score spread or one
+    class gets auc=NaN (and is dropped from the weighted mean)."""
+    from sklearn.metrics import roc_auc_score
+    d = np.ceil(pd.to_numeric(frame[day_col], errors="coerce").clip(upper=max_day)).astype("Int64")
+    g = frame.assign(_d=d).dropna(subset=["_d"])
+    rows = []
+    for day, grp in g.groupby("_d"):
+        yy = grp[y_col].to_numpy(); pp = grp[prob_col].to_numpy()
+        auc = (roc_auc_score(yy, pp) if len(np.unique(yy)) > 1 and pp.std() > 0 else np.nan)
+        rows.append({"day": int(day), "n": int(len(grp)), "base": float(yy.mean()),
+                     "p_std": float(pp.std()), "auc": auc})
+    tab = pd.DataFrame(rows).sort_values("day").reset_index(drop=True)
+    ok = tab.dropna(subset=["auc"])
+    wmean = float(np.average(ok["auc"], weights=ok["n"])) if len(ok) else float("nan")
+    return tab, wmean
+
+
+def paired_delta_ci(y, p_challenger, p_baseline, *, metric: str = "ap",
+                    n_boot: int = 2000, seed: int = SEED, alpha: float = 0.05) -> dict:
+    """Paired bootstrap CI for (challenger - baseline) on the SAME rows. `metric` in
+    {'ap' (PR-AUC), 'auc' (ROC-AUC)}. Resamples ROWS with replacement (preserving the
+    pairing), recomputes the metric DIFFERENCE, returns the point estimate, the
+    (alpha/2, 1-alpha/2) percentile CI, and the share of resamples where the challenger
+    wins. A CI whose lower bound is >= 0 is evidence the challenger is not worse."""
+    from sklearn.metrics import average_precision_score, roc_auc_score
+    scorer = average_precision_score if metric == "ap" else roc_auc_score
+    y = np.asarray(y); pc = np.asarray(p_challenger, float); pb = np.asarray(p_baseline, float)
+    point = float(scorer(y, pc) - scorer(y, pb))
+    rng = np.random.default_rng(seed); n = len(y); deltas = []
+    for _ in range(n_boot):
+        idx = rng.integers(0, n, n)
+        yy = y[idx]
+        if len(np.unique(yy)) < 2:
+            continue
+        deltas.append(scorer(yy, pc[idx]) - scorer(yy, pb[idx]))
+    deltas = np.asarray(deltas)
+    lo, hi = np.percentile(deltas, [100 * alpha / 2, 100 * (1 - alpha / 2)])
+    return {"metric": metric, "delta": point, "lo": float(lo), "hi": float(hi),
+            "ci": f"[{lo:+.4f}, {hi:+.4f}]", "p_challenger_better": float((deltas > 0).mean())}
+
+
+def promotion_report(frame: pd.DataFrame, *, challenger: str = "hazard",
+                     baseline: str = "histgb", n_boot: int = 2000, seed: int = SEED) -> dict:
+    """Decision-relevant promotion test on the MATCHED bake frame (paired rows;
+    columns y_true, p_<challenger>, p_<baseline>). Reports paired-bootstrap CIs for
+    dPR-AUC and dROC-AUC + the delta in expected COST at each model's own cost-optimal
+    threshold. Verdict (replaces the old mean(dAUC)>std heuristic): promote the
+    challenger only if it does NOT lose on cost AND its dPR-AUC CI lower bound >= 0
+    (wins/ties on the low-prevalence metric that actually matters here)."""
+    from . import scoring as sc
+    y = frame["y_true"].to_numpy()
+    pc = frame[f"p_{challenger}"].to_numpy(); pb = frame[f"p_{baseline}"].to_numpy()
+    d_ap = paired_delta_ci(y, pc, pb, metric="ap", n_boot=n_boot, seed=seed)
+    d_auc = paired_delta_ci(y, pc, pb, metric="auc", n_boot=n_boot, seed=seed)
+    t_c = sc.cost_threshold_from_scores(y, pc); t_b = sc.cost_threshold_from_scores(y, pb)
+    cost_c = sc.cost_at_threshold(y, pc, t_c)["total_cost"]
+    cost_b = sc.cost_at_threshold(y, pb, t_b)["total_cost"]
+    d_cost = cost_c - cost_b
+    promote = bool(d_ap["lo"] >= 0 and d_cost <= 0)
+    return {"challenger": challenger, "baseline": baseline, "n": int(len(y)),
+            "delta_pr_auc": d_ap, "delta_roc_auc": d_auc,
+            "cost_challenger": cost_c, "cost_baseline": cost_b, "delta_cost": d_cost,
+            "promote": promote,
+            "reason": (f"dPR-AUC {d_ap['ci']}, dcost {d_cost:+,.0f}: "
+                       + ("promote" if promote else "hold - not a clear win on PR-AUC and cost"))}
