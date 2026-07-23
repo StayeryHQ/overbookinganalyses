@@ -198,7 +198,7 @@ def survival_cancel_proba(bookings: pd.DataFrame, haz_fn, num: list[str], cat: l
 # there. HP_GRID[0] is still used to warm-start that study (baseline trial).
 def card_hp() -> dict | None:
     """Frozen hazard hyperparameters from the model card (search-space keys only), so
-    per-fold EVALUATION refits with ONE fit instead of a full RandomizedSearch. Returns
+    per-fold EVALUATION refits with ONE fit instead of a full TPE search. Returns
     None (=> full search) when no card exists yet.
 
     THE single source of the frozen hazard HP: src.model_eval AND the notebook bake-offs
@@ -219,7 +219,7 @@ def card_hp() -> dict | None:
 
 def fit_hazard(clean_resolved: pd.DataFrame, *, val_frac: float = 0.15,
                n_iter: int = 90, seed: int = SEED, fixed_hp: dict | None = None) -> dict:
-    """Fit the hazard model on RESOLVED bookings via a RandomizedSearch (with
+    """Fit the hazard model on RESOLVED bookings via the shared TPE search (with
     EARLY STOPPING  no fixed tree count) + PER-SNAPSHOT-BAND isotonic calibration,
     both on a temporally held-out (most-recent-by-created) validation slice.
 
@@ -311,8 +311,17 @@ def fit_hazard(clean_resolved: pd.DataFrame, *, val_frac: float = 0.15,
     if len(va_b) >= 500 and np.unique(y_va_book).size > 1 and p_va_book.std() > 0:
         decision_recal = IsotonicRegression(out_of_bounds="clip").fit(p_va_book, y_va_book)
 
+    # Decision-time operating point: keep the held-out validation bookings' decision-time
+    # predictions ON THE SERVED SCALE (decision_recal applied when present) so the cost-optimal
+    # serving threshold is data-driven (scoring reads Data/08_hazard_predictions.parquet;
+    # without this the hazard fell back to the analytic Bayes threshold ~0.79).
+    p_va_served = (np.clip(decision_recal.predict(p_va_book), 0.0, 1.0)
+                   if decision_recal is not None else p_va_book)
+    val_predictions = pd.DataFrame({"y_true": y_va_book,
+                                    "y_prob": np.asarray(p_va_served, dtype=float)})
+
     return {"model": model, "iso": iso_pooled, "iso_bands": iso_bands,
-            "decision_recal": decision_recal,
+            "decision_recal": decision_recal, "val_predictions": val_predictions,
             "num": num, "cat": cat, "cat_dtypes": cat_dtypes,
             "snap": SNAP, "axis": AXIS, "hp": hp, "val_ap": float(val_ap),
             "best_iteration": int(getattr(model, "best_iteration", 0) or 0),
@@ -386,7 +395,7 @@ def retrain_hazard(*, mode: str = "refit", asof=None, persist: bool = True, seed
 
     mode="refit"  -> reuse the FROZEN card hyperparameters: ONE early-stopped fit. Fast and
                      reproducible — mirrors the static models' refit path.
-    mode="retune" -> run the RandomizedSearch (`n_iter` candidates): slower, more thorough.
+    mode="retune" -> run the shared TPE search (`n_iter` trials): slower, more thorough.
     With no model card yet, refit falls back to a search (never deploy an un-tuned model).
 
     `refresh_eval=True` rebuilds the Model-Performance page's eval artifact afterwards
@@ -399,7 +408,7 @@ def retrain_hazard(*, mode: str = "refit", asof=None, persist: bool = True, seed
 
     frozen = card_hp()
     if mode == "retune" or frozen is None:
-        hz = fit_hazard(resolved, seed=seed, n_iter=n_iter)      # full RandomizedSearch
+        hz = fit_hazard(resolved, seed=seed, n_iter=n_iter)      # full TPE search
         used_mode = "retune"
     else:
         hz = fit_hazard(resolved, seed=seed, fixed_hp=frozen)    # reuse frozen card HP (1 fit)
@@ -420,6 +429,13 @@ def retrain_hazard(*, mode: str = "refit", asof=None, persist: bool = True, seed
         cp.parent.mkdir(parents=True, exist_ok=True)
         cp.write_text(json.dumps(card, indent=2))
         result["persisted"] = {"joblib": jp, "card": str(cp)}
+        # Persist the held-out decision-time predictions so the SERVING threshold is data-driven
+        # (scoring.cost_optimal_threshold reads Data/08_hazard_predictions.parquet).
+        vp = hz.get("val_predictions")
+        if vp is not None and len(vp):
+            vpath = data_dir() / HAZARD_PATH.replace("_model.joblib", "_predictions.parquet")
+            vp.to_parquet(vpath, index=False)
+            result["persisted"]["predictions"] = str(vpath)
 
     if refresh_eval:
         try:
