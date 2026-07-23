@@ -165,11 +165,9 @@ def _predict_one_model(model_name: str, *, n_folds: int, horizon_days: int,
     on the SAME decision-time rows + label, and attaching property_name + the naive
     baseline. Also records train-vs-test AUC/AP/Brier per fold (for the 4.4 view)."""
     from . import load_clean_reservations
-    from .training import _target  # shared, tested 0/1 target helper
+    from .training import _target, iter_decision_folds  # shared fold iterator + 0/1 target
 
     df = wf.add_outcome_known_date(load_clean_reservations())
-    folds = wf.make_folds(df, n_folds=n_folds, horizon_days=horizon_days,
-                          step_days=step_days, scheme="expanding")
     y = _target(df)
     prop = (df["property_name"].astype("string")
             if "property_name" in df.columns
@@ -185,9 +183,8 @@ def _predict_one_model(model_name: str, *, n_folds: int, horizon_days: int,
 
     parts: list[pd.DataFrame] = []
     fold_rows: list[dict] = []
-    for f in folds:
-        if f.n_train < 500 or f.n_test < 50 or y.iloc[f.train_idx].nunique() < 2:
-            continue
+    for f in iter_decision_folds(df, n_folds=n_folds, horizon_days=horizon_days,
+                                 step_days=step_days):
         ytr = y.iloc[f.train_idx].to_numpy()
         yte = y.iloc[f.test_idx].to_numpy().astype(int)
         prop_te = prop.iloc[f.test_idx].to_numpy()

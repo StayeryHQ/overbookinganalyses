@@ -19,6 +19,8 @@ dependencies = [
     "db-dtypes>=1.3.0",
     # models
     "xgboost>=2.1.1",
+    # hyperparameter search (unified TPE search in src.hp_search)
+    "optuna>=4.0.0",
     # notebooks + interactive dashboards
     "jupyterlab>=4.2.0",
     "ipykernel>=6.29.0",

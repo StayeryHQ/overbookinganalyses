@@ -124,26 +124,6 @@ def fig_channel(dev: pd.DataFrame, base: float, height: int = 300) -> go.Figure:
     return theme.brand_figure(fig)
 
 
-# ---- 4) Generic rate bars (stay segment, lead-time bucket) -----------------
-def fig_rate_bars(df: pd.DataFrame, cat_col: str, *, base: float | None = None,
-                  color: str | None = None, height: int = 300) -> go.Figure:
-    if df is None or df.empty:
-        return _empty("No data", height)
-    d = df.copy()
-    fig = go.Figure(go.Bar(
-        x=d[cat_col].astype(str), y=d["cancel_rate"] * 100,
-        marker_color=color or theme.BLUE, customdata=d["n"],
-        hovertemplate="<b>%{x}</b><br>Cancel rate: %{y:.1f}%"
-                      "<br>Bookings: %{customdata:,}<extra></extra>"))
-    if base is not None and np.isfinite(base):
-        fig.add_hline(y=base * 100, line=dict(color="#9AA0A6", width=1, dash="dash"),
-                      annotation_text=f"base {base * 100:.1f}%",
-                      annotation_position="top right", annotation_font_size=10)
-    fig.update_layout(height=height, xaxis_title=None, yaxis_title="Cancel rate",
-                      yaxis=dict(ticksuffix="%"), margin=dict(l=45, r=15, t=25, b=35))
-    return theme.brand_figure(fig)
-
-
 # ---- 4b) Length of stay, per NIGHT, coloured by segment --------------------
 def fig_stay_daily(df: pd.DataFrame, base: float | None = None,
                    height: int = 300) -> go.Figure:

@@ -20,8 +20,6 @@ from dash_app.backend import model_ops as mo
 from dash_app.components import history_charts as hc
 from dash_app.components import ui
 
-_HIDDEN = {"display": "none"}
-_SHOWN = {"display": "block"}
 
 
 def _history_update_card() -> dmc.Paper:
@@ -53,15 +51,6 @@ def _history_result(res: dict) -> dmc.Alert:
                  size="xs", c="dimmed"),
     ], gap=6), color="green", variant="light", icon=html.I(className="bi bi-check-circle"))
 
-
-def _err_alert(text: str) -> dmc.Alert:
-    return dmc.Alert(dmc.Text(str(text), size="sm"), color="red", variant="light",
-                     title="Update failed", icon=html.I(className="bi bi-exclamation-triangle"))
-
-
-def _cancelled_alert() -> dmc.Alert:
-    return dmc.Alert("History update cancelled  previous data kept.", color="gray",
-                     variant="light", icon=html.I(className="bi bi-x-circle"))
 
 dash.register_page(__name__, path="/cancellation-history", name="Cancellation History",
                    order=2, title="STAYERY · Cancellation History")
@@ -383,9 +372,9 @@ def _poll_history_update(_n, _kick, version, seen):
         if status == "done":
             bump = (version or 0) + 1
     if status == "error":
-        return sec, pct, msg, wrap, no_update, _err_alert(st.get("error", "unknown error")), False, bump, seen
+        return sec, pct, msg, wrap, no_update, ui.err_alert(st.get("error", "unknown error"), title="Update failed"), False, bump, seen
     if status == "cancelled":
-        return sec, pct, msg, wrap, no_update, _cancelled_alert(), False, bump, seen
+        return sec, pct, msg, wrap, no_update, ui.cancelled_alert("History update"), False, bump, seen
     if status == "done":
         return sec, pct, msg, wrap, no_update, _history_result(st.get("result") or {}), False, bump, seen
     return sec, pct, msg, wrap, no_update, no_update, False, no_update, seen

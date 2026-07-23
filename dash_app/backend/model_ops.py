@@ -33,9 +33,10 @@ RETRAIN_INTERVAL_DAYS: int = 182          # ~6 months (normal cadence)
 RETRAIN_NEW_LOCATION_DAYS: int = 61       # ~2 months (when a new location opens)
 WINDOW_DAYS: int = 14                     # fast-path forward window (matches Occupancy)
 
-# Operational scoring uses ONLY the served models (decision A in the concept doc):
-# hazard (default) + xgboost (fallback). logreg/histgb stay comparison baselines (XAI page).
-SERVING_MODELS: tuple[str, ...] = (sc.DEFAULT_MODEL, sc.FALLBACK_MODEL)
+# Served models (scoring + head-to-head performance): hazard (default) + xgboost
+# (fallback) + histgb. ONE source of truth in src.scoring.SERVEABLE_MODELS, so the
+# CLI and the app never drift. logreg stays a comparison-only baseline (not served).
+SERVING_MODELS: tuple[str, ...] = sc.SERVEABLE_MODELS
 
 MODEL_LABELS: dict[str, str] = {
     "hazard": "Hazard (survival)", "xgboost": "XGBoost",
@@ -201,38 +202,6 @@ def cadence_hint(model_name: str) -> dict:
 # =============================================================================
 # THE data update  one strict BigQuery pull per table + immediate scoring
 # =============================================================================
-def update_all(progress: Progress = _noop, model_name: str | None = None,
-               walk: float | None = None, empty: float | None = None,
-               days: int = WINDOW_DAYS) -> dict:
-    """Job entry point for the Update button (signature: progress first, so
-    jobs.start can inject its reporter). Delegates to src.scoring.refresh_and_score
-     ONE BigQuery query per table, then scoring; NO silent cache fallback, a
-    BigQuery failure raises and the job status shows it loudly.
-
-    `walk`/`empty` (cost-store): when both are set, pred_cancel uses the analytic
-    cost threshold for those costs. 0 € is a legitimate value, not "unset".
-    """
-    t0 = time.perf_counter()
-    threshold = (sc.analytic_threshold(walk, empty)
-                 if walk is not None and empty is not None else None)
-    res = sc.refresh_and_score(model_name, days=days, threshold=threshold,
-                               progress=progress)
-
-    # Let the page backends see the fresh parquets on their next read.
-    try:
-        from dash_app.backend import data_access as da
-        for fn in ("_reservations_cached", "_property_code_to_name", "_perf_daily"):
-            getattr(da, fn).cache_clear()
-    except Exception as e:  # noqa: BLE001
-        logger.warning("cache clear after update failed: %s", e)
-
-    res["elapsed_s"] = round(time.perf_counter() - t0, 1)
-    res["finished"] = _fmt_ts(res.get("finished_utc"))
-    res["data_as_of"] = _fmt_ts(res.get("data_max_created"))
-    res["model_label"] = model_label(res.get("model_used", ""))
-    return res
-
-
 def score_window_job(progress: Progress = _noop, model_name: str | None = None,
                      walk: float | None = None, empty: float | None = None,
                      days: int = WINDOW_DAYS) -> dict:
@@ -369,11 +338,6 @@ def update_history_job(progress: Progress = _noop) -> dict:
 # Job wrappers  thin adapters with the (progress, *args) signature jobs.start
 # expects. Keep ALL logic in the functions they call.
 # =============================================================================
-def artifacts_job(progress: Progress, include_shap: bool = False) -> dict:
-    """Build MISSING Model-Performance artifacts (eval; optionally SHAP)."""
-    return ensure_all_eval(progress=progress, include_shap=include_shap)
-
-
 def rebuild_eval_job(progress: Progress, model_name: str, all_models: bool = False) -> dict:
     """Force-rebuild the eval artifact(s)  the XAI page's 'Rebuild evaluation'."""
     from src import model_eval as me
@@ -393,102 +357,3 @@ def rebuild_eval_job(progress: Progress, model_name: str, all_models: bool = Fal
 # Retraining is CLI-only (`uv run python main.py retrain …` → src.training.retrain). The
 # old in-app retrain_job/run_retrain wrappers were removed with the retrain button — the
 # CLI calls src.training.retrain directly, so nothing was duplicated here.
-
-
-# =============================================================================
-# Model-Performance artifacts  auto-warm (eval for all models; optional SHAP)
-# =============================================================================
-def eval_coverage() -> dict:
-    """Which models already have a Model-Performance eval artifact on disk."""
-    from src import model_eval as me
-    have = [m for m in me.EVAL_MODELS if me.eval_available(m)]
-    return {"have": have, "all": list(me.EVAL_MODELS),
-            "complete": len(have) == len(me.EVAL_MODELS)}
-
-
-def ensure_all_eval(progress: Progress = _noop, *, include_shap: bool = False) -> dict:
-    """Build any MISSING Model-Performance eval artifacts (all four models), so the XAI page
-    always has data  runs in the background, skips artifacts that already exist. With
-    `include_shap=True` also builds the (slower) global SHAP for any model missing it.
-    Never raises: per-model failures are collected, not fatal."""
-    from src import model_eval as me
-    models = list(me.EVAL_MODELS)
-    n = len(models) * (2 if include_shap else 1)
-    out: dict = {"built_eval": [], "have_eval": [], "built_shap": [], "errors": []}
-    step = 0
-    for m in models:
-        step += 1
-        progress(f"Evaluation · {model_label(m)}…", step / (n + 1))
-        if me.eval_available(m):
-            out["have_eval"].append(m)
-        else:
-            try:
-                me.model_eval(m, refresh=False)      # builds only if missing
-                out["built_eval"].append(m)
-            except Exception as e:  # noqa: BLE001
-                out["errors"].append(f"eval {m}: {str(e)[:60]}")
-    if include_shap:
-        from dash_app.backend import explain as ex
-        for m in models:
-            step += 1
-            progress(f"Explanations · {model_label(m)}…", step / (n + 1))
-            if ex.shap_available(m):
-                continue
-            try:
-                ex.compute_global_shap(m, refresh=False)
-                out["built_shap"].append(m)
-            except Exception as e:  # noqa: BLE001
-                out["errors"].append(f"shap {m}: {str(e)[:60]}")
-    progress("Done.", 1.0)
-    return out
-
-
-# =============================================================================
-# Scored set  directly retrievable on the page (table + export)
-# =============================================================================
-def scored_overview(limit: int = 1000) -> dict:
-    """Summary + display rows of the current scored set (Data/scored_upcoming.parquet),
-    highest cancel risk first. This is the 'scoring directly retrievable' surface."""
-    from dash_app.backend import data_access as da
-    df = da.load_scored()
-    if df.empty:
-        return {"n": 0, "rows": [], "scored_at": None, "model_used": None,
-                "high": 0, "medium": 0, "low": 0}
-    d = df.sort_values("cancel_proba", ascending=False)
-    rb = d.get("risk_bucket")
-    rows = []
-    for r in d.head(limit).itertuples():
-        arr = getattr(r, "arrival", None)
-        rows.append({
-            "property_name": getattr(r, "property_name", ""),
-            "arrival": pd.to_datetime(arr, utc=True, errors="coerce").strftime("%Y-%m-%d")
-                       if arr is not None else "",
-            "cancel_pct": round(float(getattr(r, "cancel_proba", 0)) * 100, 1),
-            "risk_bucket": getattr(r, "risk_bucket", ""),
-        })
-    scored_at = _fmt_ts(d["scored_at"].iloc[0]) if "scored_at" in d.columns and len(d) else None
-    model_used = d["model_used"].iloc[0] if "model_used" in d.columns and len(d) else None
-    return {"n": int(len(df)), "rows": rows, "scored_at": scored_at, "model_used": model_used,
-            "high": int((rb == "high").sum()) if rb is not None else 0,
-            "medium": int((rb == "medium").sum()) if rb is not None else 0,
-            "low": int((rb == "low").sum()) if rb is not None else 0}
-
-
-# Columns of the COMPACT export  what a revenue manager actually reads. The full
-# export (all ~100 engineered columns) stays available for analysts.
-_EXPORT_COLUMNS: tuple[str, ...] = (
-    "property_name", "arrival", "departure", "los_nights", "channelCode",
-    "ratePlan_name", "unitGroup_name", "totalGrossAmount_amount",
-    "cancel_proba", "risk_bucket", "pred_cancel", "model_used", "scored_at",
-)
-
-
-def scored_export_frame(slim: bool = True) -> pd.DataFrame:
-    """The scored set for download. `slim=True` (default) keeps only the columns
-    a revenue manager reads; `slim=False` exports everything incl. features."""
-    from dash_app.backend import data_access as da
-    df = da.load_scored()
-    if df.empty or not slim:
-        return df
-    cols = [c for c in _EXPORT_COLUMNS if c in df.columns]
-    return df[cols].sort_values("cancel_proba", ascending=False)

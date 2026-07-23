@@ -1,9 +1,9 @@
 {
   "model": "xgboost",
-  "retrained_at": "2026-07-15T19:21:33.801073+00:00",
+  "retrained_at": "2026-07-23T09:19:54.447665+00:00",
   "mode": "retune",
-  "asof": "2026-07-12",
-  "n_train_deploy": 183008,
+  "asof": "2026-07-18",
+  "n_train_deploy": 184389,
   "features_numeric": [
     "adults_n",
     "arrival_dow",
@@ -43,37 +43,47 @@
   },
   "hyperparams": {
     "max_depth": 4,
-    "learning_rate": 0.24465498962794868,
-    "subsample": 0.9509357413523924,
-    "colsample_bytree": 0.7031766510860622,
-    "min_child_weight": 10,
-    "reg_lambda": 1.1191282495204613,
-    "reg_alpha": 4.295475449362941,
-    "n_estimators": 148
+    "learning_rate": 0.056094905248385514,
+    "subsample": 0.6912968913595985,
+    "colsample_bytree": 0.7080366602057379,
+    "min_child_weight": 5,
+    "reg_lambda": 11.676494678658294,
+    "reg_alpha": 0.052584237819489746,
+    "n_estimators": 767
   },
   "walk_forward": {
     "auc": {
-      "mean": 0.7585903732740021,
-      "std": 0.025797192928362852
+      "mean": 0.7667054961075014,
+      "std": 0.023646700483673903
     },
     "ap": {
-      "mean": 0.26498160721098535,
-      "std": 0.062438091506110016
+      "mean": 0.27880044760110445,
+      "std": 0.048929767597440554
     },
     "brier": {
-      "mean": 0.10998150707582428,
-      "std": 0.0173349869568452
+      "mean": 0.1094340943600946,
+      "std": 0.018184169858304226
     },
     "cost": {
-      "mean": 27650.0,
-      "std": 10285.630753629064
+      "mean": 29603.333333333332,
+      "std": 12812.290453571004
     }
   },
   "operating_points": [
     {
       "name": "cost_optimal",
-      "threshold": 0.7143
+      "threshold": 0.8235
     }
   ],
-  "decision_time_recalibrated": true
+  "decision_time_recalibrated": true,
+  "tuning": {
+    "metric": "average_precision",
+    "sampler": "TPE",
+    "pruner": "none",
+    "n_trials": 90,
+    "n_complete": 90,
+    "n_pruned": 0,
+    "best_ap": 0.47247396629284505,
+    "best_cost": 342000.0
+  }
 }

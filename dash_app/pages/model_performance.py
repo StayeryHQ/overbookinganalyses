@@ -15,7 +15,7 @@ from __future__ import annotations
 import dash
 import dash_mantine_components as dmc
 import pandas as pd
-from dash import Input, Output, State, callback, ctx, dcc, html, no_update
+from dash import Input, Output, State, callback, dcc, html, no_update
 
 import src
 from dash_app.backend import data_access as da
@@ -74,8 +74,10 @@ def layout(**_kwargs):
     model0 = serving[0] if serving else "hazard"
 
     controls = dmc.Paper(dmc.Group([
-        # Served models only (hazard / xgboost)  no 4-model comparison. XAI lives on
-        # Occupancy & Predictions now; this page is the served model's training performance.
+        # Served models (hazard / xgboost / histgb) - the three the app can score with
+        # and compare head-to-head. Options come from mo.scoring_model_options(), which
+        # derives from sc.SERVEABLE_MODELS, so this list stays in sync with the CLI. logreg
+        # stays off this page (baseline only). XAI lives on Occupancy & Predictions.
         dmc.Select(id="mp-model", label="Served model", value=model0,
                    data=mo.scoring_model_options(), allowDeselect=False,
                    style={"width": "220px"}),
@@ -259,14 +261,6 @@ def _poll_rebuild(_n, seen, version):
         seen["artifacts"] = fin
         if status == "done":
             bump = (version or 0) + 1        # re-read the fresh artifacts once
-    # Auto-refresh when a RETRAIN finishes elsewhere  it rebuilds this page's eval, so the
-    # performance charts must not lag the freshly deployed model.
-    rt = jobs.read("retrain")
-    rfin = rt.get("finished")
-    if rfin and seen.get("retrain") != rfin:
-        seen["retrain"] = rfin
-        if rt.get("status") == "done":
-            bump = (version or 0) + 1
     if status == "error":
         return "✗ " + str(st.get("error", "failed")), False, bump, seen
     if status == "done":

@@ -182,40 +182,14 @@ def loader_view(pct: float, message: str, *, show: bool):
             {"display": "block"} if show else {"display": "none"})
 
 
-def two_stage_loader(prefix: str, s1_label: str, s2_label: str, *,
-                     with_cancel: bool = True) -> html.Div:
-    """Two RingProgress rings side by side (one per stage) + spinning hourglass + message
-    + Cancel. For jobs with two clear phases (e.g. retrain: fit -> rebuild evaluation).
-    IDs: {prefix}-wrap / -ring1 / -pct1 / -ring2 / -pct2 / -msg / -cancel."""
-    def _ring(rid, pid, label):
-        return dmc.Stack([
-            dmc.RingProgress(id=rid, size=58, thickness=5, roundCaps=True,
-                             sections=[{"value": 0, "color": "yellow"}],
-                             label=dmc.Center(dmc.Text("0%", id=pid, fw=700, size="xs"))),
-            dmc.Text(label, size="xs", c="dimmed", ta="center"),
-        ], gap=2, align="center")
-    right = [dmc.Group([
-        html.I(className="bi bi-hourglass-split stayery-hourglass",
-               style={"color": theme.ORANGE, "fontSize": "1.15rem"}),
-        dmc.Text(id=f"{prefix}-msg", size="sm", fw=500),
-    ], gap=8, align="center", wrap="nowrap")]
-    if with_cancel:
-        right.append(dmc.Button("Cancel", id=f"{prefix}-cancel", size="xs", variant="subtle",
-                                color="gray", leftSection=html.I(className="bi bi-x-circle")))
-    inner = dmc.Group([
-        _ring(f"{prefix}-ring1", f"{prefix}-pct1", s1_label),
-        _ring(f"{prefix}-ring2", f"{prefix}-pct2", s2_label),
-        dmc.Stack(right, gap=6),
-    ], gap="lg", align="center")
-    return html.Div(inner, id=f"{prefix}-wrap", style={"display": "none"})
+def err_alert(text: str, *, title: str = "Failed") -> dmc.Alert:
+    """Shared red 'job failed' alert. Pages pass their own title ('Scoring failed' /
+    'Update failed'); body + icon are identical everywhere."""
+    return dmc.Alert(dmc.Text(str(text), size="sm"), color="red", variant="light",
+                     title=title, icon=html.I(className="bi bi-exclamation-triangle"))
 
 
-def two_stage_view(frac: float, message: str, *, show: bool):
-    """(ring1_sections, pct1, ring2_sections, pct2, message, wrap_style) for a two-stage
-    loader. Stage 1 fills over frac 0→0.5, stage 2 over 0.5→1."""
-    f = max(0.0, min(1.0, float(frac)))
-    p1 = int(round(min(f / 0.5, 1.0) * 100))
-    p2 = int(round(max(0.0, (f - 0.5) / 0.5) * 100))
-    return ([{"value": p1, "color": "yellow"}], f"{p1}%",
-            [{"value": p2, "color": "yellow"}], f"{p2}%",
-            message, {"display": "block"} if show else {"display": "none"})
+def cancelled_alert(what: str) -> dmc.Alert:
+    """Shared grey 'job cancelled, previous data kept' alert (`what` = the job name)."""
+    return dmc.Alert(f"{what} cancelled  previous data kept.", color="gray", variant="light",
+                     icon=html.I(className="bi bi-x-circle"))

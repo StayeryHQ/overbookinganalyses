@@ -222,30 +222,6 @@ def _stay_segment(df: pd.DataFrame) -> pd.DataFrame:
     return g.sort_values("order").drop(columns="order").reset_index(drop=True)
 
 
-def stay_segment_rate(properties: list[str] | None = None,
-                      window_months: int | None = None) -> pd.DataFrame:
-    return _stay_segment(_filtered(properties, window_months))
-
-
-# ---- 4b) Lead-time bucket rate ---------------------------------------------
-def _leadtime(df: pd.DataFrame) -> pd.DataFrame:
-    cols = ["bucket", "n", "cancel_rate"]
-    if df.empty or "lead_time_days" not in df.columns:
-        return pd.DataFrame(columns=cols)
-    lead = pd.to_numeric(df["lead_time_days"], errors="coerce")
-    bucket = pd.cut(lead, bins=LEAD_BINS, labels=LEAD_LABELS)
-    tmp = pd.DataFrame({"bucket": bucket, TARGET: df[TARGET].to_numpy()})
-    g = (tmp.groupby("bucket", observed=True)[TARGET].agg(["size", "mean"]).reset_index()
-           .rename(columns={"size": "n", "mean": "cancel_rate"}))
-    g["bucket"] = pd.Categorical(g["bucket"], categories=LEAD_LABELS, ordered=True)
-    return g.sort_values("bucket").reset_index(drop=True)
-
-
-def leadtime_bucket_rate(properties: list[str] | None = None,
-                         window_months: int | None = None) -> pd.DataFrame:
-    return _leadtime(_filtered(properties, window_months))
-
-
 # ---- 4c) Length-of-stay per NIGHT (daily granularity, coloured by segment) --
 def _stay_segment_of(night: int) -> str:
     """Which short/mid/long bucket a night count belongs to (colour only)."""

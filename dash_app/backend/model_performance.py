@@ -29,11 +29,6 @@ LOC_MIN_N: int = 200                    # min pooled bookings for a per-location
 # ---------------------------------------------------------------------------
 # Model + artifact availability
 # ---------------------------------------------------------------------------
-def registered_models() -> list[str]:
-    """Every model the page can show, in display order."""
-    return list(me.EVAL_MODELS)
-
-
 def eval_status(model: str) -> dict:
     """{'available': bool, 'meta': provenance dict | None} for a model's eval artifact."""
     return {"available": me.eval_available(model), "meta": me.model_eval_meta(model)}
@@ -51,13 +46,6 @@ def _filtered(model: str, props: list[str] | None) -> pd.DataFrame:
     if df.empty or not props:
         return df
     return df[df["property_name"].isin(props)].copy()
-
-
-def location_options(model: str) -> list[str]:
-    df = load_eval(model)
-    if df.empty or "property_name" not in df.columns:
-        return []
-    return sorted(df["property_name"].dropna().astype(str).unique().tolist())
 
 
 # ---------------------------------------------------------------------------

@@ -193,19 +193,9 @@ def survival_cancel_proba(bookings: pd.DataFrame, haz_fn, num: list[str], cat: l
 # =============================================================================
 # Fit + calibrate (xgboost  kernel-validated)
 # =============================================================================
-def _sample_hp(rng) -> dict:
-    """Sample one hyperparameter config (depth, lr, min_child_weight, reg_lambda,
-    subsample, colsample)  the RandomizedSearch space for the hazard model."""
-    return dict(
-        max_depth=int(rng.choice([4, 5, 6, 7, 8])),
-        learning_rate=float(np.exp(rng.uniform(np.log(0.02), np.log(0.15)))),
-        min_child_weight=int(rng.choice([5, 10, 20, 30, 50])),
-        reg_lambda=float(np.exp(rng.uniform(np.log(1.0), np.log(15.0)))),
-        subsample=float(rng.uniform(0.7, 0.95)),
-        colsample_bytree=float(rng.uniform(0.7, 0.95)),
-    )
-
-
+# The hazard's HP search space now lives in the ONE shared engine
+# (src.hp_search.suggest_space("hazard")); fit_hazard delegates the retune search
+# there. HP_GRID[0] is still used to warm-start that study (baseline trial).
 def card_hp() -> dict | None:
     """Frozen hazard hyperparameters from the model card (search-space keys only), so
     per-fold EVALUATION refits with ONE fit instead of a full RandomizedSearch. Returns
@@ -228,7 +218,7 @@ def card_hp() -> dict | None:
 
 
 def fit_hazard(clean_resolved: pd.DataFrame, *, val_frac: float = 0.15,
-               n_iter: int = 15, seed: int = SEED, fixed_hp: dict | None = None) -> dict:
+               n_iter: int = 90, seed: int = SEED, fixed_hp: dict | None = None) -> dict:
     """Fit the hazard model on RESOLVED bookings via a RandomizedSearch (with
     EARLY STOPPING  no fixed tree count) + PER-SNAPSHOT-BAND isotonic calibration,
     both on a temporally held-out (most-recent-by-created) validation slice.
@@ -258,22 +248,35 @@ def fit_hazard(clean_resolved: pd.DataFrame, *, val_frac: float = 0.15,
     Xtr, ytr = pp_tr[FEATS], pp_tr["y"].to_numpy()
     Xva, yva = pp_va[FEATS], pp_va["y"].to_numpy()
 
-    rng = np.random.RandomState(seed)
-    if fixed_hp is not None:
-        candidates = [fixed_hp]                                    # frozen-hp fast path (1 fit)
-    else:
-        # baseline config first, then n_iter random samples (RandomizedSearch).
-        candidates = [HP_GRID[0]] + [_sample_hp(rng) for _ in range(n_iter)]
-    best = None
-    for hp in candidates:
+    def _fit_eval(hp):
+        """ONE early-stopped person-period fit -> (val PR-AUC, model). This is the
+        hazard-specific candidate fit the shared search drives; it stays in src.hazard
+        because the person-period expansion + XGBoost categorical handling live here."""
         m = XGBClassifier(n_estimators=2000, tree_method="hist", enable_categorical=True,
                           eval_metric="aucpr", early_stopping_rounds=50,
                           objective="binary:logistic", n_jobs=-1, random_state=seed, **hp)
         m.fit(Xtr, ytr, eval_set=[(Xva, yva)], verbose=False)
-        ap = average_precision_score(yva, m.predict_proba(Xva)[:, 1])
-        if best is None or ap > best[0]:
-            best = (ap, hp, m)
-    val_ap, hp, model = best
+        return float(average_precision_score(yva, m.predict_proba(Xva)[:, 1])), m
+
+    tuning = None
+    if fixed_hp is not None:
+        hp = dict(fixed_hp)                                        # frozen-hp fast path (1 fit)
+        val_ap, model = _fit_eval(hp)
+    else:
+        # Retune: delegate to the ONE shared TPE engine (src.hp_search), warm-started
+        # with ALL the notebook's curated configs (HP_GRID) as the first trials, so the
+        # search can never do worse than the best hand-picked baseline. No cost is
+        # reported for the hazard here because the search runs on PERSON-PERIOD rows, not
+        # per-booking decisions (the comparable cross-model overbooking cost is the matched
+        # bake-off, nb05); a person-period "cost" would not be apples-to-apples.
+        from . import hp_search as hps
+        def _evaluate(trial, params):
+            ap, _m = _fit_eval(params)
+            trial.set_user_attr("ap", ap)
+            return ap
+        hp, tuning = hps.run_study(lambda t: hps.suggest_space("hazard", t), _evaluate,
+                                   n_trials=n_iter, seed=seed, enqueue=list(HP_GRID))
+        val_ap, model = _fit_eval(hp)
     # Per-snapshot-band isotonic calibration. A wide-window (coarse-tail) hazard
     # and a daily hazard live on different probability scales, so ONE pooled map
     # over mixed widths miscalibrates both. Fit a map for the daily band
@@ -313,7 +316,7 @@ def fit_hazard(clean_resolved: pd.DataFrame, *, val_frac: float = 0.15,
             "num": num, "cat": cat, "cat_dtypes": cat_dtypes,
             "snap": SNAP, "axis": AXIS, "hp": hp, "val_ap": float(val_ap),
             "best_iteration": int(getattr(model, "best_iteration", 0) or 0),
-            "n_train_pp": int(len(pp_tr))}
+            "n_train_pp": int(len(pp_tr)), "tuning": tuning}
 
 
 def hazard_fn(hz: dict):
@@ -378,7 +381,7 @@ def hazard_available() -> bool:
 # Retrain (point-in-time)  fit on all resolved data, persist
 # =============================================================================
 def retrain_hazard(*, mode: str = "refit", asof=None, persist: bool = True, seed: int = SEED,
-                   refresh_eval: bool = False, n_iter: int = 40) -> dict:
+                   refresh_eval: bool = False, n_iter: int = 90) -> dict:
     """Fit the deployment hazard model on ALL data resolved by `asof` and persist.
 
     mode="refit"  -> reuse the FROZEN card hyperparameters: ONE early-stopped fit. Fast and
@@ -403,7 +406,7 @@ def retrain_hazard(*, mode: str = "refit", asof=None, persist: bool = True, seed
         used_mode = "refit"
     result = {"model": "hazard", "mode": used_mode, "asof": str(asof_ts.date()),
               "val_ap": hz["val_ap"], "hp": hz["hp"], "n_train_pp": hz["n_train_pp"],
-              "n_books_resolved": int(len(resolved))}
+              "n_books_resolved": int(len(resolved)), "tuning": hz.get("tuning")}
     if persist:
         jp = save_hazard(hz)
         card = {"model": "hazard", "retrained_at": pd.Timestamp.utcnow().isoformat(),
@@ -411,7 +414,8 @@ def retrain_hazard(*, mode: str = "refit", asof=None, persist: bool = True, seed
                 "asof": str(asof_ts.date()), "val_ap": hz["val_ap"], "hyperparams": hz["hp"],
                 "n_train_person_period": hz["n_train_pp"], "snap": SNAP, "axis": AXIS,
                 "decision_time_recalibrated": bool(hz.get("decision_recal") is not None),
-                "features_numeric": hz["num"], "features_categorical": hz["cat"]}
+                "features_numeric": hz["num"], "features_categorical": hz["cat"],
+                "tuning": hz.get("tuning")}   # None on refit; search report on retune
         cp = repo_root() / HAZARD_CARD
         cp.parent.mkdir(parents=True, exist_ok=True)
         cp.write_text(json.dumps(card, indent=2))

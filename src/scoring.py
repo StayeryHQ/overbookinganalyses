@@ -62,9 +62,16 @@ def analytic_threshold(c_walk: float = COST_WALK, c_empty: float = COST_EMPTY) -
 # sklearn Pipeline (predict_proba), "hazard" = survival artifact (src.hazard).
 # All four stay registered so retrain()/notebooks can save them; SERVING is a
 # separate decision made by resolve_model(): hazard is the default scorer,
-# xgboost the fallback, logreg/histgb are comparison baselines only.
+# xgboost the fallback. logreg stays a comparison-only baseline.
 DEFAULT_MODEL:  Final[str] = "hazard"    # standard scoring model
 FALLBACK_MODEL: Final[str] = "xgboost"   # used when the hazard artifact is absent
+
+# Models the app offers for SERVING (scoring upcoming bookings) AND head-to-head
+# performance comparison. User decision 2026-07: promote histgb to a full serving
+# model alongside hazard + xgboost (previously served = {hazard, xgboost} only).
+# Default first. logreg is deliberately excluded - it remains a baseline, not served.
+# ONE source of truth: dash_app + main.py CLI derive their model choices from this.
+SERVEABLE_MODELS: Final[tuple[str, ...]] = ("hazard", "xgboost", "histgb")
 
 MODEL_REGISTRY: Final[dict[str, dict[str, str]]] = {
     "hazard":  {"kind": "hazard", "joblib": "08_hazard_model.joblib",

@@ -33,6 +33,7 @@ from src import (
     score_upcoming,
 )
 from src.model_eval import EVAL_MODELS, model_eval
+from src.scoring import SERVEABLE_MODELS
 
 
 def cmd_refresh(args: argparse.Namespace) -> int:
@@ -146,10 +147,12 @@ def cmd_eval(args: argparse.Namespace) -> int:
 
 
 def cmd_explain(args: argparse.Namespace) -> int:
-    """Pre-warm the global SHAP artifact(s) the Model-Performance page reads (beeswarm +
-    feature importance). Model-agnostic over the scalar P(cancel) adapter, so it can be
-    slow — run offline / in the Docker build. Requires a scored set (`main.py score`)."""
-    from dash_app.backend.explain import compute_global_shap, iteration_curve, shap_cache_path
+    """Pre-warm the global explanation artifacts the Model-Performance / Occupancy pages read
+    (SHAP beeswarm + importance, and the per-feature PDP cache). Model-agnostic over the scalar
+    P(cancel) adapter, so it can be slow — run offline / in the Docker build. Requires a scored
+    set (`main.py score`)."""
+    from dash_app.backend.explain import (compute_all_pdp, compute_global_shap,
+                                          iteration_curve, pdp_cache_path, shap_cache_path)
 
     if args.all:
         models = list(EVAL_MODELS)
@@ -170,6 +173,13 @@ def cmd_explain(args: argparse.Namespace) -> int:
             print(f"  nothing to explain for '{m}' (is anything scored? run `main.py score`).")
             continue
         print(f"  features={d['feature'].nunique()}  rows={len(d):,}  saved → {shap_cache_path(m)}")
+        # Build the per-feature partial-dependence cache the Occupancy page reads read-only
+        # (pdp_<model>.json). Same offline pre-warm as SHAP; the page never recomputes PDP live.
+        try:
+            pdp = compute_all_pdp(m, refresh=args.refresh)
+            print(f"  PDP cache built for '{m}' ({len(pdp)} features) → {pdp_cache_path(m)}")
+        except Exception as e:  # noqa: BLE001
+            print(f"  (PDP skipped for '{m}': {e})", file=sys.stderr)
         if m in ("xgboost", "histgb"):                       # warm the boosting iteration curve too
             try:
                 iteration_curve(m, refresh=args.refresh)
@@ -238,10 +248,13 @@ def cmd_retrain(args: argparse.Namespace) -> int:
     from src.training import retrain
 
     mode = "retune" if args.retune else "refit"
-    print(f"Retraining '{args.model}' (mode={mode}) on all resolved data"
+    print(f"Retraining '{args.model}' (mode={mode}"
+          + (f", {args.trials} TPE trials" if mode == "retune" else "")
+          + ") on all resolved data"
           + (f" as-of {args.asof}" if args.asof else "") + "…")
     try:
-        res = retrain(args.model, mode=mode, asof=args.asof, persist=not args.dry_run)
+        res = retrain(args.model, mode=mode, asof=args.asof, persist=not args.dry_run,
+                      n_iter=args.trials)
     except Exception as e:  # noqa: BLE001 — surface the reason, non-zero exit
         print(f"ERROR: {e}", file=sys.stderr)
         return 1
@@ -258,6 +271,14 @@ def cmd_retrain(args: argparse.Namespace) -> int:
         print(f"  walk-forward AUC (mean): {auc:.3f}")
     if res.get("val_ap") is not None:                             # hazard reports val AP
         print(f"  val AP (person-period) : {res['val_ap']:.4f}")
+    tune = res.get("tuning")                                       # TPE search report (retune only)
+    if tune:
+        line = (f"  HP search      : {tune.get('sampler', 'TPE')}, "
+                f"{tune.get('n_complete', tune.get('n_trials'))} trials, "
+                f"best PR-AUC {tune.get('best_ap'):.4f}")
+        if tune.get("best_cost") is not None:
+            line += f", val cost €{tune['best_cost']:,.0f}"
+        print(line)
     fc = res.get("feature_change") or {}
     if fc.get("changed"):
         print(f"  feature change : added={fc.get('added')} removed={fc.get('removed')}")
@@ -307,9 +328,9 @@ def build_parser() -> argparse.ArgumentParser:
     pr.set_defaults(func=cmd_refresh)
 
     ps = sub.add_parser("score", help="Score upcoming arrivals.")
-    ps.add_argument("--model", choices=["hazard", "xgboost"],
-                    help="Which model to use. Default: hazard (falls back to xgboost "
-                         "if the hazard artifact is missing).")
+    ps.add_argument("--model", choices=list(SERVEABLE_MODELS),
+                    help="Which model to use (hazard / xgboost / histgb). Default: hazard "
+                         "(falls back to xgboost if the hazard artifact is missing).")
     ps.add_argument("--refresh", action="store_true",
                     help="Re-pull BigQuery before scoring.")
     ps.set_defaults(func=cmd_score)
@@ -318,8 +339,9 @@ def build_parser() -> argparse.ArgumentParser:
     pst.set_defaults(func=cmd_status)
 
     pu = sub.add_parser("update", help="Combined update: BigQuery refresh (both tables) + score next N days.")
-    pu.add_argument("--model", choices=["hazard", "xgboost"],
-                    help="Which model to score with. Default: hazard (fallback xgboost).")
+    pu.add_argument("--model", choices=list(SERVEABLE_MODELS),
+                    help="Which model to score with (hazard / xgboost / histgb). "
+                         "Default: hazard (fallback xgboost).")
     pu.add_argument("--days", type=int, default=14,
                     help="Forward arrival window in days (default 14).")
     pu.set_defaults(func=cmd_update)
@@ -335,7 +357,11 @@ def build_parser() -> argparse.ArgumentParser:
     prt.add_argument("--model", required=True, choices=list(EVAL_MODELS),
                      help="Which model to retrain.")
     prt.add_argument("--retune", action="store_true",
-                     help="Re-search hyperparameters (default: keep the frozen card HP).")
+                     help="Re-search hyperparameters with the shared TPE search (default: "
+                          "keep the frozen card HP).")
+    prt.add_argument("--trials", type=int, default=90,
+                     help="Hyperparameter search budget (TPE trials) when --retune is set "
+                          "(default 90). Ignored on a plain refit.")
     prt.add_argument("--asof", default=None,
                      help="Only use data resolved by this date (YYYY-MM-DD). Default: latest.")
     prt.add_argument("--dry-run", action="store_true",
@@ -352,7 +378,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Recompute even if the parquet already exists.")
     pe.set_defaults(func=cmd_eval)
 
-    px = sub.add_parser("explain", help="Pre-warm global SHAP (beeswarm + importance).")
+    px = sub.add_parser("explain", help="Pre-warm global SHAP (beeswarm + importance) + PDP cache.")
     px.add_argument("--model", choices=list(EVAL_MODELS),
                     help="Which model to explain. Omit and pass --all for every model.")
     px.add_argument("--all", action="store_true", help="Explain all four models.")

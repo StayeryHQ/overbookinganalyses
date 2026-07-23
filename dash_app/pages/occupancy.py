@@ -16,7 +16,6 @@ import pandas as pd
 from dash import Input, Output, State, callback, ctx, dcc, html, no_update
 
 import src
-from dash_app import theme
 from dash_app.backend import data_access as da
 from dash_app.backend import explain as ex             # SHAP / PDP (14-day scored bookings)
 from dash_app.backend import jobs                       # file-backed job runner (no hang)
@@ -37,8 +36,6 @@ def _served_model() -> str:
             return str(mu.iloc[0])
     return src.scoring.DEFAULT_MODEL
 
-_HIDDEN = {"display": "none"}
-_SHOWN = {"display": "block"}
 
 dash.register_page(__name__, path="/occupancy", name="Occupancy & Predictions",
                    order=1, title="STAYERY · Occupancy")
@@ -469,9 +466,9 @@ def _poll_scoring(_n, _kick, version, seen):
         if status == "done":
             bump = (version or 0) + 1
     if status == "error":
-        return sec, pct, msg, wrap, no_update, _err_alert(st.get("error", "unknown error")), False, bump, seen
+        return sec, pct, msg, wrap, no_update, ui.err_alert(st.get("error", "unknown error"), title="Scoring failed"), False, bump, seen
     if status == "cancelled":
-        return sec, pct, msg, wrap, no_update, _cancelled_alert("Scoring"), False, bump, seen
+        return sec, pct, msg, wrap, no_update, ui.cancelled_alert("Scoring"), False, bump, seen
     if status == "done":
         return sec, pct, msg, wrap, no_update, _score_result(st.get("result") or {}), False, bump, seen
     return sec, pct, msg, wrap, no_update, no_update, False, no_update, seen
@@ -515,15 +512,6 @@ def _download_predictions_xls(_n, sel_props, selection, cost_store):
         lambda buf: xls.write_predictions_workbook(buf, props or None, day, thr, model),
         f"stayery_predictions_{ts}.xlsx")
 
-
-def _err_alert(text: str) -> dmc.Alert:
-    return dmc.Alert(dmc.Text(str(text), size="sm"), color="red", variant="light",
-                     title="Scoring failed", icon=html.I(className="bi bi-exclamation-triangle"))
-
-
-def _cancelled_alert(what: str) -> dmc.Alert:
-    return dmc.Alert(f"{what} cancelled  previous data kept.", color="gray", variant="light",
-                     icon=html.I(className="bi bi-x-circle"))
 
 
 # ---------------------------------------------------------------------------

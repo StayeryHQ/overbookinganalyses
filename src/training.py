@@ -173,8 +173,8 @@ def build_pipeline(model_name: str, hp: dict, num: list[str], cat: list[str],
 
 def _default_hp(model_name: str) -> dict:
     """Baseline hyperparameters (structural search seed only). NB: xgboost carries
-    NO fixed `n_estimators` on purpose - the tree count is set by early stopping in
-    `search_hyperparams`, and `retrain` forces a retune when no card exists, so we
+    NO fixed `n_estimators` on purpose - the tree count is set by early stopping in the
+    HP search (`src.hp_search`), and `retrain` forces a retune when no card exists, so we
     never silently deploy a fixed-tree XGBoost (the old n_estimators=600 trap)."""
     return {
         "logreg": dict(C=1.0, l1_ratio=0.5),
@@ -200,83 +200,25 @@ def _card_hp(model_name: str) -> dict:
 
 
 # =============================================================================
-# Hyperparameter search (retune) - train-only, TimeSeriesSplit, AP
-# =============================================================================
-def _search_xgboost_earlystop(num: list[str], cat: list[str], X, y, *,
-                              n_iter: int = 40, seed: int = SEED, val_frac: float = 0.15) -> dict:
-    """XGBoost tuning with EARLY STOPPING (no fixed 600 trees). Sample structural hp,
-    fit each with early stopping on a TIME-based val tail, keep the best by AP, and
-    return the best hp incl. the early-stopped `n_estimators`. `X` must be time-ordered
-    (retrain passes created-sorted rows). Mirrors src.hazard.fit_hazard's approach."""
-    from xgboost import XGBClassifier
-    from sklearn.compose import ColumnTransformer
-    from sklearn.preprocessing import OneHotEncoder
-    from sklearn.metrics import average_precision_score
-    cut = int(len(X) * (1 - val_frac))
-    prep = ColumnTransformer([("cat", OneHotEncoder(handle_unknown="ignore"), cat),
-                              ("num", "passthrough", num)])
-    Xtr = prep.fit_transform(X.iloc[:cut]); Xva = prep.transform(X.iloc[cut:])
-    ytr = np.asarray(y.iloc[:cut]); yva = np.asarray(y.iloc[cut:])
-    rng = np.random.RandomState(seed)
-
-    def _sample():
-        return dict(max_depth=int(rng.choice([3, 4, 5, 6, 8])),
-                    learning_rate=float(np.exp(rng.uniform(np.log(0.02), np.log(0.3)))),
-                    subsample=float(rng.uniform(0.6, 1.0)),
-                    colsample_bytree=float(rng.uniform(0.6, 1.0)),
-                    min_child_weight=int(rng.choice([1, 3, 5, 10, 20])),
-                    reg_lambda=float(np.exp(rng.uniform(np.log(0.5), np.log(50.0)))),
-                    reg_alpha=float(np.exp(rng.uniform(np.log(1e-3), np.log(5.0)))))
-
-    candidates = [dict(max_depth=6, learning_rate=0.05, subsample=0.8, colsample_bytree=0.8,
-                       min_child_weight=1, reg_lambda=1.0, reg_alpha=0.0)]
-    candidates += [_sample() for _ in range(n_iter)]
-    best = None
-    for hp in candidates:
-        m = XGBClassifier(n_estimators=2000, early_stopping_rounds=50, eval_metric="aucpr",
-                          tree_method="hist", objective="binary:logistic", n_jobs=-1,
-                          random_state=seed, **hp)
-        m.fit(Xtr, ytr, eval_set=[(Xva, yva)], verbose=False)
-        ap = average_precision_score(yva, m.predict_proba(Xva)[:, 1])
-        if best is None or ap > best[0]:
-            n_est = int(getattr(m, "best_iteration", 0) or 0) + 1     # early-stopped tree count
-            best = (ap, {**hp, "n_estimators": n_est})
-    return best[1]
-
-
-def search_hyperparams(model_name: str, X, y, *, n_iter: int = 40, n_folds: int = 5,
-                       seed: int = SEED) -> dict:
-    """Return the best estimator hp (scoring=AP). XGBoost: tree count via EARLY
-    STOPPING (no fixed count). logreg / histgb: RandomizedSearch on a TimeSeriesSplit
-    (histgb early-stops natively; its max_iter is a cap). `X` should be time-ordered.
-    """
-    from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
-    from scipy.stats import loguniform, uniform, randint
-    num, cat = _family_feature_lists(model_name)
-    kind = MODEL_KIND[model_name]
-    if kind == "xgboost":
-        return _search_xgboost_earlystop(num, cat, X, y, n_iter=n_iter, seed=seed)
-    pipe = build_pipeline(model_name, _default_hp(model_name), num, cat, calibrate=False, seed=seed)
-
-    if kind == "logreg":
-        space = {"clf__C": loguniform(1e-4, 1e3), "clf__l1_ratio": uniform(0.0, 1.0)}
-    else:  # histgb (early-stops natively; max_iter is a cap)
-        space = {"clf__learning_rate": loguniform(0.01, 0.3),
-                 "clf__max_leaf_nodes": randint(15, 127),
-                 "clf__min_samples_leaf": randint(10, 200),
-                 "clf__l2_regularization": loguniform(1e-3, 100.0),
-                 "clf__max_iter": [300, 600, 900]}
-
-    search = RandomizedSearchCV(pipe, space, n_iter=n_iter, scoring="average_precision",
-                                cv=TimeSeriesSplit(n_splits=n_folds), random_state=seed,
-                                n_jobs=-1, refit=False)
-    search.fit(X, y)
-    return {k.replace("clf__", ""): v for k, v in search.best_params_.items()}
-
-
-# =============================================================================
 # Walk-forward evaluation - honest one-step-ahead metrics
 # =============================================================================
+def iter_decision_folds(df: pd.DataFrame, *, n_folds: int = 6, horizon_days: int = 14,
+                        step_days: int = 14, scheme: str = "expanding",
+                        min_train: int = 500, min_test: int = 50):
+    """Yield the USABLE decision-time folds for `df` (must already carry
+    outcome_known_date): src.walkforward.make_folds + the shared usability guard
+    (enough train/test rows AND a two-class train target). THE single fold iterator
+    behind every walk-forward surface - walk_forward_eval / walk_forward_predict /
+    bakeoff_walk_forward / model_eval all loop over this, so the fold generation and
+    the skip-guard live in exactly one place (was copy-pasted four times)."""
+    y = _target(df)
+    for f in wf.make_folds(df, n_folds=n_folds, horizon_days=horizon_days,
+                           step_days=step_days, scheme=scheme):
+        if f.n_train < min_train or f.n_test < min_test or y.iloc[f.train_idx].nunique() < 2:
+            continue
+        yield f
+
+
 def walk_forward_eval(model_name: str, *, hp: dict | None = None, n_folds: int = 6,
                       horizon_days: int = 14, step_days: int = 14, scheme: str = "expanding",
                       c_walk: float = sc.COST_WALK, c_empty: float = sc.COST_EMPTY,
@@ -298,14 +240,11 @@ def walk_forward_eval(model_name: str, *, hp: dict | None = None, n_folds: int =
     num, cat = _family_feature_lists(model_name)
     hp = hp or _card_hp(model_name)
     df = wf.add_outcome_known_date(_load_clean())
-    folds = wf.make_folds(df, n_folds=n_folds, horizon_days=horizon_days,
-                          step_days=step_days, scheme=scheme)
     X, y = df[num + cat], _target(df)
 
     per_fold, parts = [], []
-    for f in folds:
-        if f.n_train < 500 or f.n_test < 50 or y.iloc[f.train_idx].nunique() < 2:
-            continue
+    for f in iter_decision_folds(df, n_folds=n_folds, horizon_days=horizon_days,
+                                 step_days=step_days, scheme=scheme):
         pipe = build_pipeline(model_name, hp, num, cat, calibrate=True, seed=seed)
         pipe.fit(X.iloc[f.train_idx], y.iloc[f.train_idx].values)
         p = pipe.predict_proba(X.iloc[f.test_idx])[:, 1]
@@ -344,24 +283,14 @@ def walk_forward_predict(model_name: str, *, hp: dict | None = None, n_folds: in
     a long DataFrame [fold, y_true, y_prob]. One place to get honest OOS scores for
     reliability curves, cost-optimal thresholds and pooled metrics (notebooks 01-03).
     """
-    num, cat = _family_feature_lists(model_name)
-    hp = hp or _card_hp(model_name)
-    df = wf.add_outcome_known_date(_load_clean())
-    folds = wf.make_folds(df, n_folds=n_folds, horizon_days=horizon_days,
-                          step_days=step_days, scheme=scheme)
-    X, y = df[num + cat], _target(df)
-    parts = []
-    for f in folds:
-        if f.n_train < 500 or f.n_test < 50 or y.iloc[f.train_idx].nunique() < 2:
-            continue
-        pipe = build_pipeline(model_name, hp, num, cat, calibrate=True, seed=seed)
-        pipe.fit(X.iloc[f.train_idx], y.iloc[f.train_idx].values)
-        p = pipe.predict_proba(X.iloc[f.test_idx])[:, 1]
-        parts.append(pd.DataFrame({"fold": f.k,
-                                   "y_true": y.iloc[f.test_idx].to_numpy(),
-                                   "y_prob": p}))
-    return (pd.concat(parts, ignore_index=True) if parts
-            else pd.DataFrame(columns=["fold", "y_true", "y_prob"]))
+    # DRY: the pooled [fold, y_true, y_prob] frame is EXACTLY what walk_forward_eval already
+    # collects on the same folds / same guard / same frozen-hp calibrated pipeline. Derive it
+    # from there instead of re-implementing an identical fold loop (output is bit-for-bit the
+    # same; walk_forward_eval also computes per-fold cost, which this caller simply ignores).
+    out = walk_forward_eval(model_name, hp=hp, n_folds=n_folds, horizon_days=horizon_days,
+                            step_days=step_days, scheme=scheme, seed=seed,
+                            collect_predictions=True)
+    return out["predictions"]
 
 
 # The matched bake-off is expensive (fits 3 static + hazard per fold, ~hours). Persist
@@ -449,16 +378,14 @@ def bakeoff_walk_forward(*, n_folds: int = 8, horizon_days: int = 14, step_days:
     """
     from . import hazard as hz
     df = wf.add_outcome_known_date(_load_clean())
-    folds = wf.make_folds(df, n_folds=n_folds, horizon_days=horizon_days, step_days=step_days)
     tgt = _target(df)
     lin_num, lin_cat = _family_feature_lists("logreg")
     tree_num, tree_cat = _family_feature_lists("xgboost")   # xgboost == histgb family
     statics = {"logreg": (lin_num, lin_cat), "xgboost": (tree_num, tree_cat),
                "histgb": (tree_num, tree_cat)}
     parts = []
-    for f in folds:
-        if f.n_train < 500 or f.n_test < 50 or tgt.iloc[f.train_idx].nunique() < 2:
-            continue
+    for f in iter_decision_folds(df, n_folds=n_folds, horizon_days=horizon_days,
+                                 step_days=step_days):
         ytr = tgt.iloc[f.train_idx].to_numpy()
         te = df.iloc[f.test_idx].copy()
         arr = pd.to_datetime(te["arrival"], utc=True); cre = pd.to_datetime(te["created"], utc=True)
@@ -492,7 +419,7 @@ def _load_clean() -> pd.DataFrame:
 
 
 def retrain(model_name: str, *, mode: str = "refit", asof: str | pd.Timestamp | None = None,
-            persist: bool = True, n_iter: int = 40, seed: int = SEED,
+            persist: bool = True, n_iter: int = 90, seed: int = SEED,
             refresh_eval: bool = False) -> dict:
     """Retrain a model for DEPLOYMENT and report honest walk-forward metrics.
 
@@ -545,12 +472,16 @@ def retrain(model_name: str, *, mode: str = "refit", asof: str | pd.Timestamp | 
             mode = "retune"
 
     # ---- hyperparameters ------------------------------------------------------
+    tune_report = None
     if mode == "retune":
         # search on the resolved data, TIME-ORDERED by `created` (so xgboost's
         # early-stopping val is a true temporal tail, and TimeSeriesSplit is honest).
+        # ONE shared TPE engine (src.hp_search) for every model; captures the tuning
+        # report (best PR-AUC + expected cost) so the card records what the search found.
+        from . import hp_search as hps
         order = pd.to_datetime(df.loc[resolved, "created"], utc=True, errors="coerce").sort_values().index
         Xr, yr = X.loc[order], y.loc[order]
-        hp = search_hyperparams(model_name, Xr, yr, n_iter=n_iter, seed=seed)
+        hp, tune_report = hps.tune_static(model_name, Xr, yr, n_trials=n_iter, seed=seed)
     else:
         hp = _card_hp(model_name)
 
@@ -587,7 +518,7 @@ def retrain(model_name: str, *, mode: str = "refit", asof: str | pd.Timestamp | 
     result = {"model": model_name, "mode": mode, "asof": str(asof_ts.date()),
               "n_train_deploy": int(resolved.sum()),
               "feature_change": change, "walk_forward": wf_report,
-              "hyperparams": hp, "threshold": thr}
+              "hyperparams": hp, "threshold": thr, "tuning": tune_report}
 
     if persist:
         reg = sc.MODEL_REGISTRY[model_name]
@@ -614,6 +545,7 @@ def retrain(model_name: str, *, mode: str = "refit", asof: str | pd.Timestamp | 
             "hyperparams": hp, "walk_forward": wf_report["aggregate"],
             "decision_time_recalibrated": bool(recal is not None),
             "operating_points": [{"name": "cost_optimal", "threshold": thr}],
+            "tuning": tune_report,   # None on refit; {metric,best_ap,best_cost,...} on retune
         })
         card_path.parent.mkdir(parents=True, exist_ok=True)
         card_path.write_text(json.dumps(card, indent=2))
