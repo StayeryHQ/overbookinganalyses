@@ -119,9 +119,10 @@ def _xai_section() -> dmc.Stack:
                       header_extra=pdp_extra),
         dmc.Card([
             dmc.Text("Why this booking (SHAP)", fw=600, size="sm", mb=6),
-            html.Div(id="occ-xai-booking",
-                     children=dmc.Text("Select a booking in the table above to see its "
-                                       "per-booking SHAP explanation.", c="dimmed", size="sm")),
+            dcc.Loading(type="default", children=html.Div(
+                id="occ-xai-booking",
+                children=dmc.Text("Select a booking in the table above to see its "
+                                  "per-booking SHAP explanation.", c="dimmed", size="sm"))),
         ], withBorder=True, radius="lg", p="md"),
     ], gap="md")
 

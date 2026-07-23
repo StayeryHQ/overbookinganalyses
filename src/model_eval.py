@@ -31,7 +31,7 @@
 # hazard.fit_hazard / survival_cancel_proba  mirroring training.bakeoff_walk_forward.
 #
 # Compute: one artifact per model, cached. Static models are cheap; the HAZARD refit
-# (person-period RandomizedSearch per fold) is the slow one  pre-warm it offline
+# (person-period fit per fold, frozen card HP) is the slow one  pre-warm it offline
 # (`python main.py eval --model hazard`) so the running app only ever READS the parquet.
 # ---------------------------------------------------------------------------
 

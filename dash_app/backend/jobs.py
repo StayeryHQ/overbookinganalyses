@@ -27,6 +27,16 @@ _LOCK = threading.Lock()
 _THREADS: dict[str, threading.Thread] = {}
 _CANCEL: dict[str, threading.Event] = {}
 
+# Cross-process liveness. Under gunicorn --workers N the job thread lives in ONE worker,
+# but a poll (read()) can land on ANY worker. The running job's own process touches a
+# heartbeat file every HEARTBEAT_INTERVAL s; read() treats a "running" job as orphaned
+# ONLY if its heartbeat is older than HEARTBEAT_TTL. So a healthy job started on worker A
+# is no longer mis-flagged as "app restarted" when a poll hits worker B. TTL >> interval
+# tolerates a missed beat. (The job STATE is already shared via the .json file — the only
+# thing that wasn't cross-process was the in-memory thread handle used for liveness.)
+HEARTBEAT_INTERVAL: float = 15.0
+HEARTBEAT_TTL: float = 75.0
+
 
 class JobCancelled(Exception):
     """Raised inside a job (via the progress checkpoint) when the user cancels."""
@@ -84,11 +94,30 @@ def _write(name: str, state: dict) -> None:
         pass
 
 
+def _heartbeat_path(name: str) -> Path:
+    return _job_path(name).with_suffix(".heartbeat")
+
+
+def _beat(name: str) -> None:
+    """Touch the running job's heartbeat file with the current time (best effort)."""
+    try:
+        _heartbeat_path(name).write_text(str(time.time()))
+    except Exception:  # noqa: BLE001  a heartbeat write must never kill the job
+        pass
+
+
+def _last_beat(name: str) -> "float | None":
+    try:
+        return float(_heartbeat_path(name).read_text().strip())
+    except Exception:  # noqa: BLE001  no/unreadable heartbeat
+        return None
+
+
 def read(name: str) -> dict:
     """Current state of a job: {status: idle|running|done|error, progress,
     message, started, finished, result, error}. Detects orphaned jobs: a file
-    that says 'running' without a live thread (app restart / crash) is flipped
-    to a loud error instead of showing an eternal loading bar."""
+    that says 'running' whose heartbeat has gone stale (app restart / crash) is
+    flipped to a loud error instead of showing an eternal loading bar."""
     p = _job_path(name)
     if not p.exists():
         return {"status": "idle"}
@@ -98,12 +127,19 @@ def read(name: str) -> dict:
         return {"status": "idle"}
     if state.get("status") == "running":
         t = _THREADS.get(name)
-        if t is None or not t.is_alive():
-            state["status"] = "error"
-            state["error"] = ("The app was restarted (or the worker died) while this "
-                              "job was running. Start it again.")
-            state["finished"] = time.time()
-            _write(name, state)
+        alive_here = t is not None and t.is_alive()
+        # A poll may run in a worker that never held this job's thread, so a missing local
+        # thread does NOT mean the job died. Only flag it orphaned if the job's OWN process
+        # has stopped heart-beating for longer than HEARTBEAT_TTL (real restart/crash).
+        if not alive_here:
+            beat = _last_beat(name)
+            fresh = beat is not None and (time.time() - beat) <= HEARTBEAT_TTL
+            if not fresh:
+                state["status"] = "error"
+                state["error"] = ("The app was restarted (or the worker died) while this "
+                                  "job was running. Start it again.")
+                state["finished"] = time.time()
+                _write(name, state)
     return state
 
 
@@ -132,6 +168,15 @@ def start(name: str, fn: Callable, *args, **kwargs) -> bool:
             state["progress"] = max(0.0, min(1.0, float(frac)))
             _write(name, state)
 
+        _beat(name)                      # first heartbeat before any work (cross-worker liveness)
+        _done = threading.Event()
+
+        def _heartbeat() -> None:
+            # Independent of the job's work: keeps beating even during a long, blocking step
+            # (e.g. a model fit), so only a real process death lets the heartbeat go stale.
+            while not _done.wait(HEARTBEAT_INTERVAL):
+                _beat(name)
+
         def run() -> None:
             try:
                 result = fn(progress, *args, **kwargs)
@@ -144,9 +189,12 @@ def start(name: str, fn: Callable, *args, **kwargs) -> bool:
                 state.update(status="error", finished=time.time(),
                              error=f"{type(e).__name__}: {str(e)[:600]}",
                              trace=traceback.format_exc()[-2000:])
+            finally:
+                _done.set()              # stop the heartbeat so a finished job stops looking alive
             _write(name, state)
 
         t = threading.Thread(target=run, daemon=True, name=f"job-{name}")
         _THREADS[name] = t
         t.start()
+        threading.Thread(target=_heartbeat, daemon=True, name=f"hb-{name}").start()
         return True

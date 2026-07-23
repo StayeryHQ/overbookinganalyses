@@ -323,6 +323,7 @@ def update_history_job(progress: Progress = _noop) -> dict:
         from dash_app.backend import cancellation_history as ch
         ch._clean.cache_clear()
         ch.property_list.cache_clear()
+        ch._noshow_prepared.cache_clear()   # no-show section reads the raw cache too
     except Exception as e:  # noqa: BLE001
         logger.warning("CH cache clear after history update failed: %s", e)
 
