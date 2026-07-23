@@ -317,6 +317,38 @@ def cmd_build_roster(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_refresh_all(args: argparse.Namespace) -> int:
+    """FULL serving refresh in ONE command: BigQuery history → retrain all serving models
+    (HP search) → matched bake-off → eval → SHAP/PDP → score, with a staged progress bar.
+    Uses the SAME code path (dash_app.backend.model_ops.full_serving_refresh) a future app
+    button would use, so the app and the CLI can never drift apart."""
+    from dash_app.backend.model_ops import full_serving_refresh
+
+    def progress(msg: str, frac: float) -> None:
+        filled = int(max(0.0, min(1.0, frac)) * 24)
+        print(f"  [{'█' * filled}{'·' * (24 - filled)}] {frac:>4.0%}  {msg}")
+
+    print("Full serving refresh — a multi-hour offline job with --retune (default) + bake-off.\n")
+    try:
+        res = full_serving_refresh(progress=progress, retune=not args.refit,
+                                   bakeoff=not args.skip_bakeoff, days=args.days)
+    except Exception as e:  # noqa: BLE001 — loud, non-zero exit for schedulers
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+
+    b = res.get("buckets", {})
+    print("\nDone.")
+    print(f"  reservations pulled : {res['reservations_rows']:,}  (clean rows {res['clean_rows']:,})")
+    print(f"  retrained ({res['mode']})   : {', '.join(res['trained'])}")
+    print(f"  selected static     : {res.get('selected_static')}")
+    print(f"  scored              : {res.get('scored_rows', 0):,} — high {b.get('high', 0)} / "
+          f"medium {b.get('medium', 0)} / low {b.get('low', 0)}")
+    if res.get("errors"):
+        print(f"  non-fatal errors    : {res['errors']}")
+    print(f"  elapsed             : {res['elapsed_s']}s")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="overbooking-analyse",
@@ -385,6 +417,18 @@ def build_parser() -> argparse.ArgumentParser:
     px.add_argument("--refresh", action="store_true",
                     help="Recompute even if the SHAP parquet already exists.")
     px.set_defaults(func=cmd_explain)
+
+    pfa = sub.add_parser("refresh-all",
+                         help="FULL serving refresh: BigQuery → retrain all → bake-off → eval → "
+                              "SHAP/PDP → score, with a staged progress bar.")
+    pfa.add_argument("--refit", action="store_true",
+                     help="Reuse frozen card hyperparameters instead of a full HP re-search (faster).")
+    pfa.add_argument("--skip-bakeoff", action="store_true",
+                     help="Skip the matched bake-off (priciest stage); best_model then selects "
+                          "from the freshly-retrained cards.")
+    pfa.add_argument("--days", type=int, default=14,
+                     help="Forward arrival window to score at the end (default 14).")
+    pfa.set_defaults(func=cmd_refresh_all)
 
     return p
 

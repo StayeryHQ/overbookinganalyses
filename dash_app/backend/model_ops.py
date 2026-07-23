@@ -358,3 +358,114 @@ def rebuild_eval_job(progress: Progress, model_name: str, all_models: bool = Fal
 # Retraining is CLI-only (`uv run python main.py retrain …` → src.training.retrain). The
 # old in-app retrain_job/run_retrain wrappers were removed with the retrain button — the
 # CLI calls src.training.retrain directly, so nothing was duplicated here.
+
+
+# =============================================================================
+# FULL serving refresh  the one-shot "rebuild everything for serving" pipeline
+# =============================================================================
+def full_serving_refresh(progress: Progress = _noop, *, retune: bool = True,
+                         bakeoff: bool = True, days: int = WINDOW_DAYS,
+                         models: "tuple[str, ...] | None" = None) -> dict:
+    """THE one command that refreshes EVERYTHING needed for serving, shared by the CLI
+    (`main.py refresh-all`) and  via the job runner  any future app button, so both run the
+    IDENTICAL steps (this is the app/CLI consistency guarantee: one function, one code path).
+
+    Stages, each reported through `progress(msg, frac in [0,1])`:
+      1. BigQuery: pull reservations + property-performance (force refresh, no cache fallback)
+      2. Rebuild the cleaned/labelled training cache (+ feature roster + meta sidecar)
+      3. Retrain every serving model (hazard, xgboost, histgb)  full HP search when `retune`
+      4. Regenerate the matched bake-off (so best_model compares statics on identical rows)
+      5. Rebuild the Model-Performance eval artifacts (all four models)
+      6. Rebuild global SHAP + PDP (+ boosting iteration curves)
+      7. Score the next `days` days of arrivals with the default (hazard) model
+
+    Heavy: with `retune=True` and `bakeoff=True` this is a multi-hour offline job (HP search
+    + per-fold hazard refits). A BigQuery failure raises and the whole refresh stops.
+    Returns a per-stage summary dict.
+    """
+    from src import training as T
+    from src import model_eval as me
+    from src.data_loader import CLEAN_CACHE_FILE, write_clean_meta
+
+    serve = list(models) if models else list(sc.SERVEABLE_MODELS)   # hazard, xgboost, histgb
+    mode = "retune" if retune else "refit"
+    t0 = time.perf_counter()
+    out: dict = {"mode": mode, "models": serve, "errors": []}
+
+    # 1) BigQuery pulls (strict  no silent cache fallback)
+    progress("1/7 · BigQuery: reservations + property performance…", 0.02)
+    resv = src.load_reservations(force_refresh=True, quiet=True)
+    if resv.empty:
+        raise RuntimeError("BigQuery returned 0 reservations  refusing to refresh.")
+    perf = src.load_property_performance(force_refresh=True, quiet=True)
+    out["reservations_rows"] = int(len(resv)); out["perf_rows"] = int(len(perf))
+
+    # 2) rebuild the cleaned training data (+ roster + meta)
+    progress("2/7 · Rebuilding the cleaned training dataset…", 0.09)
+    clean = src.build_clean_reservations(resv)
+    clean.to_parquet(src.data_dir() / CLEAN_CACHE_FILE, index=False)
+    write_clean_meta(clean)
+    out["clean_rows"] = int(len(clean))
+
+    # 3) retrain each serving model (eval done once for all in stage 5)
+    trained = {}
+    for i, m in enumerate(serve):
+        progress(f"3/7 · Retraining {model_label(m)} ({mode})…", 0.12 + 0.40 * (i / max(len(serve), 1)))
+        res = T.retrain(m, mode=mode, refresh_eval=False)
+        trained[m] = {"mode": res.get("mode"), "asof": res.get("asof")}
+    out["trained"] = trained
+
+    # 4) matched bake-off  so best_model() picks on identical rows (optional; the priciest stage)
+    if bakeoff:
+        progress("4/7 · Regenerating the matched bake-off…", 0.55)
+        try:
+            frame = T.bakeoff_walk_forward(persist=True)
+            out["bakeoff_rows"] = int(len(frame))
+        except Exception as e:  # noqa: BLE001
+            out["errors"].append(f"bakeoff: {str(e)[:100]}")
+    try:
+        out["selected_static"] = sc.best_model()
+    except Exception:  # noqa: BLE001  no static card yet
+        out["selected_static"] = None
+
+    # 5) Model-Performance eval artifacts (all four models)
+    for i, m in enumerate(me.EVAL_MODELS):
+        progress(f"5/7 · Rebuilding evaluation · {model_label(m)}…", 0.68 + 0.12 * (i / len(me.EVAL_MODELS)))
+        try:
+            me.model_eval(m, refresh=True)
+        except Exception as e:  # noqa: BLE001
+            out["errors"].append(f"eval {m}: {str(e)[:80]}")
+
+    # 6) global SHAP + PDP + boosting iteration curves
+    from dash_app.backend import explain as ex
+    for i, m in enumerate(me.EVAL_MODELS):
+        progress(f"6/7 · Explanations (SHAP + PDP) · {model_label(m)}…", 0.82 + 0.12 * (i / len(me.EVAL_MODELS)))
+        try:
+            ex.compute_global_shap(m, refresh=True)
+            ex.compute_all_pdp(m, refresh=True)
+            if m in ("xgboost", "histgb"):
+                ex.iteration_curve(m, refresh=True)
+        except Exception as e:  # noqa: BLE001
+            out["errors"].append(f"explain {m}: {str(e)[:80]}")
+
+    # 7) score the upcoming window with the default (hazard) model
+    progress(f"7/7 · Scoring the next {days} days…", 0.96)
+    scored = sc.score_upcoming(save=True)
+    out["scored_rows"] = int(len(scored))
+    rb = scored.get("risk_bucket")
+    out["buckets"] = ({b: int((rb == b).sum()) for b in ("high", "medium", "low")}
+                      if rb is not None else {"high": 0, "medium": 0, "low": 0})
+
+    # let the running app see all the fresh artifacts on its next read
+    try:
+        from dash_app.backend import cancellation_history as ch, data_access as da
+        for fn in ("_reservations_cached", "_property_code_to_name", "_perf_daily"):
+            getattr(da, fn).cache_clear()
+        ch._clean.cache_clear(); ch.property_list.cache_clear(); ch._noshow_prepared.cache_clear()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("cache clear after full refresh failed: %s", e)
+
+    progress("Done.", 1.0)
+    out["elapsed_s"] = round(time.perf_counter() - t0, 1)
+    return out
+

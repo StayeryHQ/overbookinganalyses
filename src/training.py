@@ -72,16 +72,24 @@ def roster_fingerprint(roster: dict | None = None) -> dict:
 
 
 def feature_change_report(model_name: str | None = None) -> dict:
-    """Diff the CURRENT roster against the deployed model's stored feature set.
+    """Diff a model's CURRENT feature set against the one its deployed card was trained on.
 
-    `changed` is True if any feature was added or removed. Adding features is
-    fine (they flow into the next fit); this just makes it visible.
+    `changed` is True if any feature was added or removed. Adding features is fine (they
+    flow into the next fit); this just makes it visible.
+
+    Compares LIKE-FOR-LIKE via the model's FAMILY-CORRECT list (`_family_feature_lists`:
+    tree -> raw columns; linear -> `_log` twins). Using the raw-roster SUPERSET here made the
+    four `_log` twins look permanently "added" on every TREE-model refit (they are linear-
+    family features the tree card never lists) -> a spurious "feature set changed" warning
+    even when the roster hash is identical. The stable roster hash is still reported.
     """
-    cur = roster_fingerprint()
-    cur_feats = set(cur["numeric"] + cur["categorical"])
+    cur = roster_fingerprint()                       # kept for the order-independent roster hash
+    name = model_name or sc.best_model()
+    cur_num, cur_cat = _family_feature_lists(name)
+    cur_feats = set(cur_num) | set(cur_cat)
     old_feats: set[str] = set()
     try:
-        card = sc.load_model_card(model_name or sc.best_model())
+        card = sc.load_model_card(name)
         old_feats = set(card.get("features_numeric", [])) | set(card.get("features_categorical", []))
     except Exception:  # noqa: BLE001 - no card yet => everything is "added"
         pass

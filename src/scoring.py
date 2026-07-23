@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
 from typing import Final, Literal
 
 import joblib
@@ -24,7 +23,7 @@ import pandas as pd
 
 from .data_loader import load_reservations
 from .features import add_country_region
-from .paths import data_dir, repo_root, tables_dir
+from .paths import data_dir, repo_root
 
 logger = logging.getLogger(__name__)
 
@@ -149,13 +148,47 @@ def _card_walkforward(name: str) -> dict:
     return out
 
 
+def _best_static_from_bakeoff(avail: list[str], brier_tol: float) -> "str | None":
+    """Pick the best static from the FRESH matched bake-off (Data/bakeoff_predictions.parquet),
+    where every model is scored on the IDENTICAL decision-time rows + label - so AP/Brier are
+    directly comparable. Same rule as best_model (highest AP among Brier-eligible). Returns None
+    if the bake-off is missing/stale or carries none of the available statics, so the caller can
+    fall back to the per-card metrics."""
+    try:
+        from .training import load_bakeoff
+        from sklearn.metrics import average_precision_score, brier_score_loss
+        bake = load_bakeoff(require_fresh=True)       # StaleArtifact/FileNotFound => fall back
+    except Exception:  # noqa: BLE001
+        return None
+    if bake is None or not len(bake) or "y_true" not in bake.columns:
+        return None
+    y = bake["y_true"].to_numpy()
+    cand = [m for m in avail if f"p_{m}" in bake.columns]
+    if not cand or len(set(y.tolist())) < 2:
+        return None
+    ap = {m: float(average_precision_score(y, bake[f"p_{m}"].to_numpy())) for m in cand}
+    brier = {m: float(brier_score_loss(y, bake[f"p_{m}"].to_numpy())) for m in cand}
+    best_brier = min(brier.values())
+    eligible = [m for m in cand if brier[m] <= best_brier + brier_tol]
+    return max(eligible, key=lambda m: ap[m])
+
+
 def best_model(brier_tol: float = BRIER_TOL) -> str:
-    """Best available STATIC model: highest walk-forward AP among those whose
-    Brier is within `brier_tol` of the best. The hazard model is excluded on
-    purpose  it is the default scorer and is judged on its own estimand."""
+    """Best available STATIC model: highest walk-forward AP among those whose Brier is within
+    `brier_tol` of the best. The hazard model is excluded on purpose  it is the default scorer
+    and is judged on its own estimand.
+
+    Prefers the MATCHED bake-off (all statics scored on identical rows) when a FRESH one exists,
+    so the choice is not distorted by cards built at different times on different data snapshots.
+    Falls back to the per-card walk-forward metrics if the bake-off is missing or stale."""
     avail = [n for n in list_available_models() if n in _models_of_kind("static")]
     if not avail:
         raise RuntimeError("no static model on disk  need 02_xgboost_model.joblib.")
+
+    picked = _best_static_from_bakeoff(avail, brier_tol)
+    if picked is not None:
+        return picked
+
     cards = {}
     for name in avail:
         try:
