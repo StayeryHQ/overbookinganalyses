@@ -72,6 +72,34 @@ While activated, `python` and `pip` and `jupyter` point at the venv until you `d
 
 ---
 
+## Full serving refresh (one command)
+
+`refresh-all` rebuilds **everything needed for serving** in a single command, with a staged
+progress bar — run this after a data or model change instead of chaining the individual
+commands by hand:
+
+```bash
+uv run python main.py refresh-all                # full HP re-search (multi-hour, offline)
+uv run python main.py refresh-all --refit        # reuse frozen card HP (much faster)
+uv run python main.py refresh-all --skip-bakeoff # skip the priciest stage (the matched bake-off)
+```
+
+Stages, each shown on the progress bar:
+
+1. BigQuery: pull reservations + property-performance (strict — no cache fallback)
+2. Rebuild the cleaned/labelled training cache (+ feature roster + meta)
+3. Retrain every serving model (hazard, xgboost, histgb) — HP search unless `--refit`
+4. Regenerate the matched bake-off (so `best_model` selects on identical rows)
+5. Rebuild the Model-Performance evaluation artifacts (all models)
+6. Rebuild global SHAP + PDP (+ boosting iteration curves)
+7. Score the next N days of arrivals (`--days`, default 14)
+
+The logic lives in `dash_app.backend.model_ops.full_serving_refresh(progress=…)` — the **same
+function** a future in-app button would call via the job runner, so the app and the CLI can
+never drift apart.
+
+---
+
 ## Day-to-day commands
 
 ```bash
