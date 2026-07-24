@@ -10,11 +10,15 @@ Designed to be run from the repo root:
     uv run python main.py score --model xgboost # score with a specific model
     uv run python main.py retrain --model hazard        # retrain (refit, frozen HP)
     uv run python main.py retrain --model xgboost --retune  # retrain + HP search
+    uv run python main.py refresh-all       # FULL serving refresh: BigQuery → retrain ALL
+                                            #   → bake-off → eval → SHAP/PDP → score (progress bar)
     uv run python main.py status            # show which models / parquets exist
 
 For day-to-day work the notebooks are the primary interface; this CLI exists
 so the daily scoring can be wired to a cron job or scheduled task without
-opening Jupyter.
+opening Jupyter. `refresh-all` is the one-command "rebuild everything for serving"
+pipeline (its logic lives in dash_app.backend.model_ops.full_serving_refresh, the
+SAME function a future in-app button would call, so the app and CLI never drift).
 """
 
 from __future__ import annotations
