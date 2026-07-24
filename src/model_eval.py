@@ -48,7 +48,7 @@ from .paths import data_dir
 
 SEED: Final[int] = 42
 HORIZON_DAYS: Final[int] = 14            # project-wide decision horizon (matches WINDOW_DAYS)
-DEFAULT_N_FOLDS: Final[int] = 6          # matches training.walk_forward_eval's default
+DEFAULT_N_FOLDS: Final[int] = wf.N_FOLDS  # the single shared fold budget (walkforward.N_FOLDS)
 STEP_DAYS: Final[int] = 14
 BASELINE_MIN_N: Final[int] = 100         # min train bookings for a per-property baseline rate
 TRAIN_METRIC_SAMPLE: Final[int] = 30000  # cap for the (diagnostic) train-metric scoring

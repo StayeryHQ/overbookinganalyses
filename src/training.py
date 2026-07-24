@@ -210,7 +210,7 @@ def _card_hp(model_name: str) -> dict:
 # =============================================================================
 # Walk-forward evaluation - honest one-step-ahead metrics
 # =============================================================================
-def iter_decision_folds(df: pd.DataFrame, *, n_folds: int = 6, horizon_days: int = 14,
+def iter_decision_folds(df: pd.DataFrame, *, n_folds: int = wf.N_FOLDS, horizon_days: int = 14,
                         step_days: int = 14, scheme: str = "expanding",
                         min_train: int = 500, min_test: int = 50):
     """Yield the USABLE decision-time folds for `df` (must already carry
@@ -227,7 +227,7 @@ def iter_decision_folds(df: pd.DataFrame, *, n_folds: int = 6, horizon_days: int
         yield f
 
 
-def walk_forward_eval(model_name: str, *, hp: dict | None = None, n_folds: int = 6,
+def walk_forward_eval(model_name: str, *, hp: dict | None = None, n_folds: int = wf.N_FOLDS,
                       horizon_days: int = 14, step_days: int = 14, scheme: str = "expanding",
                       c_walk: float = sc.COST_WALK, c_empty: float = sc.COST_EMPTY,
                       seed: int = SEED, collect_predictions: bool = False) -> dict:
@@ -283,7 +283,7 @@ def walk_forward_eval(model_name: str, *, hp: dict | None = None, n_folds: int =
     return out
 
 
-def walk_forward_predict(model_name: str, *, hp: dict | None = None, n_folds: int = 6,
+def walk_forward_predict(model_name: str, *, hp: dict | None = None, n_folds: int = wf.N_FOLDS,
                          horizon_days: int = 14, step_days: int = 14,
                          scheme: str = "expanding", seed: int = SEED) -> pd.DataFrame:
     """Pooled out-of-time predictions across the decision-time folds: fit the
@@ -371,7 +371,7 @@ def load_bakeoff(*, require_fresh: bool = True) -> pd.DataFrame:
     return pd.read_parquet(data_dir() / BAKEOFF_PATH)
 
 
-def bakeoff_walk_forward(*, n_folds: int = 8, horizon_days: int = 14, step_days: int = 14,
+def bakeoff_walk_forward(*, n_folds: int = wf.N_FOLDS, horizon_days: int = 14, step_days: int = 14,
                          seed: int = SEED, persist: bool = True) -> pd.DataFrame:
     """FAIR matched bake-off (notebook 05). On each decision-time fold, fit LogReg,
     XGBoost, HistGB (family-correct, frozen card hp, calibrated) AND the hazard model

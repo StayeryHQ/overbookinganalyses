@@ -50,6 +50,11 @@ CANCEL_DAYS: Final[str] = "cancel_days_before_arrival"
 CANCEL_TIME: Final[str] = "cancellationTime"
 KNOWN_COL: Final[str] = "outcome_known_date"
 
+# THE single walk-forward fold budget, shared by every eval surface (make_folds default
+# + training / model_eval / hazard / the bake-off + the notebooks) so the "matched"
+# comparison and the per-model reports always run on the SAME number of decision-time folds.
+N_FOLDS: Final[int] = 8
+
 # Target column, by preference. `is_canceled_by_arrival` is the readable alias
 # notebook 00 writes alongside the historically-named `status` (which is a STRING
 # in the raw cache but the encoded 0/1 target in the clean parquet  the
@@ -133,7 +138,7 @@ def decision_date(df: pd.DataFrame, *, horizon_days: int = 14,
     return created.where(created >= horizon_start, horizon_start)
 
 
-def make_folds(df: pd.DataFrame, *, n_folds: int = 6, horizon_days: int = 14,
+def make_folds(df: pd.DataFrame, *, n_folds: int = N_FOLDS, horizon_days: int = 14,
                step_days: int = 14, scheme: str = "expanding",
                window_days: int | None = None, asof: str | pd.Timestamp | None = None,
                created_col: str = CREATED, arrival_col: str = ARRIVAL,
@@ -158,7 +163,6 @@ def make_folds(df: pd.DataFrame, *, n_folds: int = 6, horizon_days: int = 14,
     """
     if known_col not in df.columns:
         raise KeyError(f"{known_col!r} missing - call add_outcome_known_date(df) first.")
-    arrival = pd.to_datetime(df[arrival_col], utc=True, errors="coerce")
     created = pd.to_datetime(df[created_col], utc=True, errors="coerce")
     known = pd.to_datetime(df[known_col], utc=True, errors="coerce")
     asof_ts = pd.Timestamp(asof, tz="UTC") if asof is not None else pd.Timestamp(known.max())

@@ -220,8 +220,11 @@ def card_hp() -> dict | None:
 def fit_hazard(clean_resolved: pd.DataFrame, *, val_frac: float = 0.15,
                n_iter: int = 90, seed: int = SEED, fixed_hp: dict | None = None) -> dict:
     """Fit the hazard model on RESOLVED bookings via the shared TPE search (with
-    EARLY STOPPING  no fixed tree count) + PER-SNAPSHOT-BAND isotonic calibration,
-    both on a temporally held-out (most-recent-by-created) validation slice.
+    EARLY STOPPING  no fixed tree count) + PER-SNAPSHOT-BAND isotonic calibration. The
+    most-recent-by-created `val_frac` holdout is split into TWO DISJOINT temporal halves:
+    early stopping (+ the HP-search objective) uses the first half, the calibrators + the
+    serving-threshold predictions the second  so the calibration never sees the rows that
+    chose the tree count (the third-split fix). Training stays at (1 - val_frac).
 
     `fixed_hp` skips the search and fits ONE model with the given hyperparameters (still
     early-stopped + calibrated). This is the FROZEN-hp path used by leak-free per-fold
@@ -240,23 +243,36 @@ def fit_hazard(clean_resolved: pd.DataFrame, *, val_frac: float = 0.15,
     num, cat = feature_lists(ce)
     created = pd.to_datetime(ce["created"], utc=True, errors="coerce")
     cutoff = created.quantile(1 - val_frac)
-    tr_books = ce[created <= cutoff]; va_books = ce[created > cutoff]
+    tr_books = ce[created <= cutoff]
+    # Split the most-recent `val_frac` holdout into TWO DISJOINT temporal halves so the
+    # calibrators never see the rows that picked XGBoost's best_iteration:
+    #   es_books  -> early-stopping eval_set (drives the tree count + the HP-search objective)
+    #   cal_books -> per-band isotonic + decision-time recal + the serving-threshold predictions
+    # Training stays at (1 - val_frac); we only partition the holdout, so no train data is lost.
+    hold = ce[created > cutoff]
+    hcre = pd.to_datetime(hold["created"], utc=True, errors="coerce")
+    hcut = hcre.quantile(0.5)
+    es_books = hold[hcre <= hcut]
+    cal_books = hold[hcre > hcut]
 
     pp_tr, cat_dtypes = build_person_period(tr_books, num, cat)
-    pp_va, _ = build_person_period(va_books, num, cat, cat_dtypes=cat_dtypes)
+    pp_es, _ = build_person_period(es_books, num, cat, cat_dtypes=cat_dtypes)
+    pp_cal, _ = build_person_period(cal_books, num, cat, cat_dtypes=cat_dtypes)
     FEATS = num + [AXIS] + cat
     Xtr, ytr = pp_tr[FEATS], pp_tr["y"].to_numpy()
-    Xva, yva = pp_va[FEATS], pp_va["y"].to_numpy()
+    Xes, yes = pp_es[FEATS], pp_es["y"].to_numpy()
+    Xcal, ycal = pp_cal[FEATS], pp_cal["y"].to_numpy()
 
     def _fit_eval(hp):
-        """ONE early-stopped person-period fit -> (val PR-AUC, model). This is the
-        hazard-specific candidate fit the shared search drives; it stays in src.hazard
-        because the person-period expansion + XGBoost categorical handling live here."""
+        """ONE early-stopped person-period fit -> (early-stop PR-AUC, model). Early stopping
+        and the HP-search objective use es_books ONLY; the calibrators use the DISJOINT
+        cal_books, so calibration never sees the rows that chose best_iteration. Stays in
+        src.hazard because the person-period expansion + XGBoost categorical handling live here."""
         m = XGBClassifier(n_estimators=2000, tree_method="hist", enable_categorical=True,
                           eval_metric="aucpr", early_stopping_rounds=50,
                           objective="binary:logistic", n_jobs=-1, random_state=seed, **hp)
-        m.fit(Xtr, ytr, eval_set=[(Xva, yva)], verbose=False)
-        return float(average_precision_score(yva, m.predict_proba(Xva)[:, 1])), m
+        m.fit(Xtr, ytr, eval_set=[(Xes, yes)], verbose=False)
+        return float(average_precision_score(yes, m.predict_proba(Xes)[:, 1])), m
 
     tuning = None
     if fixed_hp is not None:
@@ -282,43 +298,43 @@ def fit_hazard(clean_resolved: pd.DataFrame, *, val_frac: float = 0.15,
     # over mixed widths miscalibrates both. Fit a map for the daily band
     # (d<=CAL_BAND_EDGE) and one for the coarse tail; fall back to the pooled map
     # for any band too sparse to fit a stable isotonic on.
-    raw_va  = model.predict_proba(Xva)[:, 1]
-    axis_va = pp_va[AXIS].to_numpy()
-    iso_pooled = IsotonicRegression(out_of_bounds="clip").fit(raw_va, yva)
+    raw_cal  = model.predict_proba(Xcal)[:, 1]
+    axis_cal = pp_cal[AXIS].to_numpy()
+    iso_pooled = IsotonicRegression(out_of_bounds="clip").fit(raw_cal, ycal)
     def _fit_band(mask):
-        if int(mask.sum()) >= 500 and np.unique(yva[mask]).size > 1:
-            return IsotonicRegression(out_of_bounds="clip").fit(raw_va[mask], yva[mask])
+        if int(mask.sum()) >= 500 and np.unique(ycal[mask]).size > 1:
+            return IsotonicRegression(out_of_bounds="clip").fit(raw_cal[mask], ycal[mask])
         return iso_pooled
     iso_bands = {"edge": CAL_BAND_EDGE,
-                 "le": _fit_band(axis_va <= CAL_BAND_EDGE),
-                 "gt": _fit_band(axis_va >  CAL_BAND_EDGE)}
+                 "le": _fit_band(axis_cal <= CAL_BAND_EDGE),
+                 "gt": _fit_band(axis_cal >  CAL_BAND_EDGE)}
 
     # Decision-time recalibration (aggregate-bias fix). The survival PRODUCT of the
     # per-window calibrated hazards ranks well but is aggregate-biased on the decision
     # population: multiplicative compounding + survivor selection make it UNDER-predict the
     # TOTAL cancels (~15%), which for overbooking means systematically under-freeing rooms.
-    # Fit a monotone map on the HELD-OUT validation bookings' per-booking survival-product
-    # prediction vs cancel-by-arrival; score_upcoming_hazard applies it so the summed
-    # expected-freed-rooms the overbooking math consumes is unbiased. Isotonic => ranking
-    # preserved. Mirrors the static models' decision-time recal (training.retrain). (Fit on
-    # the val slice for cost; a fuller version would use pooled walk_forward_predict_hazard.)
+    # Fit a monotone map on the CALIBRATION bookings' per-booking survival-product prediction
+    # vs cancel-by-arrival; score_upcoming_hazard applies it so the summed expected-freed-rooms
+    # the overbooking math consumes is unbiased. Isotonic => ranking preserved. Mirrors the
+    # static models' decision-time recal (training.retrain). Uses cal_books  DISJOINT from the
+    # early-stopping slice, so this map isn't fit on rows that chose the tree count.
     decision_recal = None
     _partial = {"model": model, "iso": iso_pooled, "iso_bands": iso_bands}
-    va_b = va_books.copy()
-    va_b[AXIS] = np.minimum(va_b["lead"], CAL_BAND_EDGE).clip(lower=1)
-    p_va_book = survival_cancel_proba(va_b, hazard_fn(_partial), num, cat, cat_dtypes, snaps=SNAP)
-    y_va_book = (wf.target_series(va_b).to_numpy() == 1).astype(int)
-    if len(va_b) >= 500 and np.unique(y_va_book).size > 1 and p_va_book.std() > 0:
-        decision_recal = IsotonicRegression(out_of_bounds="clip").fit(p_va_book, y_va_book)
+    cal_b = cal_books.copy()
+    cal_b[AXIS] = np.minimum(cal_b["lead"], CAL_BAND_EDGE).clip(lower=1)
+    p_cal_book = survival_cancel_proba(cal_b, hazard_fn(_partial), num, cat, cat_dtypes, snaps=SNAP)
+    y_cal_book = (wf.target_series(cal_b).to_numpy() == 1).astype(int)
+    if len(cal_b) >= 500 and np.unique(y_cal_book).size > 1 and p_cal_book.std() > 0:
+        decision_recal = IsotonicRegression(out_of_bounds="clip").fit(p_cal_book, y_cal_book)
 
-    # Decision-time operating point: keep the held-out validation bookings' decision-time
-    # predictions ON THE SERVED SCALE (decision_recal applied when present) so the cost-optimal
-    # serving threshold is data-driven (scoring reads Data/08_hazard_predictions.parquet;
-    # without this the hazard fell back to the analytic Bayes threshold ~0.79).
-    p_va_served = (np.clip(decision_recal.predict(p_va_book), 0.0, 1.0)
-                   if decision_recal is not None else p_va_book)
-    val_predictions = pd.DataFrame({"y_true": y_va_book,
-                                    "y_prob": np.asarray(p_va_served, dtype=float)})
+    # Decision-time operating point: keep the CALIBRATION bookings' decision-time predictions
+    # ON THE SERVED SCALE (decision_recal applied when present) so the cost-optimal serving
+    # threshold is data-driven (scoring reads Data/08_hazard_predictions.parquet; without this
+    # the hazard fell back to the analytic Bayes threshold ~0.79).
+    p_cal_served = (np.clip(decision_recal.predict(p_cal_book), 0.0, 1.0)
+                    if decision_recal is not None else p_cal_book)
+    val_predictions = pd.DataFrame({"y_true": y_cal_book,
+                                    "y_prob": np.asarray(p_cal_served, dtype=float)})
 
     return {"model": model, "iso": iso_pooled, "iso_bands": iso_bands,
             "decision_recal": decision_recal, "val_predictions": val_predictions,
@@ -505,7 +521,7 @@ def coverage_report(per_night: pd.DataFrame, *, levels=(0.5, 0.8, 0.9, 0.95),
 # =============================================================================
 # Matched, decision-time walk-forward: hazard vs static on the SAME estimand
 # =============================================================================
-def walk_forward_eval_hazard(*, n_folds: int = 6, horizon_days: int = 14, step_days: int = 14,
+def walk_forward_eval_hazard(*, n_folds: int = wf.N_FOLDS, horizon_days: int = 14, step_days: int = 14,
                              compare_static: bool = True, seed: int = SEED) -> dict:
     """Decision-time walk-forward for the hazard model, matched to the decision.
 
@@ -648,7 +664,7 @@ def snapshot_metrics(scores: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("days_until_arrival").reset_index(drop=True)
 
 
-def walk_forward_per_snapshot(*, n_folds: int = 6, horizon_days: int = 14,
+def walk_forward_per_snapshot(*, n_folds: int = wf.N_FOLDS, horizon_days: int = 14,
                               step_days: int = 14, seed: int = SEED) -> dict:
     """Decision-time walk-forward evaluated PER SNAPSHOT (time-resolved accuracy):
     fit per fold on train, score the fold's TEST bookings across ALL snapshots they
@@ -689,7 +705,7 @@ def _wf_hazard_folds(n_folds, horizon_days, step_days, seed):
         yield f, te
 
 
-def walk_forward_predict_hazard(*, n_folds: int = 8, horizon_days: int = 14,
+def walk_forward_predict_hazard(*, n_folds: int = wf.N_FOLDS, horizon_days: int = 14,
                                 step_days: int = 14, seed: int = SEED) -> pd.DataFrame:
     """Pooled PER-BOOKING hazard predictions on the decision-time folds (survival
     product at d = min(lead, H)). Returns [fold, y_true, y_prob] for reliability
@@ -699,7 +715,7 @@ def walk_forward_predict_hazard(*, n_folds: int = 8, horizon_days: int = 14,
     return pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=["fold", "y_true", "y_prob"])
 
 
-def walk_forward_per_night(*, n_folds: int = 8, horizon_days: int = 14, step_days: int = 14,
+def walk_forward_per_night(*, n_folds: int = wf.N_FOLDS, horizon_days: int = 14, step_days: int = 14,
                            seed: int = SEED, hotel_col: str | None = None) -> pd.DataFrame:
     """Pooled PER-ARRIVAL-NIGHT expected-vs-actual freed rooms across ALL decision-time
     folds (leak-free per fold) - the sample the aggregate overbooking calibration needs
