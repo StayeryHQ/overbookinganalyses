@@ -1,11 +1,11 @@
 {
-  "model": "hazard",
-  "generated_at_utc": "2026-07-23T17:02:34.933660+00:00",
+  "model": "histgb",
+  "generated_at_utc": "2026-07-23T17:17:48.751670+00:00",
   "estimand": "P(cancel at/before arrival) at d = min(lead, horizon_days)",
   "horizon_days": 14,
   "n_folds_requested": 8,
   "n_folds_used": 8,
   "n_pooled": 23397,
   "pooled_base_rate": 0.12112664016754285,
-  "pooled_mean_pred": 0.11270442818629312
+  "pooled_mean_pred": 0.18093474294171824
 }

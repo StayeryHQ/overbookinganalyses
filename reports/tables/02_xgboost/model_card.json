@@ -1,9 +1,9 @@
 {
   "model": "xgboost",
-  "retrained_at": "2026-07-23T09:19:54.447665+00:00",
+  "retrained_at": "2026-07-23T14:57:25.998236+00:00",
   "mode": "retune",
-  "asof": "2026-07-18",
-  "n_train_deploy": 184389,
+  "asof": "2026-07-20",
+  "n_train_deploy": 184804,
   "features_numeric": [
     "adults_n",
     "arrival_dow",
@@ -32,47 +32,42 @@
   "roster_hash": "40169eb23eec",
   "feature_change": {
     "hash": "40169eb23eec",
-    "added": [
-      "diff_gross_cancellation_fee_log",
-      "gross_per_night_log",
-      "lead_time_days_log",
-      "los_nights_log"
-    ],
+    "added": [],
     "removed": [],
-    "changed": true
+    "changed": false
   },
   "hyperparams": {
-    "max_depth": 4,
-    "learning_rate": 0.056094905248385514,
-    "subsample": 0.6912968913595985,
-    "colsample_bytree": 0.7080366602057379,
+    "max_depth": 6,
+    "learning_rate": 0.020812714161496812,
+    "subsample": 0.9138328358205493,
+    "colsample_bytree": 0.6494145251890481,
     "min_child_weight": 5,
-    "reg_lambda": 11.676494678658294,
-    "reg_alpha": 0.052584237819489746,
-    "n_estimators": 767
+    "reg_lambda": 1.1500938427559035,
+    "reg_alpha": 0.6039312188461599,
+    "n_estimators": 1203
   },
   "walk_forward": {
     "auc": {
-      "mean": 0.7667054961075014,
-      "std": 0.023646700483673903
+      "mean": 0.7476265218850032,
+      "std": 0.032143399972684804
     },
     "ap": {
-      "mean": 0.27880044760110445,
-      "std": 0.048929767597440554
+      "mean": 0.26866345850393525,
+      "std": 0.03596718551599374
     },
     "brier": {
-      "mean": 0.1094340943600946,
-      "std": 0.018184169858304226
+      "mean": 0.11806867520424924,
+      "std": 0.01577548525682485
     },
     "cost": {
-      "mean": 29603.333333333332,
-      "std": 12812.290453571004
+      "mean": 35550.0,
+      "std": 14441.75296047639
     }
   },
   "operating_points": [
     {
       "name": "cost_optimal",
-      "threshold": 0.8235
+      "threshold": 0.6286
     }
   ],
   "decision_time_recalibrated": true,
@@ -83,7 +78,7 @@
     "n_trials": 90,
     "n_complete": 90,
     "n_pruned": 0,
-    "best_ap": 0.47247396629284505,
-    "best_cost": 342000.0
+    "best_ap": 0.4703206073956576,
+    "best_cost": 342360.0
   }
 }

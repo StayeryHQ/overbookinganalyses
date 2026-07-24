@@ -1,0 +1,15 @@
+{
+  "generated_at_utc": "2026-07-23T17:00:31.562586+00:00",
+  "n_rows": 23397,
+  "n_folds": 8,
+  "horizon_days": 14,
+  "step_days": 14,
+  "seed": 42,
+  "base_rate": 0.12112664016754285,
+  "models": [
+    "logreg",
+    "xgboost",
+    "histgb",
+    "hazard"
+  ]
+}

@@ -1,18 +1,18 @@
 {
   "model": "hazard",
-  "retrained_at": "2026-07-23T13:09:35.089245+00:00",
+  "retrained_at": "2026-07-23T14:24:21.638798+00:00",
   "mode": "retune",
-  "asof": "2026-07-18",
-  "val_ap": 0.07818127047192792,
+  "asof": "2026-07-20",
+  "val_ap": 0.08130376683378111,
   "hyperparams": {
-    "max_depth": 8,
-    "learning_rate": 0.03639968365743023,
-    "min_child_weight": 20,
-    "reg_lambda": 1.4111034317099846,
-    "subsample": 0.9133489233376169,
-    "colsample_bytree": 0.9371736442361308
+    "max_depth": 7,
+    "learning_rate": 0.02532408306543569,
+    "min_child_weight": 10,
+    "reg_lambda": 2.7495721768319905,
+    "subsample": 0.9344475023577635,
+    "colsample_bytree": 0.8663367584980006
   },
-  "n_train_person_period": 1260048,
+  "n_train_person_period": 1262745,
   "snap": [
     1,
     2,
@@ -71,7 +71,7 @@
     "n_trials": 90,
     "n_complete": 90,
     "n_pruned": 0,
-    "best_ap": 0.07818127047192792,
+    "best_ap": 0.08130376683378111,
     "best_cost": null
   }
 }

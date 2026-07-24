@@ -1,9 +1,9 @@
 {
   "model": "histgb",
-  "retrained_at": "2026-07-15T21:02:07.984378+00:00",
+  "retrained_at": "2026-07-23T16:31:30.576386+00:00",
   "mode": "retune",
-  "asof": "2026-07-12",
-  "n_train_deploy": 183008,
+  "asof": "2026-07-20",
+  "n_train_deploy": 184804,
   "features_numeric": [
     "adults_n",
     "arrival_dow",
@@ -32,45 +32,50 @@
   "roster_hash": "40169eb23eec",
   "feature_change": {
     "hash": "40169eb23eec",
-    "added": [
-      "diff_gross_cancellation_fee_log",
-      "gross_per_night_log",
-      "lead_time_days_log",
-      "los_nights_log"
-    ],
+    "added": [],
     "removed": [],
-    "changed": true
+    "changed": false
   },
   "hyperparams": {
-    "l2_regularization": 64.89877132084352,
-    "learning_rate": 0.023545774516299134,
-    "max_iter": 600,
-    "max_leaf_nodes": 17,
-    "min_samples_leaf": 122
+    "learning_rate": 0.02571949261437181,
+    "max_leaf_nodes": 37,
+    "min_samples_leaf": 123,
+    "l2_regularization": 55.39747700759286,
+    "max_iter": 300
   },
   "walk_forward": {
     "auc": {
-      "mean": 0.7660489458173091,
-      "std": 0.024584006032495997
+      "mean": 0.7556896650661662,
+      "std": 0.0300146436807752
     },
     "ap": {
-      "mean": 0.276476116388031,
-      "std": 0.05584178740293517
+      "mean": 0.27256504453748126,
+      "std": 0.03758606733580681
     },
     "brier": {
-      "mean": 0.10590549225451514,
-      "std": 0.017204821776496865
+      "mean": 0.10729920920123637,
+      "std": 0.017281518724648656
     },
     "cost": {
-      "mean": 27660.0,
-      "std": 10337.674786914125
+      "mean": 30187.5,
+      "std": 9891.288735910142
     }
   },
   "operating_points": [
     {
       "name": "cost_optimal",
-      "threshold": 0.7353
+      "threshold": 0.6512
     }
   ],
-  "decision_time_recalibrated": true
+  "decision_time_recalibrated": true,
+  "tuning": {
+    "metric": "average_precision",
+    "sampler": "TPE",
+    "pruner": "median",
+    "n_trials": 90,
+    "n_complete": 36,
+    "n_pruned": 54,
+    "best_ap": 0.5240067799821396,
+    "best_cost": 2297520.0
+  }
 }

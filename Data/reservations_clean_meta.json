@@ -1,11 +1,11 @@
 {
-  "run_timestamp_utc": "2026-07-22 09:23:32.294855+00:00",
+  "run_timestamp_utc": "2026-07-23 14:00:15.246680+00:00",
   "arrival_floor": "2022-08-01",
-  "arrival_cutoff": "2026-07-16",
+  "arrival_cutoff": "2026-07-18",
   "grace_days": 2,
-  "n_rows": 184389,
+  "n_rows": 184804,
   "n_cols": 32,
-  "positive_share": 0.19735450596293705,
+  "positive_share": 0.19720352373325253,
   "arrival_min": "2022-08-01 09:00:00+00:00",
-  "arrival_max": "2026-07-18 19:46:01+00:00"
+  "arrival_max": "2026-07-20 19:28:34+00:00"
 }
