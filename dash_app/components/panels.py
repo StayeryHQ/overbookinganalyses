@@ -93,43 +93,6 @@ def booking_column_defs() -> list[dict]:
                 "function": "(params.value == null ? '' : (params.value*100).toFixed(0) + '%')"
             },
         },
-        # Risk = cost-based Low/Medium/High label (src.risk_label_cost via data layer):
-        # Low < cost threshold <= Medium < 0.85 <= High.
-        {
-            "headerName": "Risk",
-            "field": "risk_label",
-            "width": 100,
-            "cellStyle": {
-                "styleConditions": [
-                    {
-                        "condition": "params.value == 'High'",
-                        "style": {"color": theme.RED, "fontWeight": "bold"},
-                    },
-                    {
-                        "condition": "params.value == 'Medium'",
-                        "style": {"color": theme.ORANGE},
-                    },
-                    {
-                        "condition": "params.value == 'Low'",
-                        "style": {"color": theme.GREEN},
-                    },
-                ]
-            },
-        },
-        # Group flag: distinct badge when a booking is part of a group AND high-risk.
-        {
-            "headerName": "Flag",
-            "field": "flag",
-            "width": 130,
-            "cellStyle": {
-                "styleConditions": [
-                    {
-                        "condition": "params.value && params.value.indexOf('⚠') > -1",
-                        "style": {"color": theme.RED, "fontWeight": "bold"},
-                    },
-                ]
-            },
-        },
         {"headerName": "Status", "field": "status", "width": 110},
     ]
 
@@ -141,35 +104,17 @@ _TABLE_FIELDS = [
     "los_nights",
     "channelCode",
     "cancel_proba",
-    "risk_label",
-    "flag",
     "status",
 ]
 
 
-def _flag_value(is_group: bool, risk_label: str) -> str:
-    """Group badge: ⚠ when the booking is a group AND high-risk; plain otherwise."""
-    if not is_group:
-        return ""
-    return "⚠ Group (high risk)" if risk_label == "High" else "Group"
-
-
 def booking_row_data(df_window: pd.DataFrame) -> list[dict]:
-    """ag-grid rowData from the ENRICHED scored window frame (risk_label + is_group
-    added by data_access.add_display_columns). Formats arrival as a date and keeps
+    """ag-grid rowData from the scored window frame. Formats arrival as a date and keeps
     only the display fields (the full record still feeds the side panel)."""
     if df_window.empty:
         return []
     d = df_window.copy()
     d["arrival"] = pd.to_datetime(d["arrival"], utc=True).dt.strftime("%Y-%m-%d")
-    if "risk_label" not in d.columns:
-        d["risk_label"] = ""
-    is_group = (
-        d["is_group"] if "is_group" in d.columns else pd.Series(False, index=d.index)
-    )
-    d["flag"] = [
-        _flag_value(bool(g), str(r)) for g, r in zip(is_group, d["risk_label"])
-    ]
     for f in _TABLE_FIELDS:
         if f not in d.columns:
             d[f] = None
@@ -197,7 +142,6 @@ _DETAIL_FIELDS = [
     ("cancellationFee_fee_amount", "Cancellation fee"),
     ("guaranteeType", "Guarantee"),
     ("cancel_proba", "Predicted cancel risk"),
-    ("risk_bucket", "Risk bucket"),
     ("model_used", "Scored by model"),
 ]
 
@@ -316,20 +260,29 @@ def cost_controls() -> dmc.Paper:
 _OCC_COLORSCALE = [[0.0, "#FFFFFF"], [0.5, theme.YELLOW], [1.0, theme.ORANGE]]
 
 
-def heatmap_figure(grid: pd.DataFrame) -> go.Figure:
+def heatmap_figure(grid: pd.DataFrame, *, metric: str = "occupancy",
+                   pct_on: bool = True, pct_thr: float | None = 90,
+                   free_on: bool = True, free_thr: float | None = 5,
+                   show_hover: bool = True) -> go.Figure:
+    """Occupancy heatmap (property rows × next 14 days). Colour is ALWAYS occupancy %;
+    the in-tile number is chosen by `metric`:
+        'occupancy' -> occupancy %                    (tab 1, default)
+        'expected'  -> expected cancellations Σp      (tab 2)
+        'threshold' -> bookings above the cost threshold (tab 3)
+    An overbooking-relevance filter greys out tiles that are not tight: a tile stays
+    visible only if occupancy ≥ pct_thr (when pct_on) OR free rooms ≤ free_thr (when
+    free_on; negative = overbooked, always shown). Greyed tiles carry no colour, no
+    number and no hover."""
     if grid.empty:
         fig = go.Figure()
-        fig.update_layout(
-            title="No data for the selected properties / window", height=320
-        )
+        fig.update_layout(title="No data for the selected properties / window", height=320)
         return theme.brand_figure(fig)
     props = list(dict.fromkeys(grid["property_name"]))
     days = sorted(grid["day"].unique())
 
     def piv(col):
         return grid.pivot(index="property_name", columns="day", values=col).reindex(
-            index=props, columns=days
-        )
+            index=props, columns=days)
 
     occ_pct = piv("occupancy_pct")
     occupied = piv("occupied_units")
@@ -337,71 +290,63 @@ def heatmap_figure(grid: pd.DataFrame) -> go.Figure:
     expc = piv("exp_cancels") if "exp_cancels" in grid.columns else occupied * 0.0
     canc = piv("cancellations") if "cancellations" in grid.columns else occupied * 0.0
     ooo = piv("out_of_order") if "out_of_order" in grid.columns else occupied * 0.0
+    free = piv("free_rooms") if "free_rooms" in grid.columns else occupied * np.nan
 
     has_pct = bool(np.isfinite(occ_pct.to_numpy(dtype="float64")).any())
-    z = (
-        occ_pct.to_numpy(dtype="float64")
-        if has_pct
-        else occupied.to_numpy(dtype="float64")
-    )
-    unit = "%" if has_pct else " units"
-    # per-cell extra numbers for the hover. Occupancy / occupied / arrivals / departures /
-    # cancellations come straight from the PMS perf table; predicted cancellations are the
-    # MODEL's view, shown TWO ways:
-    #   * expected (Σ P(cancel) over the night's arrivals)  threshold-independent
-    #   * count over the current COST-BASED threshold (moves with the walk/empty costs)
-    cd = np.dstack(
-        [occupied.to_numpy(), arr.to_numpy(), dep.to_numpy(),
-         pred.to_numpy(), expc.to_numpy(), canc.to_numpy(), ooo.to_numpy()]
-    )
+    color = occ_pct.to_numpy(dtype="float64") if has_pct else occupied.to_numpy(dtype="float64")
+    occ_np = occ_pct.to_numpy(dtype="float64")
+    free_np = free.to_numpy(dtype="float64")
+
+    # --- overbooking-relevance mask (which tiles stay visible) ----------
+    if not has_pct or (not pct_on and not free_on):
+        rel = np.ones(color.shape, dtype=bool)          # can't assess / no filter -> show all
+    else:
+        rel = np.zeros(color.shape, dtype=bool)
+        if pct_on and pct_thr is not None:
+            rel |= occ_np >= float(pct_thr)
+        if free_on and free_thr is not None:
+            rel |= free_np <= float(free_thr)
+    z = np.where(rel, color, np.nan)                    # greyed tiles fall back to plot bg
+
+    # --- in-tile number depends on the chosen metric -------------------
+    if metric == "expected":
+        mv, fmt = expc.to_numpy(dtype="float64"), (lambda v: f"{v:.1f}")
+    elif metric == "threshold":
+        mv, fmt = pred.to_numpy(dtype="float64"), (lambda v: f"{int(round(v))}")
+    else:
+        mv = color
+        fmt = (lambda v: f"{v:.0f}%") if has_pct else (lambda v: f"{v:.0f}")
+    text = [[fmt(mv[i][j]) if (rel[i][j] and np.isfinite(mv[i][j])) else ""
+             for j in range(mv.shape[1])] for i in range(mv.shape[0])]
+
+    cd = np.dstack([occupied.to_numpy(), arr.to_numpy(), dep.to_numpy(), pred.to_numpy(),
+                    expc.to_numpy(), canc.to_numpy(), ooo.to_numpy(), free_np])
     hover = (
         "<b>%{y}</b> · %{x}"
-        "<br>Occupancy: %{z:.0f}" + unit + "<br>Occupied: %{customdata[0]:.0f}"
-        "<br>Out of order: %{customdata[6]:.0f}"
-        "<br>Arrivals: %{customdata[1]:.0f}"
-        "<br>Departures: %{customdata[2]:.0f}"
+        "<br>Occupancy: %{z:.0f}%<br>Occupied: %{customdata[0]:.0f}"
+        "<br>Free rooms: %{customdata[7]:.0f}<br>Out of order: %{customdata[6]:.0f}"
+        "<br>Arrivals: %{customdata[1]:.0f}<br>Departures: %{customdata[2]:.0f}"
         "<br>Cancellations (recorded): %{customdata[5]:.0f}"
         "<br>Expected cancellations (Σp): %{customdata[4]:.1f}"
-        "<br>Above cost threshold: %{customdata[3]:.0f}"
-        "<extra></extra>"
+        "<br>Above cost threshold: %{customdata[3]:.0f}<extra></extra>"
     )
-    fig = go.Figure(
-        go.Heatmap(
-            z=z,
-            x=days,
-            y=props,
-            customdata=cd,
-            colorscale=_OCC_COLORSCALE,
-            hovertemplate=hover,
-            xgap=2,
-            ygap=2,
-            # Fixed 0–100% colour range when we have real capacities, so colours mean the
-            # same thing across property selections (values >100% keep the top colour but
-            # show their true number in-tile/hover).
-            zmin=0 if has_pct else None,
-            zmax=100 if has_pct else None,
-            colorbar=dict(title="Occ" + ("%" if has_pct else ""), thickness=12),
-        )
+    heat = go.Heatmap(
+        z=z, x=days, y=props, customdata=cd, colorscale=_OCC_COLORSCALE,
+        xgap=2, ygap=2, hoverongaps=False,
+        zmin=0 if has_pct else None, zmax=100 if has_pct else None,
+        text=text, texttemplate="%{text}", textfont={"size": 11},
+        colorbar=dict(title="Occ%" if has_pct else "Occ", thickness=12),
     )
-    # Compact in-tile text: the occupancy value shown in every tile. With real
-    # capacities this is the occupancy PERCENT (e.g. "79%"); without, it's unit counts.
-    text = np.where(np.isfinite(z), np.round(z).astype("float"), np.nan)
-    texttemplate = "%{text:.0f}%" if has_pct else "%{text:.0f}"
-    fig.update_traces(text=text, texttemplate=texttemplate, textfont={"size": 11})
-    title = (
-        "Occupancy heatmap · next 14 days (click a tile to filter below)"
-        if has_pct
-        else "Occupancy heatmap · occupied UNITS (room counts unavailable, "
-        "so no % shown) · click a tile to filter"
-    )
-    fig.update_layout(
-        title=title,
-        height=max(300, 60 + 26 * len(props)),
-        xaxis_title=None,
-        yaxis_title=None,
-        yaxis_autorange="reversed",
-    )
-    return theme.brand_figure(fig)
+    if show_hover:
+        heat.hovertemplate = hover
+    else:
+        heat.hoverinfo = "skip"                          # tab 2/3: no tooltips at all
+    fig = go.Figure(heat)
+    fig.update_layout(height=max(300, 60 + 26 * len(props)), xaxis_title=None,
+                      yaxis_title=None, yaxis_autorange="reversed")
+    fig = theme.brand_figure(fig)
+    fig.update_layout(plot_bgcolor="#E9E9E9")            # greyed-out tiles read as grey
+    return fig
 
 
 # ---------------------------------------------------------------------------

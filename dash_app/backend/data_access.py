@@ -180,37 +180,6 @@ def per_night_expected_freed(scored_window: pd.DataFrame,
     return per_night_table(scored_window, p.to_numpy(), hotel_col=hotel_col)
 
 
-# ---- Display enrichment: risk label + group flag ---------------------------
-def add_display_columns(df: pd.DataFrame, threshold: float | None = None) -> pd.DataFrame:
-    """Add `risk_label` (cost-based Low/Medium/High) and `is_group` (booking is
-    part of a group: blockId or groupName present). No-op on an empty frame.
-
-    `threshold` is the cost-based decision threshold  it is the Low/Medium boundary;
-    High is the fixed 0.85 cutoff (src.HIGH_RISK_CUTOFF). Defaults to
-    DEFAULT_RISK_THRESHOLD so the column is never blank just because no costs were
-    passed. Recomputed live at display time, so changing the costs re-colours the
-    table without re-scoring.
-    """
-    if df.empty:
-        return df
-    out = df.copy()
-    thr = DEFAULT_RISK_THRESHOLD if threshold is None else float(threshold)
-    if "cancel_proba" in out.columns:
-        out["risk_label"] = [src.risk_label_cost(p, thr) for p in out["cancel_proba"]]
-    else:
-        out["risk_label"] = ""
-
-    def _txt(col: str) -> pd.Series:
-        """Column as string Series, '' for missing values AND missing columns 
-        so a schema drift in ONE of the two group fields can't crash the page."""
-        if col not in out.columns:
-            return pd.Series([""] * len(out), index=out.index, dtype="string")
-        return out[col].astype("string").fillna("")
-
-    out["is_group"] = (_txt("blockId").str.len() > 0) | (_txt("groupName").str.len() > 0)
-    return out
-
-
 # ---- Capacity per property (for occupancy %) -------------------------------
 @lru_cache(maxsize=1)
 def _property_code_to_name() -> dict[str, str]:
@@ -405,6 +374,10 @@ def heatmap_grid(properties: list[str] | None = None, threshold: float | None = 
     grid["occupancy_pct"] = (pd.to_numeric(grid["occupancy_pct"], errors="coerce").round(1)
                              if "occupancy_pct" in grid.columns else float("nan"))
     grid["day"] = grid["_day"].dt.date.astype(str)
+    # Free (sellable) rooms = capacity − occupied − out-of-order. NaN when capacity is
+    # unknown; NEGATIVE means overbooked (kept as-is so the overbooking filter can catch it).
+    cap = pd.to_numeric(grid["capacity"], errors="coerce")
+    grid["free_rooms"] = cap - grid["occupied_units"] - grid["out_of_order"]
     return grid[["property_name", "day", "occupancy_pct", "occupied_units",
-                 "capacity", "out_of_order", "arrivals", "departures", "cancellations",
-                 "pred_cancels", "exp_cancels"]]
+                 "capacity", "out_of_order", "free_rooms", "arrivals", "departures",
+                 "cancellations", "pred_cancels", "exp_cancels"]]

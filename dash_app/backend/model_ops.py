@@ -238,10 +238,7 @@ def score_window_job(progress: Progress = _noop, model_name: str | None = None,
     except Exception as e:  # noqa: BLE001
         logger.warning("cache clear after scoring failed: %s", e)
 
-    rb = scored.get("risk_bucket")
-    buckets = ({b: int((rb == b).sum()) for b in ("high", "medium", "low")}
-               if rb is not None else {"high": 0, "medium": 0, "low": 0})
-    return {"scored_rows": int(len(scored)), "buckets": buckets, "days": int(days),
+    return {"scored_rows": int(len(scored)), "days": int(days),
             "perf_rows": int(len(perf)), "model_label": model_label(sc.resolve_model(model_name)),
             "elapsed_s": round(time.perf_counter() - t0, 1),
             "finished": _fmt_ts(pd.Timestamp.utcnow().isoformat())}
@@ -452,9 +449,6 @@ def full_serving_refresh(progress: Progress = _noop, *, retune: bool = True,
     progress(f"7/7 · Scoring the next {days} days…", 0.96)
     scored = sc.score_upcoming(save=True)
     out["scored_rows"] = int(len(scored))
-    rb = scored.get("risk_bucket")
-    out["buckets"] = ({b: int((rb == b).sum()) for b in ("high", "medium", "low")}
-                      if rb is not None else {"high": 0, "medium": 0, "low": 0})
 
     # let the running app see all the fresh artifacts on its next read
     try:

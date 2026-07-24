@@ -78,16 +78,10 @@ def _scoring_card() -> dmc.Paper:
 
 
 def _score_result(res: dict) -> dmc.Alert:
-    b = res.get("buckets") or {}
     return dmc.Alert(dmc.Stack([
         dmc.Text(f"Scored {res.get('scored_rows', 0):,} bookings for the next "
                  f"{res.get('days', 14)} days with {res.get('model_label', 'the model')} "
                  f"in {res.get('elapsed_s', '?')}s.", fw=600, size="sm"),
-        dmc.Group([
-            dmc.Badge(f"High: {b.get('high', 0):,}", color="red", variant="light"),
-            dmc.Badge(f"Medium: {b.get('medium', 0):,}", color="yellow", variant="light"),
-            dmc.Badge(f"Low: {b.get('low', 0):,}", color="green", variant="light"),
-        ], gap="xs"),
         dmc.Text(f"Occupancy refreshed from {res.get('perf_rows', 0):,} property-performance "
                  "rows (capacity + occupancy).", size="xs", c="dimmed"),
     ], gap=6), color="green", variant="light", icon=html.I(className="bi bi-check-circle"))
@@ -188,17 +182,53 @@ def layout(**_kwargs):
         style={"height": "460px"},
     )
 
-    # Heatmap card: the clear button + live selection label live in the card header.
-    heatmap_extra = dmc.Group([
-        dmc.Text(id="occ-selection-label", size="xs", c="dimmed"),
-        dmc.Button("Clear selection", id="occ-clear-btn", size="xs", variant="subtle",
-                   color="gray"),
-    ], gap="sm", align="center", wrap="nowrap")
+    # Overbooking-relevance filter, shared across the three heatmap tabs. Tickboxes with an
+    # adjustable threshold; tiles that aren't tight are greyed out on every tab.
+    heat_filter = dmc.Group([
+        dmc.Group([dmc.Checkbox(id="occ-flt-pct-on", checked=True, label="Occupancy % ≥"),
+                   dmc.NumberInput(id="occ-flt-pct", value=90, min=0, max=200, step=5, w=90)],
+                  gap=6, align="center"),
+        dmc.Group([dmc.Checkbox(id="occ-flt-free-on", checked=True, label="Free rooms ≤"),
+                   dmc.NumberInput(id="occ-flt-free", value=5, step=1, w=90)],
+                  gap=6, align="center"),
+        dmc.Text("Only overbooking-relevant tiles stay coloured — the rest are greyed out. "
+                 "A tile shows if it meets either active condition; overbooked (negative "
+                 "free rooms) always shows.", size="xs", c="dimmed"),
+    ], gap="lg", align="center", wrap="wrap")
 
-    heatmap_card = ui.chart_card(
-        "Occupancy heatmap", "occ-heatmap", height=None, header_extra=heatmap_extra,
-        subtitle="Colour = occupancy % (occupied units if capacity unset). "
-                 "Click a tile to filter the views below.")
+    def _heat_tab(graph_id):
+        return dcc.Loading(
+            dcc.Graph(id=graph_id, config={"displayModeBar": False}, style={"width": "100%"}),
+            custom_spinner=dmc.Skeleton(height=380, radius="md", animate=True))
+
+    heat_tabs = dmc.Tabs([
+        dmc.TabsList([
+            dmc.TabsTab("Occupancy %", value="occ"),
+            dmc.TabsTab("Expected freed (Σp)", value="sum"),
+            dmc.TabsTab("Above cost threshold", value="thr"),
+        ]),
+        dmc.TabsPanel(_heat_tab("occ-heatmap"), value="occ", pt="sm"),
+        dmc.TabsPanel(_heat_tab("occ-heatmap-sum"), value="sum", pt="sm"),
+        dmc.TabsPanel(_heat_tab("occ-heatmap-thr"), value="thr", pt="sm"),
+    ], value="occ")
+
+    heatmap_card = dmc.Card([
+        dmc.Group([
+            dmc.Group([dmc.Text("Occupancy heatmap · next 14 days", fw=600, size="sm"),
+                       ui.info_icon(
+                           "Colour is always occupancy %. Tab 1 prints the occupancy % in "
+                           "each tile (click a tile to filter the views below); tab 2 the "
+                           "expected freed rooms (Σp); tab 3 the bookings above the cost "
+                           "threshold. The filter greys out tiles that aren't overbooking-"
+                           "relevant — greyed tiles have no colour, number or tooltip.")],
+                      gap=6, wrap="nowrap"),
+            dmc.Group([dmc.Text(id="occ-selection-label", size="xs", c="dimmed"),
+                       dmc.Button("Clear selection", id="occ-clear-btn", size="xs",
+                                  variant="subtle", color="gray")], gap="sm"),
+        ], justify="space-between", align="center", wrap="wrap"),
+        heat_filter,
+        heat_tabs,
+    ], withBorder=True, radius="lg", p="md", shadow="xs")
 
     booking_row = dmc.Grid([
         dmc.GridCol([dmc.Text("Bookings", fw=600, size="sm", mb=6), grid],
@@ -280,13 +310,19 @@ def _threshold_badge(store):
 @callback(
     Output("occ-kpi-row", "children"),
     Output("occ-heatmap", "figure"),
+    Output("occ-heatmap-sum", "figure"),
+    Output("occ-heatmap-thr", "figure"),
     Output("occ-pernight-store", "data"),
     Output("occ-scored-warning", "children"),
     Input("occ-property-filter", "value"),
     Input("cost-store", "data"),
+    Input("occ-flt-pct-on", "checked"),
+    Input("occ-flt-pct", "value"),
+    Input("occ-flt-free-on", "checked"),
+    Input("occ-flt-free", "value"),
     Input("occ-scored-version", "data"),
 )
-def _update_main(selected, cost_store, _version):
+def _update_main(selected, cost_store, pct_on, pct_thr, free_on, free_thr, _version):
     props = _selected_props(selected)
     freshness = da.data_freshness()
     mm = da.model_meta()
@@ -294,7 +330,11 @@ def _update_main(selected, cost_store, _version):
     thr = da.cost_optimal_threshold(walk, empty, high, mult)
 
     scored = da.load_scored()
-    grid_fig = panels.heatmap_figure(da.heatmap_grid(props or None, thr))
+    grid = da.heatmap_grid(props or None, thr)
+    flt = dict(pct_on=bool(pct_on), pct_thr=pct_thr, free_on=bool(free_on), free_thr=free_thr)
+    f_occ = panels.heatmap_figure(grid, metric="occupancy", show_hover=True, **flt)
+    f_sum = panels.heatmap_figure(grid, metric="expected", show_hover=False, **flt)
+    f_thr = panels.heatmap_figure(grid, metric="threshold", show_hover=False, **flt)
 
     if scored.empty:
         kpis = panels.kpi_tiles(freshness, mm, None, thr)
@@ -303,7 +343,7 @@ def _update_main(selected, cost_store, _version):
             "cached reservations (no BigQuery query is triggered).",
             color="yellow", variant="light", radius="md",
             icon=html.I(className="bi bi-exclamation-triangle"))
-        return kpis, grid_fig, None, warn
+        return kpis, f_occ, f_sum, f_thr, None, warn
 
     win = da.in_window(scored, props)
     high_risk = int((pd.to_numeric(win["cancel_proba"], errors="coerce") >= thr).sum()) \
@@ -313,7 +353,7 @@ def _update_main(selected, cost_store, _version):
     pernight = da.per_night_expected_freed(win, hotel_col="property_name")
     if not pernight.empty:
         pernight = pernight.assign(arrival_date=pernight["arrival_date"].astype(str))
-    return kpis, grid_fig, pernight.to_dict("records"), None
+    return kpis, f_occ, f_sum, f_thr, pernight.to_dict("records"), None
 
 
 # ---------------------------------------------------------------------------
@@ -324,13 +364,10 @@ def _update_main(selected, cost_store, _version):
     Output("occ-grid", "rowData"),
     Input("occ-selection", "data"),
     Input("occ-property-filter", "value"),
-    Input("cost-store", "data"),
     Input("occ-scored-version", "data"),
 )
-def _update_views(selection, selected, cost_store, _version):
-    walk, empty, high, mult = mp.read_cost_full(cost_store)
-    thr = da.cost_optimal_threshold(walk, empty, high, mult)
-    scored = da.add_display_columns(da.load_scored(), thr)   # risk labels from the cost threshold
+def _update_views(selection, selected, _version):
+    scored = da.load_scored()
     if scored.empty:
         return panels.composition_row(pd.DataFrame(), "no scored data"), []
 

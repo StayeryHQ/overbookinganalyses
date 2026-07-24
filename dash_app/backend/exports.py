@@ -22,8 +22,7 @@ from dash_app.backend import model_performance as mp
 _SHOWN_RENAME = {
     "id": "Booking", "property_name": "Property", "arrival": "Arrival",
     "los_nights": "LoS (nights)", "channelCode": "Channel",
-    "cancel_proba": "Cancel risk (predicted)", "risk_label": "Risk",
-    "flag": "Flag", "status": "Status",
+    "cancel_proba": "Cancel risk (predicted)", "status": "Status",
 }
 _BACKTEST_RENAME = {
     "property_name": "Property", "days_until_arrival": "Days until arrival",
@@ -36,7 +35,7 @@ def _shown_frame(properties: list[str] | None, day: str | None,
     """The exact rows the page table shows: scored window, enriched with the cost-based
     risk label, filtered to the current property selection (and heatmap day, if any)."""
     from dash_app.components import panels          # lazy: avoid import cycle at module load
-    scored = da.add_display_columns(da.load_scored(), threshold)
+    scored = da.load_scored()
     if scored.empty:
         return pd.DataFrame()
     arrivals = da.arrivals_window(scored, properties, day)
