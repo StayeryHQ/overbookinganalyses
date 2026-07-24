@@ -9,7 +9,7 @@ import dash_mantine_components as dmc
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-from dash import dcc, html
+from dash import dcc
 
 from dash_app import theme
 from dash_app.components import ui
@@ -50,7 +50,10 @@ def kpi_tiles(
                 data_ts,
                 tooltip="When the local reservations cache was last refreshed.",
             ),
-            ui.kpi_card("Model last retrained", m_ts, sub=m_sub),
+            ui.kpi_card("Model last retrained", m_ts, sub=m_sub,
+                        tooltip="Rebuild everything for serving in ONE command — BigQuery history "
+                        "→ retrain all models (with HP search) → matched bake-off → evaluation → "
+                        "SHAP/PDP → score: `uv run python main.py refresh-all`"),
             ui.kpi_card("Training set size", train_val, sub=train_sub),
             ui.kpi_card(
                 "High-risk bookings",
