@@ -189,7 +189,7 @@ def layout(**_kwargs):
                  "bookings still due to arrive that day, the share that cancel. Switch "
                  "rows (stay / lead) and colour (rate / count).")
 
-    # "When do cancellations happen" — daily count histogram (+ by-LOS split).
+    # "When do cancellations happen" - daily count histogram (+ by-LOS split).
     cth_extra = dmc.SegmentedControl(id="cxl-cth-split", value="all", size="xs", radius="md",
                                      data=[{"label": "All", "value": "all"},
                                            {"label": "By length of stay", "value": "stay"}])

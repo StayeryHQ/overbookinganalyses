@@ -1,20 +1,11 @@
 # dash_app/backend/cancellation_history.py
-# Read-only aggregators for Page 3 (Cancellation History). EVERYTHING here reads the
+# Aggregators for Page 3 (Cancellation History). Everything here reads the
 # cleaned reservations cache (Data/reservations_clean.parquet)  the same file the
-# models train on  via src.load_clean_reservations(). No live BigQuery, ever.
-#
-# CORRECTNESS NOTE (differs from the Occupancy page):
-#   On this HISTORICAL page a cancellation is the thing we MEASURE, so cancelled
-#   bookings are the NUMERATOR and must NOT be dropped. `status` in the clean cache is
-#   the encoded target  1 = cancel-before-arrival (positive class), 0 = stayed
-#   (CheckedOut/NoShow/InHouse that did not cancel before arrival). Base rate ≈ 0.198.
-#   (The Occupancy page excludes cancelled bookings because it is forward-looking; that
-#   rule is deliberately NOT applied here.)
+# models train on  via src.load_clean_reservations()
 #
 # Every public function accepts an optional `properties` filter (None/empty => all 11
 # locations) so a single global filter drives every chart on the page. Functions return
-# small, already-aggregated frames (server-side aggregation  never ship raw rows to the
-# client). Rates computed over too few bookings are masked to NaN (min-sample guards
+# small, already-aggregated frames. Rates computed over too few bookings are masked to NaN (min-sample guards
 # below) rather than drawn as confident signal  matches the experiment notebooks.
 
 from __future__ import annotations
@@ -29,14 +20,14 @@ import pandas as pd
 TARGET = "status"                       # int8: 1 = cancel-before-arrival, 0 = stayed
 STAY_ORDER = ["short", "mid", "long"]   # canonical order of the precomputed stay_bucket
 # Real boundaries verified against the cache (los_nights per bucket): short 1–2,
-# mid 3–6, long 7+. Surfaced in tooltips so "stay segment" is never ambiguous.
+# mid 3–6, long 7+
 STAY_LABELS = {"short": "Short · 1–2 nights",
                "mid": "Mid · 3–6 nights",
                "long": "Long · 7+ nights"}
 LEAD_BINS = [-1, 7, 30, 90, np.inf]     # lead_time_days is fractional; -1 keeps 0 in bin 1
 LEAD_LABELS = ["0–7 d", "8–30 d", "31–90 d", "90 d+"]
 
-# ---- Min-sample guards (a rate over too few bookings is noise, not signal) --
+# ---- Min-sample guards --
 MIN_N_MONTH = 50        # monthly line points (matches experiments/cancellation_rate_over_time)
 MIN_N_CELL = 30         # property × month heatmap cells
 MIN_N_CHANNEL = 200     # channel-deviation bars
@@ -65,8 +56,6 @@ def _prepare(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     arr = pd.to_datetime(out["arrival"], utc=True)
     out["arrival"] = arr
-    # tz_localize(None) strips the UTC offset (keeping the UTC wall time) so to_period
-    # doesn't warn about dropping tz; month = first-of-month timestamp.
     out["month"] = arr.dt.tz_localize(None).dt.to_period("M").dt.to_timestamp()
     out[TARGET] = pd.to_numeric(out[TARGET], errors="coerce")
     return out
@@ -84,7 +73,7 @@ def _filtered(properties: list[str] | None,
     optionally, to the last `window_months` months of arrivals (None => full history).
     This is the single choke point the page's global location + time-window filters both
     flow through, so every chart stays consistent. The window is anchored on the newest
-    month in the FULL cache, so it means the same span regardless of the location selection."""
+    month in the full cache, so it means the same span regardless of the location selection."""
     df = _clean()
     if df.empty:
         return df
@@ -99,7 +88,7 @@ def _filtered(properties: list[str] | None,
 
 @lru_cache(maxsize=1)
 def property_list() -> list[str]:
-    """The 11 property names (sorted) from the clean cache. Verified identical to the
+    """The property names (sorted) from the clean cache. Verified identical to the
     Occupancy page's list, so the location filter is consistent across pages."""
     df = _clean()
     if df.empty or "property_name" not in df.columns:
@@ -108,7 +97,7 @@ def property_list() -> list[str]:
 
 
 def base_rate() -> float | None:
-    """Global cancel rate across ALL locations (the fixed reference line)."""
+    """Global cancel rate across all locations (the fixed reference line)."""
     df = _clean()
     return float(df[TARGET].mean()) if not df.empty else None
 
@@ -172,7 +161,7 @@ def _property_month(df: pd.DataFrame, months_back: int = 12,
 
 def property_month_matrix(properties: list[str] | None = None, months_back: int = 12,
                           window_months: int | None = None) -> pd.DataFrame:
-    # `months_back` = how many months the heatmap DISPLAYS; `window_months` = the page's
+    # `months_back` = how many months the heatmap displays; `window_months` = the page's
     # global time filter applied first. The heatmap shows whichever is the tighter span.
     return _property_month(_filtered(properties, window_months), months_back)
 
@@ -193,8 +182,7 @@ def flag_anomalies(properties: list[str] | None = None, months_back: int = 12,
 # ---- 3) Channel: deviation from the base rate ------------------------------
 def _channel_dev(df: pd.DataFrame, min_n: int = MIN_N_CHANNEL) -> tuple[pd.DataFrame, float]:
     """([channel, n, cancel_rate, deviation], base_rate). `deviation` = channel rate −
-    base rate of the current selection. Channels below min_n are dropped (too thin to
-    read); the long tail is therefore excluded rather than fabricated."""
+    base rate of the current selection. Channels below min_n are dropped"""
     cols = ["channel", "n", "cancel_rate", "deviation"]
     if df.empty or "channelCode" not in df.columns:
         return pd.DataFrame(columns=cols), float("nan")

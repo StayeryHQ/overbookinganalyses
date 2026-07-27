@@ -191,7 +191,7 @@ def layout(**_kwargs):
         dmc.Group([dmc.Checkbox(id="occ-flt-free-on", checked=True, label="Free rooms ≤"),
                    dmc.NumberInput(id="occ-flt-free", value=5, step=1, w=90)],
                   gap=6, align="center"),
-        dmc.Text("Only overbooking-relevant tiles stay coloured — the rest are greyed out. "
+        dmc.Text("Only overbooking-relevant tiles stay coloured - the rest are greyed out. "
                  "A tile shows if it meets either active condition; overbooked (negative "
                  "free rooms) always shows.", size="xs", c="dimmed"),
     ], gap="lg", align="center", wrap="wrap")
@@ -220,7 +220,7 @@ def layout(**_kwargs):
                            "each tile (click a tile to filter the views below); tab 2 the "
                            "expected freed rooms (Σp); tab 3 the bookings above the cost "
                            "threshold. The filter greys out tiles that aren't overbooking-"
-                           "relevant — greyed tiles have no colour, number or tooltip.")],
+                           "relevant - greyed tiles have no colour, number or tooltip.")],
                       gap=6, wrap="nowrap"),
             dmc.Group([dmc.Text(id="occ-selection-label", size="xs", c="dimmed"),
                        dmc.Button("Clear selection", id="occ-clear-btn", size="xs",

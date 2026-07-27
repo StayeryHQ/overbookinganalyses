@@ -1,8 +1,6 @@
 /* =============================================================================
    STAYERY brand fonts + header. Dash auto-serves everything in dash_app/assets,
-   so these @font-face rules make the .otf files in assets/fonts actually load
-   (previously the theme referenced font names that were never defined, so the app
-   silently fell back to a system sans-serif).
+   so these @font-face rules make the .otf files in assets/fonts load
    ============================================================================= */
 
 /* ---- Neue Haas Grotesk Display Pro (body / UI) ---- */

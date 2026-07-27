@@ -1,7 +1,7 @@
 # dash_app/pages/data_update.py
 # PAGE 5 - Current model info (READ-ONLY). Shows the served model's tiles, current
 # hyperparameters, last walk-forward metrics and the cleaned-history freshness.
-# Retraining is deliberately NOT in the app — it is heavy and OVERWRITES the serving
+# Retraining is deliberately NOT in the app - it is heavy and OVERWRITES the serving
 # model, so it runs from the CLI (`uv run python main.py retrain …`). Data update lives
 # on Cancellation History and 14-day scoring on Occupancy & Predictions. Logic in
 # model_ops.py.
@@ -139,9 +139,9 @@ def _clean_history_line():
     (read straight from the parquet, so it stays accurate after a history rebuild)."""
     s = mo.clean_history_status()
     if not s.get("exists"):
-        return dmc.Text("Cleaned history not built yet — rebuild it on the Cancellation "
+        return dmc.Text("Cleaned history not built yet - rebuild it on the Cancellation "
                         "History page.", size="xs", c="orange")
-    rows = f"{s['rows']:,} bookings" if s.get("rows") else "—"
+    rows = f"{s['rows']:,} bookings" if s.get("rows") else "-"
     return dmc.Text(f"Training data: {rows} · through {s.get('data_through') or '?'} · "
                     f"cleaned history last rebuilt {s.get('rebuilt_at') or '?'}.",
                     size="xs", c="dimmed")
@@ -200,26 +200,28 @@ def layout(**_kwargs):
         html.Div(id="du-trainrows", children=dmc.Skeleton(height=200, radius="md")),
     ], withBorder=True, radius="lg", p="md", shadow="xs")
 
-    # 4) RETRAIN - CLI only. Retraining is heavy and OVERWRITES the serving model, so it
+    # 4) retrain - CLI only. Retraining is heavy and overwrites the serving model, so it
     # is deliberately NOT a button here. This card just documents the CLI commands.
     retrain_card = dmc.Card([
         dmc.Group([dmc.Text("Retraining (command line)", fw=600, size="sm"),
-                   ui.info_icon("Retraining refits on all resolved data and OVERWRITES the "
-                                "serving artifact. It is heavy, so it runs from the CLI — not "
-                                "from this page. Scoring and data updates stay in the app.")],
+                   ui.info_icon("Retraining refits on all resolved data and overwrites the "
+                                "serving artifact. It is heavy, so it runs from the CLI and not "
+                                "from this page. Please contact Ayo or Luca.")],
                   gap=6),
-        dmc.Text("Retraining is not available as a button (on purpose). Run it from a "
+        dmc.Text("Retraining is not available here. Run it from a "
                  "terminal in the project root:", size="xs", c="dimmed"),
         html.Div(_clean_history_line(), id="du-clean-freshness", className="mt-1"),
         html.Pre(
-            "# refit — reuse the frozen hyperparameters (fast)\n"
+            "# retraining all models (includes data refresh & HP tuning) \n"
+            "uv run python main.py refresh-all\n\n"
+            "# refit - reuse the frozen hyperparameters (fast)\n"
             "uv run python main.py retrain --model hazard\n\n"
-            "# retune — larger hyperparameter search (slower, more thorough)\n"
+            "# retune one model - larger hyperparameter search (slower, more thorough)\n"
             "uv run python main.py retrain --model hazard --retune\n\n"
-            "# train on fresh data — rebuild the cleaned history first, then retrain\n"
+            "# train on fresh data - rebuild the cleaned history first, then retrain\n"
             "uv run python main.py update          # BigQuery pull + rescore\n"
             "uv run python main.py retrain --model hazard\n\n"
-            "# dry run — fit + metrics, writes nothing\n"
+            "# dry run - fit + metrics, writes nothing\n"
             "uv run python main.py retrain --model hazard --dry-run",
             style={"background": "#f4f4f5", "padding": "12px", "borderRadius": "8px",
                    "fontSize": "12px", "overflowX": "auto", "whiteSpace": "pre-wrap",
@@ -229,7 +231,7 @@ def layout(**_kwargs):
                  "serve the new model.", size="xs", c="dimmed", mt=8),
     ], withBorder=True, radius="lg", p="md", shadow="xs")
 
-    # Page-level model selector — drives the info cards below (view any model's card,
+    # Page-level model selector - drives the info cards below (view any model's card,
     # hyperparameters and metrics). Not tied to retraining, which is CLI-only.
     controls = dmc.Paper(dmc.Group([
         dmc.Select(id="du-model", label="Model", data=opts, value=default_model,
@@ -273,6 +275,4 @@ def _fill_info(model, _version):
             _train_rows_panel(mo.training_rows_by_property()), _clean_history_line())
 
 
-# Retraining is intentionally CLI-only (see the "Retraining (command line)" card) — the
-# heavy, model-overwriting action does not belong in a shared web app, so there is no
-# retrain button and no job poller here anymore.
+# Retraining is intentionally CLI-only (see the "Retraining (command line)" card)

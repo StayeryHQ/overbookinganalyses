@@ -316,7 +316,7 @@ def fig_cancel_timing_heatmap(g: pd.DataFrame, dim: str = "stay", metric: str = 
     return theme.brand_figure(fig)
 
 
-# ---- 8) "When do cancellations happen" — daily count histogram -------------
+# ---- 8) "When do cancellations happen" - daily count histogram -------------
 def fig_cancel_timing_hist(df: pd.DataFrame, by_stay: bool = False,
                            height: int = 320) -> go.Figure:
     """Number of cancellations by whole day before arrival (exact daily bins, 0–1 = the

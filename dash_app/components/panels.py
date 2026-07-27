@@ -15,7 +15,6 @@ from dash_app import theme
 from dash_app.components import ui
 
 
-
 # ---------------------------------------------------------------------------
 # KPI tiles
 # ---------------------------------------------------------------------------
@@ -50,10 +49,15 @@ def kpi_tiles(
                 data_ts,
                 tooltip="When the local reservations cache was last refreshed.",
             ),
-            ui.kpi_card("Model last retrained", m_ts, sub=m_sub,
-                        tooltip="Rebuild everything for serving in ONE command — BigQuery history "
-                        "→ retrain all models (with HP search) → matched bake-off → evaluation → "
-                        "SHAP/PDP → score: `uv run python main.py refresh-all`"),
+            ui.kpi_card(
+                "Model last retrained",
+                m_ts,
+                sub=m_sub,
+                tooltip="Rebuild everything locally: BigQuery history "
+                "→ retrain all models (with HP search) → comparison → evaluation → "
+                "SHAP/PDP → score: `uv run python main.py refresh-all`"
+                "needs to be run offline by an Admin (Ayo/Luca)",
+            ),
             ui.kpi_card("Training set size", train_val, sub=train_sub),
             ui.kpi_card(
                 "High-risk bookings",
@@ -214,41 +218,95 @@ def cost_controls() -> dmc.Paper:
     the table's Low/Medium boundary. High risk stays fixed at ≥ 85%.
     """
     return dmc.Paper(
-        dmc.Stack([
-            dmc.Group([
-                dmc.Text("Overbooking costs", fw=600, size="sm"),
-                dmc.Text("One global setting  shared with Model Performance.",
-                         size="xs", c="dimmed"),
-            ], gap="sm", align="center"),
-            dmc.Group([
-                # No min on the cost inputs: negative values are allowed.
-                dmc.NumberInput(id="cost-walk", label="Cost of walking a guest (€)",
-                                step=1, placeholder="set your own",
-                                style={"width": "185px"}),
-                dmc.NumberInput(id="cost-empty", label="Cost of an empty room (€)",
-                                step=1, placeholder="pre-filled from room revenue",
-                                style={"width": "205px"}),
-                dmc.Switch(id="cost-high-demand", label="High-demand period",
-                           checked=False),
-                dmc.Group([
-                    dmc.NumberInput(id="cost-multiplier", label="Walk-cost multiplier",
-                                    min=1, step=0.1, value=1.5, style={"width": "150px"}),
-                    ui.info_icon(_MULT_HELP),
-                ], gap=4, align="flex-end", wrap="nowrap"),
-                dmc.Stack([
-                    dmc.Group([
-                        dmc.Text("Cost-optimal threshold", size="xs", c="dimmed", fw=600),
-                        ui.info_icon("Derived from the costs above (with the high-demand "
-                                     "multiplier applied). Flags a booking as a likely "
-                                     "cancellation at/above this probability; also the "
-                                     "Low/Medium boundary in the table below."),
-                    ], gap=4, align="center", wrap="nowrap"),
-                    dmc.Text(id="occ-thr-badge", size="lg", fw=700),
-                ], gap=0),
-            ], align="flex-end", gap="md", wrap="wrap"),
-            dmc.Text(id="cost-empty-help", c="dimmed", size="xs"),
-        ], gap="xs"),
-        p="md", radius="lg", withBorder=True,
+        dmc.Stack(
+            [
+                dmc.Group(
+                    [
+                        dmc.Text("Overbooking costs", fw=600, size="sm"),
+                        dmc.Text(
+                            "One global setting  shared with Model Performance.",
+                            size="xs",
+                            c="dimmed",
+                        ),
+                    ],
+                    gap="sm",
+                    align="center",
+                ),
+                dmc.Group(
+                    [
+                        # No min on the cost inputs: negative values are allowed.
+                        dmc.NumberInput(
+                            id="cost-walk",
+                            label="Cost of walking a guest (€)",
+                            step=1,
+                            placeholder="set your own",
+                            style={"width": "185px"},
+                        ),
+                        dmc.NumberInput(
+                            id="cost-empty",
+                            label="Cost of an empty room (€)",
+                            step=1,
+                            placeholder="pre-filled from room revenue",
+                            style={"width": "205px"},
+                        ),
+                        dmc.Switch(
+                            id="cost-high-demand",
+                            label="High-demand period",
+                            checked=False,
+                        ),
+                        dmc.Group(
+                            [
+                                dmc.NumberInput(
+                                    id="cost-multiplier",
+                                    label="Walk-cost multiplier",
+                                    min=1,
+                                    step=0.1,
+                                    value=1.5,
+                                    style={"width": "150px"},
+                                ),
+                                ui.info_icon(_MULT_HELP),
+                            ],
+                            gap=4,
+                            align="flex-end",
+                            wrap="nowrap",
+                        ),
+                        dmc.Stack(
+                            [
+                                dmc.Group(
+                                    [
+                                        dmc.Text(
+                                            "Cost-optimal threshold",
+                                            size="xs",
+                                            c="dimmed",
+                                            fw=600,
+                                        ),
+                                        ui.info_icon(
+                                            "Derived from the costs above (with the high-demand "
+                                            "multiplier applied). Flags a booking as a likely "
+                                            "cancellation at/above this probability; also the "
+                                            "Low/Medium boundary in the table below."
+                                        ),
+                                    ],
+                                    gap=4,
+                                    align="center",
+                                    wrap="nowrap",
+                                ),
+                                dmc.Text(id="occ-thr-badge", size="lg", fw=700),
+                            ],
+                            gap=0,
+                        ),
+                    ],
+                    align="flex-end",
+                    gap="md",
+                    wrap="wrap",
+                ),
+                dmc.Text(id="cost-empty-help", c="dimmed", size="xs"),
+            ],
+            gap="xs",
+        ),
+        p="md",
+        radius="lg",
+        withBorder=True,
     )
 
 
@@ -260,10 +318,16 @@ def cost_controls() -> dmc.Paper:
 _OCC_COLORSCALE = [[0.0, "#FFFFFF"], [0.5, theme.YELLOW], [1.0, theme.ORANGE]]
 
 
-def heatmap_figure(grid: pd.DataFrame, *, metric: str = "occupancy",
-                   pct_on: bool = True, pct_thr: float | None = 90,
-                   free_on: bool = True, free_thr: float | None = 5,
-                   show_hover: bool = True) -> go.Figure:
+def heatmap_figure(
+    grid: pd.DataFrame,
+    *,
+    metric: str = "occupancy",
+    pct_on: bool = True,
+    pct_thr: float | None = 90,
+    free_on: bool = True,
+    free_thr: float | None = 5,
+    show_hover: bool = True,
+) -> go.Figure:
     """Occupancy heatmap (property rows × next 14 days). Colour is ALWAYS occupancy %;
     the in-tile number is chosen by `metric`:
         'occupancy' -> occupancy %                    (tab 1, default)
@@ -275,14 +339,17 @@ def heatmap_figure(grid: pd.DataFrame, *, metric: str = "occupancy",
     number and no hover."""
     if grid.empty:
         fig = go.Figure()
-        fig.update_layout(title="No data for the selected properties / window", height=320)
+        fig.update_layout(
+            title="No data for the selected properties / window", height=320
+        )
         return theme.brand_figure(fig)
     props = list(dict.fromkeys(grid["property_name"]))
     days = sorted(grid["day"].unique())
 
     def piv(col):
         return grid.pivot(index="property_name", columns="day", values=col).reindex(
-            index=props, columns=days)
+            index=props, columns=days
+        )
 
     occ_pct = piv("occupancy_pct")
     occupied = piv("occupied_units")
@@ -293,20 +360,24 @@ def heatmap_figure(grid: pd.DataFrame, *, metric: str = "occupancy",
     free = piv("free_rooms") if "free_rooms" in grid.columns else occupied * np.nan
 
     has_pct = bool(np.isfinite(occ_pct.to_numpy(dtype="float64")).any())
-    color = occ_pct.to_numpy(dtype="float64") if has_pct else occupied.to_numpy(dtype="float64")
+    color = (
+        occ_pct.to_numpy(dtype="float64")
+        if has_pct
+        else occupied.to_numpy(dtype="float64")
+    )
     occ_np = occ_pct.to_numpy(dtype="float64")
     free_np = free.to_numpy(dtype="float64")
 
     # --- overbooking-relevance mask (which tiles stay visible) ----------
     if not has_pct or (not pct_on and not free_on):
-        rel = np.ones(color.shape, dtype=bool)          # can't assess / no filter -> show all
+        rel = np.ones(color.shape, dtype=bool)  # can't assess / no filter -> show all
     else:
         rel = np.zeros(color.shape, dtype=bool)
         if pct_on and pct_thr is not None:
             rel |= occ_np >= float(pct_thr)
         if free_on and free_thr is not None:
             rel |= free_np <= float(free_thr)
-    z = np.where(rel, color, np.nan)                    # greyed tiles fall back to plot bg
+    z = np.where(rel, color, np.nan)  # greyed tiles fall back to plot bg
 
     # --- in-tile number depends on the chosen metric -------------------
     if metric == "expected":
@@ -316,11 +387,26 @@ def heatmap_figure(grid: pd.DataFrame, *, metric: str = "occupancy",
     else:
         mv = color
         fmt = (lambda v: f"{v:.0f}%") if has_pct else (lambda v: f"{v:.0f}")
-    text = [[fmt(mv[i][j]) if (rel[i][j] and np.isfinite(mv[i][j])) else ""
-             for j in range(mv.shape[1])] for i in range(mv.shape[0])]
+    text = [
+        [
+            fmt(mv[i][j]) if (rel[i][j] and np.isfinite(mv[i][j])) else ""
+            for j in range(mv.shape[1])
+        ]
+        for i in range(mv.shape[0])
+    ]
 
-    cd = np.dstack([occupied.to_numpy(), arr.to_numpy(), dep.to_numpy(), pred.to_numpy(),
-                    expc.to_numpy(), canc.to_numpy(), ooo.to_numpy(), free_np])
+    cd = np.dstack(
+        [
+            occupied.to_numpy(),
+            arr.to_numpy(),
+            dep.to_numpy(),
+            pred.to_numpy(),
+            expc.to_numpy(),
+            canc.to_numpy(),
+            ooo.to_numpy(),
+            free_np,
+        ]
+    )
     hover = (
         "<b>%{y}</b> · %{x}"
         "<br>Occupancy: %{z:.0f}%<br>Occupied: %{customdata[0]:.0f}"
@@ -331,21 +417,34 @@ def heatmap_figure(grid: pd.DataFrame, *, metric: str = "occupancy",
         "<br>Above cost threshold: %{customdata[3]:.0f}<extra></extra>"
     )
     heat = go.Heatmap(
-        z=z, x=days, y=props, customdata=cd, colorscale=_OCC_COLORSCALE,
-        xgap=2, ygap=2, hoverongaps=False,
-        zmin=0 if has_pct else None, zmax=100 if has_pct else None,
-        text=text, texttemplate="%{text}", textfont={"size": 11},
+        z=z,
+        x=days,
+        y=props,
+        customdata=cd,
+        colorscale=_OCC_COLORSCALE,
+        xgap=2,
+        ygap=2,
+        hoverongaps=False,
+        zmin=0 if has_pct else None,
+        zmax=100 if has_pct else None,
+        text=text,
+        texttemplate="%{text}",
+        textfont={"size": 11},
         colorbar=dict(title="Occ%" if has_pct else "Occ", thickness=12),
     )
     if show_hover:
         heat.hovertemplate = hover
     else:
-        heat.hoverinfo = "skip"                          # tab 2/3: no tooltips at all
+        heat.hoverinfo = "skip"  # tab 2/3: no tooltips at all
     fig = go.Figure(heat)
-    fig.update_layout(height=max(300, 60 + 26 * len(props)), xaxis_title=None,
-                      yaxis_title=None, yaxis_autorange="reversed")
+    fig.update_layout(
+        height=max(300, 60 + 26 * len(props)),
+        xaxis_title=None,
+        yaxis_title=None,
+        yaxis_autorange="reversed",
+    )
     fig = theme.brand_figure(fig)
-    fig.update_layout(plot_bgcolor="#E9E9E9")            # greyed-out tiles read as grey
+    fig.update_layout(plot_bgcolor="#E9E9E9")  # greyed-out tiles read as grey
     return fig
 
 

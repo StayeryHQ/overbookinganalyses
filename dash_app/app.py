@@ -61,7 +61,7 @@ def _patched_strip(path):
         return _original_strip(path)
     if path.startswith(prefix.rstrip("/")):
         return _original_strip(path)
-    # Renderer already stripped the prefix — just remove slashes
+    # Renderer already stripped the prefix - just remove slashes
     return path.strip("/")
 app.strip_relative_path = _patched_strip
 
@@ -79,7 +79,7 @@ def _navbar() -> html.Header:
     """Top navigation shell. The links live in an id'd container and are rendered
     by the callback below, which reads dcc.Location - that is how the active link
     gets its `.active` class now that dbc.NavLink is gone (styling: brand.css)."""
-    # html.A (not dcc.Link) — dcc.Link's client-side navigation sets
+    # html.A (not dcc.Link) - dcc.Link's client-side navigation sets
     # _pages_location.pathname without the prefix, which then causes Dash's
     # strip_relative_path to error (double-strip). html.A forces a full page
     # load so pathname comes from window.location.pathname (with prefix).
@@ -102,7 +102,7 @@ def _nav_links(pathname):
     """Re-render the nav links on every route change; the current page gets
     `.active` (underline, see brand.css)."""
     pages = sorted(dash.page_registry.values(), key=lambda p: p.get("order", 99))
-    # html.A (not dcc.Link) — same reason as the brand link above.
+    # html.A (not dcc.Link) - same reason as the brand link above.
     # p["relative_path"] already includes the prefix (or "/" locally).
     return [html.A(p["name"], href=p["relative_path"],
                     className="stayery-navlink"
