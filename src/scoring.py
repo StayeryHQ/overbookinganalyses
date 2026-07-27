@@ -23,7 +23,7 @@ import pandas as pd
 
 from .data_loader import load_reservations
 from .features import add_country_region
-from .paths import data_dir, repo_root
+from .paths import data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -72,15 +72,14 @@ FALLBACK_MODEL: Final[str] = "xgboost"   # used when the hazard artifact is abse
 # ONE source of truth: dash_app + main.py CLI derive their model choices from this.
 SERVEABLE_MODELS: Final[tuple[str, ...]] = ("hazard", "xgboost", "histgb")
 
+# The card path is NOT stored here any more  it is derived from the model name by
+# `model_card_path()` (data_dir()/model_cards/<name>.json), i.e. it lives in the DATA
+# VOLUME next to the joblib rather than under reports/ (which the Docker image doesn't ship).
 MODEL_REGISTRY: Final[dict[str, dict[str, str]]] = {
-    "hazard":  {"kind": "hazard", "joblib": "08_hazard_model.joblib",
-                "card": "reports/tables/08_hazard/model_card.json"},
-    "xgboost": {"kind": "static", "joblib": "02_xgboost_model.joblib",
-                "card": "reports/tables/02_xgboost/model_card.json"},
-    "logreg":  {"kind": "static", "joblib": "01_logreg_model.joblib",
-                "card": "reports/tables/01_logreg/model_card.json"},
-    "histgb":  {"kind": "static", "joblib": "03_histgb_model.joblib",
-                "card": "reports/tables/03_histgb/model_card.json"},
+    "hazard":  {"kind": "hazard", "joblib": "08_hazard_model.joblib"},
+    "xgboost": {"kind": "static", "joblib": "02_xgboost_model.joblib"},
+    "logreg":  {"kind": "static", "joblib": "01_logreg_model.joblib"},
+    "histgb":  {"kind": "static", "joblib": "03_histgb_model.joblib"},
 }
 
 
@@ -118,9 +117,17 @@ def load_model(name: str):
     return joblib.load(p)
 
 
+def model_card_path(name: str):
+    """Path of a model's card JSON: data_dir()/model_cards/<name>.json  in the DATA VOLUME
+    next to the joblib, so card + model stay together across a redeploy or a retrain and the
+    deployed app can read them. (Cards used to live under reports/, which the Docker image
+    doesn't ship  that's why 'Model last retrained' showed 'unavailable' in production.)"""
+    return data_dir() / "model_cards" / f"{name}.json"
+
+
 def load_model_card(name: str) -> dict:
-    """Load the model_card.json saved by the model notebook."""
-    p = repo_root() / MODEL_REGISTRY[name]["card"]
+    """Load a model's card JSON (data_dir()/model_cards/<name>.json)."""
+    p = model_card_path(name)
     if not p.exists():
         raise FileNotFoundError(f"{p} not found.")
     with p.open("r") as fh:

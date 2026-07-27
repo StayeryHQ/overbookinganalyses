@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 
 from . import walkforward as wf
-from .paths import data_dir, repo_root
+from .paths import data_dir
 
 SEED: Final[int] = 42
 AXIS: Final[str] = "days_until_arrival"
@@ -47,7 +47,6 @@ SNAP: Final[list[int]] = sorted(SNAP_FINE + SNAP_COARSE)
 CAL_BAND_EDGE: Final[int] = max(SNAP_FINE)   # = 14
 
 HAZARD_PATH: Final[str] = "08_hazard_model.joblib"
-HAZARD_CARD: Final[str] = "reports/tables/08_hazard/model_card.json"
 
 # HP grid mirrors notebook 08 (searched on the temporal val by AP).
 HP_GRID: Final[list[dict]] = [
@@ -415,8 +414,9 @@ def retrain_hazard(*, mode: str = "refit", asof=None, persist: bool = True, seed
     With no model card yet, refit falls back to a search (never deploy an un-tuned model).
 
     `refresh_eval=True` rebuilds the Model-Performance page's eval artifact afterwards
-    (Data/model_eval_hazard.parquet) so the page tracks the freshly deployed model."""
+    (Data/model_eval/hazard.parquet) so the page tracks the freshly deployed model."""
     from . import load_clean_reservations
+    from . import scoring as sc
     clean = wf.add_outcome_known_date(load_clean_reservations())
     known = pd.to_datetime(clean[wf.KNOWN_COL], utc=True, errors="coerce")
     asof_ts = pd.Timestamp(asof, tz="UTC") if asof is not None else pd.Timestamp(known.max())
@@ -441,7 +441,7 @@ def retrain_hazard(*, mode: str = "refit", asof=None, persist: bool = True, seed
                 "decision_time_recalibrated": bool(hz.get("decision_recal") is not None),
                 "features_numeric": hz["num"], "features_categorical": hz["cat"],
                 "tuning": hz.get("tuning")}   # None on refit; search report on retune
-        cp = repo_root() / HAZARD_CARD
+        cp = sc.model_card_path("hazard")
         cp.parent.mkdir(parents=True, exist_ok=True)
         cp.write_text(json.dumps(card, indent=2))
         result["persisted"] = {"joblib": jp, "card": str(cp)}

@@ -139,7 +139,7 @@ def model_status(model_name: str) -> dict:
         "version": version,
         "n_train_deploy": int(n_train) if n_train is not None else None,
         "n_train_person_period": int(n_pp) if n_pp is not None else None,
-        "card_path": str(src.repo_root() / reg["card"]) if reg else None,
+        "card_path": str(sc.model_card_path(model_name)) if reg else None,
     }
 
 
@@ -273,10 +273,10 @@ def data_quality_flags(model_name: str, *, min_rows: int = 100,
 
 
 def clean_history_status() -> dict:
-    """Freshness of the cleaned training history — the data the served model was trained on.
+    """Freshness of the cleaned training history - the data the served model was trained on.
 
     Read STRAIGHT from the parquet: last-rebuilt time (file mtime), row count (parquet
-    footer — cheap), and data span end (max of the `arrival` column). NOT from the meta
+    footer - cheap), and data span end (max of the `arrival` column). NOT from the meta
     sidecar, which only notebook 00 writes and would go stale after an in-app history
     rebuild. All values None-safe so the UI can say 'unavailable' rather than fabricate."""
     d = src.data_dir()
@@ -353,7 +353,7 @@ def rebuild_eval_job(progress: Progress, model_name: str, all_models: bool = Fal
 
 
 # Retraining is CLI-only (`uv run python main.py retrain …` → src.training.retrain). The
-# old in-app retrain_job/run_retrain wrappers were removed with the retrain button — the
+# old in-app retrain_job/run_retrain wrappers were removed with the retrain button - the
 # CLI calls src.training.retrain directly, so nothing was duplicated here.
 
 

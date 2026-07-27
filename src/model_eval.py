@@ -65,19 +65,25 @@ EVAL_COLS: Final[tuple[str, ...]] = (
 # =============================================================================
 # Cache locations
 # =============================================================================
+def _eval_dir():
+    """The Model-Performance eval artifacts live in a subfolder of the DATA VOLUME
+    (data_dir()/model_eval/) so they sit next to the models + cards and survive a redeploy."""
+    return data_dir() / "model_eval"
+
+
 def eval_cache_path(model_name: str):
     """Path of a model's pooled evaluation-predictions parquet."""
-    return data_dir() / f"model_eval_{model_name}.parquet"
+    return _eval_dir() / f"{model_name}.parquet"
 
 
 def fold_metrics_path(model_name: str):
     """Path of a model's per-fold train-vs-test metrics parquet (for 4.4)."""
-    return data_dir() / f"model_eval_{model_name}_folds.parquet"
+    return _eval_dir() / f"{model_name}_folds.parquet"
 
 
 def eval_meta_path(model_name: str):
     """Path of the sidecar provenance JSON for a model's eval artifact."""
-    return data_dir() / f"model_eval_{model_name}.json"
+    return _eval_dir() / f"{model_name}.json"
 
 
 def eval_available(model_name: str) -> bool:
@@ -258,6 +264,7 @@ def model_eval(model_name: str, *, refresh: bool = False, n_folds: int = DEFAULT
     out, foldm = _predict_one_model(model_name, n_folds=n_folds, horizon_days=horizon_days,
                                     step_days=step_days, seed=seed)
     if persist and len(out):
+        path.parent.mkdir(parents=True, exist_ok=True)   # ensure data_dir()/model_eval/ exists
         out.to_parquet(path, index=False)
         if len(foldm):
             foldm.to_parquet(fold_metrics_path(model_name), index=False)

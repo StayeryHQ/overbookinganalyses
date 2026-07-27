@@ -96,7 +96,7 @@ def model_meta() -> dict:
     out["model"] = name
     # retrained_at from the model card, if the card exists and has it.
     try:
-        card_path = src.repo_root() / sc.MODEL_REGISTRY[name]["card"]
+        card_path = sc.model_card_path(name)
         if card_path.exists():
             card = json.loads(card_path.read_text())
             out["retrained_at"] = _fmt_ts(card.get("retrained_at"))

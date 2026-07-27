@@ -36,7 +36,7 @@ from src import (
     resolve_model,
     score_upcoming,
 )
-from src.model_eval import EVAL_MODELS, model_eval
+from src.model_eval import EVAL_MODELS, eval_cache_path, model_eval
 from src.scoring import SERVEABLE_MODELS
 
 
@@ -146,7 +146,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
             continue
         print(f"  pooled n={len(d):,}  folds={d['fold'].nunique()}  "
               f"base_rate={d['y_true'].mean():.3f}  mean_pred={d['y_prob'].mean():.3f}")
-        print(f"  saved → {data_dir() / f'model_eval_{m}.parquet'}")
+        print(f"  saved → {eval_cache_path(m)}")
     return 0
 
 

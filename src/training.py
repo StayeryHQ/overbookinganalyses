@@ -26,7 +26,7 @@ import pandas as pd
 from . import scoring as sc
 from . import walkforward as wf
 from .features import load_feature_roster
-from .paths import data_dir, repo_root
+from .paths import data_dir
 
 SEED: Final[int] = 42
 
@@ -333,7 +333,7 @@ def _bakeoff_deps() -> list:
     deps = [data_dir() / CLEAN_CACHE_FILE]
     for name in ("logreg", "xgboost", "histgb", "hazard"):
         try:
-            deps.append(repo_root() / sc.MODEL_REGISTRY[name]["card"])
+            deps.append(sc.model_card_path(name))
         except Exception:  # noqa: BLE001
             pass
     return [p for p in deps if p.exists()]
@@ -540,7 +540,7 @@ def retrain(model_name: str, *, mode: str = "refit", asof: str | pd.Timestamp | 
                                                            "_predictions.parquet")
             preds.to_parquet(pred_path, index=False)
         fp = roster_fingerprint()
-        card_path = repo_root() / reg["card"]
+        card_path = sc.model_card_path(model_name)
         card = {}
         if card_path.exists():
             try: card = json.loads(card_path.read_text())
