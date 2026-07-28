@@ -1,5 +1,6 @@
 # =============================================================================
 # Brand Configuration - in this project only needed for matplotlib chats in notebooks
+# quick test
 # =============================================================================
 
 colors: # this is a nested dictionary defining the color palette for the brand, organized into core and supporting colors.
