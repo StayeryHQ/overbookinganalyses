@@ -74,21 +74,22 @@ _INFO = {
             "nights are pooled into one bar). Bar colour marks the segment: green = "
             "short (1–2 nights), amber = mid (3–6), red = long (7+). Bars over fewer "
             "than 50 bookings are hidden as too noisy.",
-    "lead": "Cancellation rate by lead time  the gap in days between when a booking was "
-            "made and the arrival date  shown day by day (longer lead almost always "
-            "cancels more). Use 'by length of stay' to split the curve into short / mid "
-            "/ long, and the day toggle to extend the window. Days over fewer than 50 "
-            "bookings are hidden.",
-    "timing": "Of the bookings that cancelled, the cumulative share that had cancelled "
-              "by a given number of days before arrival. Shows how late rooms typically "
-              "free up.",
+    "lead": "Lead time = how far ahead a booking was made: the gap in days between the "
+            "booking date and the arrival date (arrival − booking). This is NOT cancel "
+            "timing. Here: cancellation rate by lead time, shown day by day (longer lead "
+            "almost always cancels more). Use 'by length of stay' to split short / mid / "
+            "long, and the day toggle to extend the window. Days under 50 bookings hidden.",
+    "timing": "Cancel timing = how many days before arrival a booking was cancelled (NOT "
+              "lead time). Of the bookings that cancelled, this is the cumulative share "
+              "that had cancelled by a given number of days before arrival — it shows how "
+              "late rooms typically free up.",
     "timewin": "Filters every chart on this page to the last 6 / 12 / 24 months of "
                "arrivals (or the full history). The dashed base-rate reference always "
                "stays the full-history average, so a window is easy to compare against it.",
-    "blend": "Cancellation rate for each combination of lead time and length of stay  "
-             "the two biggest drivers blended into one grid. Green = low, red = high. "
-             "Top-right (long stays booked far ahead) is the riskiest mix. Cells under "
-             "30 bookings are hidden.",
+    "blend": "Cancellation rate for each combination of lead time (how far ahead the "
+             "booking was made) and length of stay — the two biggest drivers blended into "
+             "one grid. Green = low, red = high. Top-right (long stays booked far ahead) "
+             "is the riskiest mix. Cells under 30 bookings are hidden.",
     "ct_grid": "Cancellations in the last 14 days before arrival, day by day (0 = arrival "
                "day). In 'Cancel rate' mode each cell is a per-day rate: cancellations "
                "that day ÷ the bookings that were still due to arrive that day (booked at "
@@ -106,8 +107,9 @@ _INFO = {
                   "than 30 resolved arrivals. Hover shows the no-show count and arrivals.",
     "ns_stay": "No-show rate by length of stay (short 1–2, mid 3–6, long 7+ nights). "
                "Each bar is labelled with the absolute number of no-shows.",
-    "ct_hist": "How many cancellations land at each whole day before arrival, in exact "
-               "daily bins (bin '0–1' = cancelled on the arrival day, '1–2' = the day "
+    "ct_hist": "Cancel timing (days before arrival a booking was cancelled — NOT lead "
+               "time). How many cancellations land at each whole day before arrival, in "
+               "exact daily bins (bin '0–1' = cancelled on the arrival day, '1–2' = the day "
                "before, and so on). Everything 30+ days out pools into the last bar. This "
                "is a raw count of cancellations, not a rate. Toggle 'by length of stay' to "
                "split the bars into short / mid / long.",
@@ -122,6 +124,26 @@ def _sel(value) -> list[str] | None:
 def _win(value) -> int | None:
     """Normalise the time-window control; 'all'/empty means the full history."""
     return None if not value or value == "all" else int(value)
+
+
+def _timeline_legend():
+    """Tiny 'how to read the two time axes' key so lead time and cancel timing are never
+    confused: lead = booking→arrival (how far ahead booked), cancel timing = when before
+    arrival the cancellation landed."""
+    def row(label, color, track, gloss):
+        return dmc.Group([
+            dmc.Badge(label, color=color, variant="light", radius="sm",
+                      style={"minWidth": "112px"}),
+            dmc.Text(track, size="sm", style={"fontFamily": "monospace"}),
+            dmc.Text(gloss, size="xs", c="dimmed"),
+        ], gap="sm", align="center", wrap="nowrap")
+    return dmc.Paper(dmc.Stack([
+        dmc.Text("How to read the two time axes", size="xs", fw=700, tt="uppercase", c="dimmed"),
+        row("Lead time", "grape", "Booking ───────────▶ Arrival",
+            "how far ahead the booking was made (arrival − booking)"),
+        row("Cancel timing", "orange", "Cancellation ──▶ Arrival",
+            "days before arrival the booking was cancelled (cancellations only)"),
+    ], gap=6), p="sm", radius="lg", withBorder=True)
 
 
 # ---------------------------------------------------------------------------
@@ -165,8 +187,8 @@ def layout(**_kwargs):
     ], gap="xs", wrap="nowrap")
     lead_card = ui.chart_card(
         "Lead time", "cxl-lead", info=_INFO["lead"], height=360, header_extra=lead_extra,
-        subtitle="Cancellation rate day by day before arrival · toggle the split by "
-                 "length of stay to see how short / mid / long stays differ.")
+        subtitle="Cancellation rate by lead time — how far ahead the booking was made "
+                 "(booking → arrival) · toggle the split by length of stay.")
 
     # Standmixer: lead × stay cancel-rate heatmap (the two drivers blended).
     blend_card = ui.chart_card(
@@ -229,6 +251,7 @@ def layout(**_kwargs):
 
         ui.sticky_filter_bar(props, "cxl-property-filter", "cxl-timewin",
                              span_label=span_label, timewin_info=_INFO["timewin"]),
+        _timeline_legend(),
         dcc.Store(id="cxl-drawer-store"),
         dcc.Store(id="cxl-upd-kick", data=0),
         dcc.Store(id="cxl-upd-seen", data={}),

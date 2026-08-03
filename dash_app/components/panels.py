@@ -594,7 +594,7 @@ def composition_row(df: pd.DataFrame, context_label: str) -> list:
             None if empty else df.get("lead_time_days"),
             "Lead time",
             theme.PURPLE,
-            "Days before arrival",
+            "Lead time (days from booking to arrival)",
         )
     )
 

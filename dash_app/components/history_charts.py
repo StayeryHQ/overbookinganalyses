@@ -191,7 +191,7 @@ def fig_leadtime_daily(df: pd.DataFrame, by_stay: bool = False,
                       annotation_text=f"base {base * 100:.1f}%",
                       annotation_position="bottom right", annotation_font_size=10)
     fig.update_layout(
-        height=height, xaxis_title="Lead time (days before arrival)",
+        height=height, xaxis_title="Lead time — days from booking to arrival",
         yaxis_title="Cancel rate", yaxis=dict(ticksuffix="%"),
         xaxis=dict(rangemode="tozero"), showlegend=by_stay, hovermode="x unified",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0, font=dict(size=10)),
@@ -220,7 +220,7 @@ def fig_timing(curve: pd.DataFrame, n: int, height: int = 320) -> go.Figure:
                       annotation_position="top right", annotation_font_size=11)
 
     fig.update_layout(
-        height=height, xaxis_title="Days before arrival (0 = arrival day)",
+        height=height, xaxis_title="Days before arrival the booking was cancelled (0 = arrival day)",
         yaxis_title="Cumulative % of cancellations",
         yaxis=dict(ticksuffix="%", range=[0, 100]),
         title=dict(text=f"Based on {n:,} cancellations", font=dict(size=11, color="#9AA0A6"),
@@ -292,7 +292,7 @@ def fig_cancel_timing_heatmap(g: pd.DataFrame, dim: str = "stay", metric: str = 
     fig = go.Figure(go.Heatmap(
         z=z, x=day_labels, y=rows, customdata=custom, colorscale=colorscale,
         xgap=2, ygap=2, hoverongaps=False, colorbar=dict(title=cbar, thickness=12),
-        hovertemplate="<b>%{y}</b> · %{x} days before arrival"
+        hovertemplate="<b>%{y}</b> · cancelled %{x} days before arrival"
                       "<br>Cancellations: %{customdata[0]:,.0f} of %{customdata[1]:,.0f} still due"
                       "<br>Cancel rate that day: %{customdata[2]:.2f}%<extra></extra>"))
     # Per-cell labels via annotations so the number can turn white above 4,000 cancels.
@@ -310,9 +310,11 @@ def fig_cancel_timing_heatmap(g: pd.DataFrame, dim: str = "stay", metric: str = 
             color = "#FFFFFF" if (not np.isnan(cnt) and cnt > 4000) else "#20140E"
             fig.add_annotation(x=dlab, y=rname, text=txt, showarrow=False,
                                font=dict(size=10, color=color))
-    fig.update_layout(height=height, xaxis_title="Days before arrival (0 = arrival day)",
-                      yaxis_title=None, xaxis_side="top", yaxis_autorange="reversed",
-                      margin=dict(l=150, r=20, t=50, b=30))
+    fig.update_layout(
+        height=height,
+        xaxis_title="Days before arrival the booking was cancelled (0 = arrival day)",
+        yaxis_title=("Lead time" if dim == "lead" else "Length of stay"),
+        xaxis_side="top", yaxis_autorange="reversed", margin=dict(l=150, r=20, t=50, b=30))
     return theme.brand_figure(fig)
 
 
@@ -342,7 +344,8 @@ def fig_cancel_timing_hist(df: pd.DataFrame, by_stay: bool = False,
             x=d["day"], y=d["n_cancel"], marker_color=theme.BLUE,
             hovertemplate="%{x} days before arrival<br>%{y:,} cancellations<extra></extra>"))
     fig.update_layout(
-        height=height, xaxis_title="Days before arrival (0–1 = arrival day)",
+        height=height,
+        xaxis_title="Days before arrival the booking was cancelled (0–1 = arrival day)",
         yaxis_title="Cancellations",
         xaxis=dict(categoryorder="array", categoryarray=order),
         showlegend=by_stay,
